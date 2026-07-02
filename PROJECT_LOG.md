@@ -411,3 +411,22 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
   - `edl.meta.json`: `n_placements=52`, `coverage_ok=true`, warning chỉ là `6` pause filler placements.
   - `render.meta.json`: `1920x1080`, `30fps`, H.264 + AAC, `duration_match=true`, no warnings.
   - Full tests sau vá: `105 passed`.
+
+### 2026-07-03 — QA fix: loại intro 2 phút đầu khỏi recap footage
+
+- User QA:
+  - Video là đoạn đầu tập 1, khoảng 2 phút đầu là intro/opening chỉ có hình ảnh, không voice/story chính.
+  - Recap cũ tại khoảng `12–21s` lấy hình VIU/intro nên không liên quan narration.
+  - Voice rõ, nhưng footage các đoạn khác còn khó sát narration.
+- Đã làm:
+  - Thêm GĐ1 `--drop-visual-before-s` để không đưa visual intro vào `film_map`.
+  - Rerun GĐ1 với `--drop-visual-before-s 120`, tái dụng cache ASR/translation cũ để giảm API.
+  - Rerun GĐ4 với `--skip-intro 120`, shot library còn `120` shots, `min_src_in` trong EDL mới là `120.4`.
+  - Rerun GĐ2/GĐ3/GĐ5/GĐ6 và tạo bản mới: `runs/test-recap-video-no-intro/recap.mp4`.
+  - QA frame mới tại `13s` và `21s` không còn logo/footage intro; bắt đầu từ cảnh đường đua/nhân vật.
+- Kết quả mới:
+  - `recap.mp4` duration khoảng `110.86s`, 1080p30 H.264 + AAC.
+  - `render.meta.json`: `duration_match=true`, no warnings.
+- Cần theo dõi:
+  - Source video có phụ đề Việt lớn sẵn ở một số đoạn; nếu muốn output sạch hơn cần thêm crop/blur subtitle region hoặc chọn source không hard-sub.
+  - Footage vẫn có thể chưa sát narration vì GĐ5 scoring còn semantic yếu; bước sau nên cải thiện match bằng keyword/segment-window scoring và face detection runtime.

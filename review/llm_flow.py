@@ -194,7 +194,17 @@ async def request_qa(
             coverage_pct=coverage_pct,
         )
     )
-    return QaResult.model_validate(extract_json(response))
+    data = extract_json(response)
+    if isinstance(data, dict) and isinstance(data.get("issues"), list):
+        max_beat_id = len(beats) - 1
+        data["issues"] = [
+            issue
+            for issue in data["issues"]
+            if isinstance(issue, dict)
+            and isinstance(issue.get("beat_id"), int)
+            and 0 <= issue["beat_id"] <= max_beat_id
+        ]
+    return QaResult.model_validate(data)
 
 
 async def regenerate_beat(

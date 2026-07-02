@@ -37,6 +37,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "glossary": None,
         "correction_model": "gpt-4.1-mini",
         "drop_non_korean_intro_s": 30.0,
+        "drop_visual_before_s": 0.0,
         "log_level": "INFO",
     },
     "review": {

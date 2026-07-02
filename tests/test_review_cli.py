@@ -106,3 +106,21 @@ def test_build_review_falls_back_duration_without_meta(tmp_path) -> None:
     _beats, meta = asyncio.run(build_review_with_client(make_args(tmp_path, film_map_path), client))
 
     assert any("duration fallback" in warning for warning in meta.warnings)
+
+def test_qa_ignores_invalid_beat_ids(tmp_path) -> None:
+    class InvalidQaClient(FakeReviewClient):
+        async def ask(self, prompt: str) -> str:
+            self.calls.append(prompt)
+            if "keys: glossary, outline, hook" in prompt:
+                return json.dumps({"glossary": [{"name": "Minh"}], "outline": [{"from_seg_id": 0, "to_seg_id": 3, "summary": "all", "is_hook": True}], "hook": [0]}, ensure_ascii=False)
+            if "JSON array of objects" in prompt:
+                return json.dumps([{"beat_id": 0, "narration": "Minh chạy qua hành lang tối và phát hiện bí mật."}], ensure_ascii=False)
+            if "Review this Vietnamese recap" in prompt:
+                return json.dumps({"pass": False, "issues": [{"beat_id": -1, "type": "general", "suggestion": "bad"}], "notes": "general"}, ensure_ascii=False)
+            return json.dumps({"pass": True, "issues": [], "notes": "ok"}, ensure_ascii=False)
+
+    film_map_path = write_film_map(tmp_path)
+    import asyncio
+    beats, meta = asyncio.run(build_review_with_client(make_args(tmp_path, film_map_path), InvalidQaClient()))
+    assert beats
+    assert meta.qa_report[0]["issues"] == []

@@ -296,3 +296,10 @@ repo/
 - AI33 submit có thể trả `task_id` hoặc `id`; adapter phải chấp nhận cả hai.
 - CDN `https://cdn.ai33.pro/...` có thể trả `403` nếu tải không có `User-Agent`; downloader hiện gửi `User-Agent: Mozilla/5.0` và thêm `xi-api-key` cho domain `ai33.pro` khi có `VIVOO_API_KEY`.
 - Không commit `VIVOO_API_KEY`; chỉ set env runtime hoặc `.env` gitignored.
+
+## 25. EPISODE INTRO / OPENING EXCLUSION
+
+- Với tập có intro/opening không liên quan voice/story, phải dùng cùng cutoff cho GĐ1 và GĐ4.
+- GĐ1: `--drop-visual-before-s <seconds>` để không tạo visual segments từ intro trong `film_map`.
+- GĐ4: `--skip-intro <seconds>` để shot library/match không chọn footage intro.
+- Nếu chỉ dùng một trong hai option, GĐ2/GĐ5 vẫn có thể lấy nhầm footage intro.

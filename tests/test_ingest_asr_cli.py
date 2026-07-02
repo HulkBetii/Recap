@@ -91,3 +91,10 @@ def test_orchestrator_passes_review_chat_session_options(tmp_path: Path) -> None
     assert command[command.index("--chat-session-policy") + 1] == "new"
     assert command[command.index("--chat-session-meta") + 1] == "session.json"
     assert command[command.index("--chat-title") + 1] == "ep01"
+
+def test_orchestrator_passes_drop_visual_before_option(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"ingest": {"drop_visual_before_s": 120}}), encoding="utf-8")
+    config = load_config(config_path)
+    command = build_command("ingest", build_paths(tmp_path / "run"), tmp_path / "film.mp4", config, force=False, python_exe="python")
+    assert command[command.index("--drop-visual-before-s") + 1] == "120"

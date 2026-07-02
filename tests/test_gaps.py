@@ -55,3 +55,12 @@ def test_split_long_gaps_zero_disables_split_but_reassigns_ids() -> None:
     split = split_long_gaps(gaps, max_gap_s=0)
 
     assert [(gap.id, gap.tc_start, gap.tc_end) for gap in split] == [(0, 0.0, 50.0)]
+
+def test_drop_visual_before_can_clamp_split_gaps() -> None:
+    segments = [TranslatedSegment(id=0, tc_start=123.0, tc_end=124.0, ko="a", en="a")]
+    gaps = split_long_gaps(detect_silent_gaps(segments, duration=130.0, threshold=1.0), max_gap_s=20.0)
+    threshold = 120.0
+    filtered = [gap for gap in gaps if gap.tc_end > threshold]
+    filtered = [gap.model_copy(update={"id": index, "tc_start": max(gap.tc_start, threshold)}) for index, gap in enumerate(filtered) if max(gap.tc_start, threshold) < gap.tc_end]
+
+    assert [(gap.id, gap.tc_start, gap.tc_end) for gap in filtered] == [(0, 120.0, 123.0), (1, 124.0, 130.0)]

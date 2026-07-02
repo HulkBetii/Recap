@@ -324,3 +324,10 @@ python -m review `
 ```
 
 Các policy: `auto`, `new`, `resume`. Metadata được lưu ở `work/review/chat_session_meta.json` hoặc path từ `--chat-session-meta`.
+
+Nếu phim/tập có intro/opening chỉ có hình ảnh không liên quan narration, chạy GĐ1/GĐ4 với cutoff cùng giá trị. Ví dụ tập này dùng `120s`:
+
+```powershell
+python -m ingest --input film.mp4 --output runs\ep01\film_map.json --drop-visual-before-s 120
+python -m shots --input film.mp4 --output runs\ep01\shots.json --thumb-dir runs\ep01\shots --skip-intro 120
+```

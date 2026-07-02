@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--glossary", default=None, type=Path, help="JSON/YAML/TXT glossary for transcript name/entity correction")
     parser.add_argument("--correction-model", default="gpt-4.1-mini")
     parser.add_argument("--drop-non-korean-intro-s", default=30.0, type=float)
+    parser.add_argument("--drop-visual-before-s", default=0.0, type=float, help="Drop/suppress visual gap segments before this source time, useful for episode intros/opening credits")
     parser.add_argument("--vad-filter", action="store_true", default=True)
     parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false")
     parser.add_argument("--work-dir", default=Path("work"), type=Path)
@@ -195,12 +196,16 @@ def load_vision(
     max_visual_gap_s: float,
     client: OpenAIIngestClient,
     logger: logging.Logger,
+    drop_visual_before_s: float = 0.0,
 ) -> tuple[list[VisionSegment], int]:
     if cache.has("vision.json"):
         logger.info("[5/6] Using cached vision.json")
         return [VisionSegment.model_validate(item) for item in cache.read_json("vision.json")], 0
     logger.info("[4/6] Detecting silent gaps")
     gaps = split_long_gaps(detect_silent_gaps(translated, duration, gap_threshold), max_visual_gap_s)
+    if drop_visual_before_s > 0:
+        gaps = [gap for gap in gaps if gap.tc_end > drop_visual_before_s]
+        gaps = [gap.model_copy(update={"id": index, "tc_start": max(gap.tc_start, drop_visual_before_s)}) for index, gap in enumerate(gaps) if max(gap.tc_start, drop_visual_before_s) < gap.tc_end]
     selected_gaps = select_gaps_for_vision(gaps, max_vision_frames)
     logger.info("[5/6] Running vision on %d/%d split gaps", len(selected_gaps), len(gaps))
     vision_segments, warnings_count = describe_gaps(
@@ -238,6 +243,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         "glossary": None,
         "correction_model": "gpt-4.1-mini",
         "drop_non_korean_intro_s": 30.0,
+        "drop_visual_before_s": 0.0,
     }.items():
         if not hasattr(args, key):
             setattr(args, key, value)
@@ -254,6 +260,8 @@ def run_ingest(args: argparse.Namespace) -> int:
         raise IngestError("--max-segment-s must be >= 0")
     if args.drop_non_korean_intro_s < 0:
         raise IngestError("--drop-non-korean-intro-s must be >= 0")
+    if args.drop_visual_before_s < 0:
+        raise IngestError("--drop-visual-before-s must be >= 0")
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise IngestError("OPENAI_API_KEY is required for translation and vision")
@@ -288,6 +296,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         max_visual_gap_s=args.max_visual_gap_s,
         client=client,
         logger=logger,
+        drop_visual_before_s=args.drop_visual_before_s,
     )
     warnings_count += vision_warnings
 
