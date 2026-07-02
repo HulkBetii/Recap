@@ -252,3 +252,12 @@ repo/
 - Transcript QC sau alignment clamp theo duration, merge segment qu? ng?n, split/flag segment qu? d?i v? c?nh b?o subtitle/credit artifacts.
 - Runtime aligner n?n xem l? optional/heavy; automated tests mock WhisperX, kh?ng y?u c?u GPU.
 
+
+## 19. TRANSCRIPT CORRECTION / GLOSSARY HIỆN TẠI
+
+- GĐ1 có pass sửa transcript sau ASR/alignment/QC và trước KO→EN translation; pass này không được đổi `id`, `tc_start`, `tc_end`.
+- CLI: `--transcript-correction off|glossary|openai`, `--glossary path`, `--correction-model gpt-4.1-mini`.
+- `glossary` là đường chạy rẻ/deterministic để sửa tên nhân vật/entity bằng replacements; nên dùng trước khi cân nhắc API.
+- `openai` chỉ dùng cho correction nhẹ theo glossary/homophone rõ ràng; không được summarize, translate, merge/split segment hoặc thêm tình tiết mới.
+- Cache artifact mới: `transcript_corrected.json`; meta GĐ1 ghi `transcript_correction_mode`, `transcript_correction_model`, `transcript_correction_warnings`.
+- Nếu sau này đổi sang correction nặng bằng worker/browser hoặc thêm glossary tự động từ phim dài, phải cập nhật file này, README và PROJECT_LOG cùng task.

@@ -32,6 +32,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "openai_transcribe_model": "gpt-4o-mini-transcribe",
         "openai_chunk_s": 20.0,
         "alignment_device": "cuda",
+        "transcript_correction": "off",
+        "glossary": None,
+        "correction_model": "gpt-4.1-mini",
         "log_level": "INFO",
     },
     "review": {

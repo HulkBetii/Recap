@@ -262,3 +262,39 @@ Nguyên tắc GĐ6:
 - Concat temp clips bằng demuxer `-c copy`, sau đó mux `voiceover.mp3` thành audio duy nhất.
 - `render.meta.json` ghi duration video/audio, số temp clips, cache hits và warnings.
 
+
+### Transcript correction / glossary
+
+GĐ1 có thể sửa tên nhân vật/entity trước bước dịch KO→EN mà không đổi timecode hoặc id segment.
+
+```powershell
+python -m ingest `
+  --input path\to\film.mp4 `
+  --output out\film_map.json `
+  --asr-provider openai-gpt4o-hybrid `
+  --aligner whisperx `
+  --transcript-correction glossary `
+  --glossary glossary.example.yaml `
+  --work-dir work\ingest
+```
+
+`--transcript-correction`:
+
+- `off`: mặc định, không sửa transcript.
+- `glossary`: sửa deterministic bằng replacements trong glossary, rẻ và nên dùng trước.
+- `openai`: dùng glossary + OpenAI để sửa lỗi tên/entity/homophone rõ ràng; chỉ dùng cho pass nhẹ vì vẫn tốn API.
+
+Glossary có thể là JSON/YAML/TXT. Repo có mẫu `glossary.example.yaml`. Ví dụ YAML:
+
+```yaml
+context: Korean movie transcript. Keep Korean text, do not translate.
+names:
+  - 황준현
+  - 최성
+replacements:
+  문지현: 황준현
+  최정의 부식: 최성 FC
+```
+
+Artifact cache mới: `transcript_corrected.json`. Meta GĐ1 ghi `transcript_correction_mode`, `transcript_correction_model`, và `transcript_correction_warnings`.
+

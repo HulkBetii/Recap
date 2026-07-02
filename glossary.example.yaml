@@ -1,0 +1,21 @@
+﻿context: Korean movie transcript for recap pipeline. Keep corrected text in Korean and do not translate.
+names:
+  - 황준현
+  - 최성 FC
+  - 회장님
+  - 상재
+replacements:
+  문지현: 황준현
+  문지현 선수: 황준현 선수
+  문준현: 황준현
+  문준현 선수: 황준현 선수
+  최성의 FC: 최성 FC
+  최성 FC: 최성 FC
+  최정의 부식: 최성 FC
+  최송F15: 최성 FC
+  최성으로: 최성으로
+notes:
+  - Use deterministic replacements first; add only verified names/entities from film context.
+  - Do not put API keys in this file.
+
+

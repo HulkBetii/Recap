@@ -18,6 +18,7 @@ from common.schema import (
 )
 from ingest.asr import apply_alignment, clean_aligned_segments, detect_transcript_warnings, parse_manual_transcript, split_long_segments
 from ingest.cache import StageCache
+from ingest.correction import OpenAITranscriptCorrector, apply_glossary_replacements, load_glossary
 from ingest.film_map import build_film_map
 from ingest.gaps import detect_silent_gaps, select_gaps_for_vision
 from ingest.llm import OpenAIIngestClient
@@ -54,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openai-transcribe-model", default="gpt-4o-mini-transcribe")
     parser.add_argument("--openai-chunk-s", default=20.0, type=float)
     parser.add_argument("--alignment-device", default="cuda", choices=["cpu", "cuda"])
+    parser.add_argument("--transcript-correction", default="off", choices=["off", "glossary", "openai"])
+    parser.add_argument("--glossary", default=None, type=Path, help="JSON/YAML/TXT glossary for transcript name/entity correction")
+    parser.add_argument("--correction-model", default="gpt-4.1-mini")
     parser.add_argument("--vad-filter", action="store_true", default=True)
     parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false")
     parser.add_argument("--work-dir", default=Path("work"), type=Path)
@@ -119,12 +123,42 @@ def load_transcript(
     transcript = split_long_segments(transcript, args.max_segment_s)
     transcript, quality = apply_alignment(transcript, quality, args.aligner, args.timecode_quality, audio_path=audio_path, alignment_device=args.alignment_device)
     transcript, qc_warnings = clean_aligned_segments(transcript, duration=duration, min_segment_s=0.45, max_segment_s=args.max_segment_s or 30.0)
-    warnings = quality.warnings + qc_warnings + detect_transcript_warnings(transcript)
-    quality = quality.model_copy(update={"warnings": warnings})
     cache.write_json("transcript_text.json", transcript)
+    transcript, quality = correct_transcript(cache, transcript, quality, args, logger)
+    warnings = quality.warnings + qc_warnings + quality.correction_warnings + detect_transcript_warnings(transcript)
+    quality = quality.model_copy(update={"warnings": warnings})
     cache.write_json("transcript_aligned.json", transcript)
     cache.write_json("transcript_quality.json", quality)
     return transcript, quality
+
+def correct_transcript(
+    cache: StageCache,
+    transcript: list[TranscriptSegment],
+    quality: TranscriptQuality,
+    args: argparse.Namespace,
+    logger: logging.Logger,
+) -> tuple[list[TranscriptSegment], TranscriptQuality]:
+    mode = getattr(args, "transcript_correction", "off")
+    if mode == "off":
+        return transcript, quality.model_copy(update={"correction_mode": "off", "correction_model": None, "correction_warnings": []})
+    if cache.has("transcript_corrected.json"):
+        logger.info("[2/6] Using cached transcript_corrected.json")
+        corrected = [TranscriptSegment.model_validate(item) for item in cache.read_json("transcript_corrected.json")]
+        return corrected, quality.model_copy(update={"correction_mode": mode, "correction_model": getattr(args, "correction_model", None) if mode == "openai" else None})
+    glossary = load_glossary(getattr(args, "glossary", None))
+    logger.info("[2/6] Correcting transcript with mode: %s", mode)
+    corrected, correction_warnings = apply_glossary_replacements(transcript, glossary)
+    correction_model = None
+    if mode == "openai":
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise IngestError("OPENAI_API_KEY is required for --transcript-correction openai")
+        correction_model = getattr(args, "correction_model", "gpt-4.1-mini")
+        corrected, openai_warnings = OpenAITranscriptCorrector(api_key, correction_model).correct_segments(corrected, glossary)
+        correction_warnings.extend(openai_warnings)
+    corrected = [segment.model_copy(update={"id": index}) for index, segment in enumerate(corrected)]
+    cache.write_json("transcript_corrected.json", corrected)
+    return corrected, quality.model_copy(update={"correction_mode": mode, "correction_model": correction_model, "correction_warnings": correction_warnings})
 
 def load_translations(
     cache: StageCache,
@@ -189,6 +223,9 @@ def run_ingest(args: argparse.Namespace) -> int:
         "openai_transcribe_model": "gpt-4o-mini-transcribe",
         "openai_chunk_s": 20.0,
         "alignment_device": "cuda",
+        "transcript_correction": "off",
+        "glossary": None,
+        "correction_model": "gpt-4.1-mini",
     }.items():
         if not hasattr(args, key):
             setattr(args, key, value)
@@ -260,6 +297,9 @@ def run_ingest(args: argparse.Namespace) -> int:
         timecode_quality=transcript_quality.timecode_quality,
         approximate_timecodes=transcript_quality.approximate_timecodes,
         asr_warnings=transcript_quality.warnings,
+        transcript_correction_mode=transcript_quality.correction_mode,
+        transcript_correction_model=transcript_quality.correction_model,
+        transcript_correction_warnings=transcript_quality.correction_warnings,
     )
     write_json(output_path.with_name(f"{output_path.stem}.meta.json"), meta)
     logger.info("Done: %s", output_path)

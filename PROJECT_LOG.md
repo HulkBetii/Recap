@@ -279,3 +279,25 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 
 
 
+
+### 2026-07-02 — Thêm transcript correction theo glossary/tên nhân vật
+
+- Đã làm:
+  - Thêm `ingest/correction.py` với glossary JSON/YAML/TXT, replacement deterministic và OpenAI correction adapter mockable.
+  - Thêm CLI GĐ1: `--transcript-correction off|glossary|openai`, `--glossary`, `--correction-model`.
+  - Thêm cache `transcript_corrected.json` và meta fields cho correction mode/model/warnings.
+  - Cho orchestrator/config truyền các option correction xuống GĐ1.
+  - Thêm tests cho glossary correction, OpenAI mock correction và orchestrator command.
+- Quyết định:
+  - Correction chạy sau alignment/QC và trước translation để giữ timecode ổn định nhưng giảm lỗi tên/entity trong `film_map.json`.
+  - `glossary` là mặc định khuyến nghị vì gần như không tốn chi phí API; `openai` chỉ dành cho pass nhẹ.
+
+### 2026-07-02 — Smoke test transcript glossary trên audio thật
+
+- Đã làm:
+  - Tạo `glossary.example.yaml` với các alias đã quan sát từ audio mẫu: `문지현/문준현 -> 황준현`, các biến thể `최성 FC`.
+  - Chạy smoke GĐ1 với `openai-gpt4o-hybrid + whisperx + --transcript-correction glossary` trên `test-audio-recap.MP3`.
+  - Output hợp lệ tại `runs/test-audio-ingest-corrected-v2/film_map.json` với `timecode_quality=strict`, `approximate_timecodes=false`, `speech_count=24`.
+- Nhận xét chất lượng:
+  - Glossary pass sửa được các lỗi nằm trong replacement list mà không đổi timecode/id.
+  - Vẫn cần bổ sung glossary theo phim thật vì ASR có thể sinh alias mới như `최송F15`; đã thêm alias này vào glossary mẫu.

@@ -11,6 +11,7 @@ ProviderMode = Literal["auto", "ai33", "genmax"]
 AsrProvider = Literal["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"]
 AlignerProvider = Literal["none", "whisperx", "qwen3"]
 TimecodeQuality = Literal["strict", "approximate"]
+TranscriptCorrectionMode = Literal["off", "glossary", "openai"]
 
 
 class FilmMapSegment(BaseModel):
@@ -71,6 +72,9 @@ class FilmMapMeta(BaseModel):
     timecode_quality: TimecodeQuality = "strict"
     approximate_timecodes: bool = False
     asr_warnings: list[str] = Field(default_factory=list)
+    transcript_correction_mode: TranscriptCorrectionMode = "off"
+    transcript_correction_model: str | None = None
+    transcript_correction_warnings: list[str] = Field(default_factory=list)
 
 class TranscriptQuality(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -80,6 +84,9 @@ class TranscriptQuality(BaseModel):
     timecode_quality: TimecodeQuality
     approximate_timecodes: bool
     warnings: list[str] = Field(default_factory=list)
+    correction_mode: TranscriptCorrectionMode = "off"
+    correction_model: str | None = None
+    correction_warnings: list[str] = Field(default_factory=list)
 
 class TranscriptSegment(BaseModel):
     model_config = ConfigDict(extra="forbid")
