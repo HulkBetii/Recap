@@ -88,6 +88,25 @@ Log theo dõi tiến độ dự án `Recap`.
 - [ ] Thêm test hoặc smoke check phù hợp sau khi có code đầu tiên.
 
 ## Ghi chú cập nhật
+### 2026-07-02 — Triển khai full pipeline orchestrator `run.py`
+
+- Đã làm:
+  - Tạo `run.py` và package `orchestrator/` để chạy 6 stage bằng một lệnh.
+  - Thêm config YAML/JSON một chỗ, `config.example.yaml`, DAG selection, skip/resume/force/dry-run và summary.
+  - Thêm validate output sau mỗi stage và test mock cho DAG/skip/force/parallel.
+  - Cập nhật README, AGENTS và `.gitignore` cho `runs/`.
+- Quyết định:
+  - Orchestrator gọi stage qua subprocess để giữ cache/CLI hiện có và tránh coupling nội bộ.
+  - GĐ4 chạy song song với GĐ1→GĐ3; GĐ5/GĐ6 chạy sau barrier.
+- File chính đã thay đổi:
+  - `run.py`
+  - `orchestrator/`
+  - `config.example.yaml`
+  - `pyproject.toml`
+  - `tests/`
+  - `README.md`
+  - `AGENTS.md`
+  - `PROJECT_LOG.md`
 ### 2026-07-02 — Triển khai GĐ6 CLI render
 
 - Đã làm:

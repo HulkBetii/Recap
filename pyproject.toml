@@ -21,6 +21,11 @@ dependencies = [
 dev = [
     "pytest>=8,<10",
 ]
+asr-align = [
+    "torch>=2.8",
+    "torchaudio>=2.8",
+    "whisperx>=3.8,<4",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

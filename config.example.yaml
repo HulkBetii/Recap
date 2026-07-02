@@ -1,0 +1,79 @@
+orchestrator:
+  python: null
+  log_level: INFO
+
+ingest:
+  whisper_model: large-v3
+  gap_threshold: 4.0
+  max_vision_frames: 200
+  translate_model: gpt-4.1-mini
+  vision_model: gpt-4.1-mini
+  device: cpu
+  asr_provider: faster-whisper
+  aligner: none
+  transcript_input: null
+  timecode_quality: strict
+  max_segment_s: 30
+  merge_gap_s: 0
+  vad_filter: true
+  openai_transcribe_model: gpt-4o-mini-transcribe
+  openai_chunk_s: 20
+  alignment_device: cuda
+  log_level: INFO
+
+review:
+  target_ratio: 0.33
+  tts_cps: 15
+  min_coverage: 0.85
+  max_qa_iterations: 3
+  chatgpt_profile_dir: data/chrome_user_data/PROFILE_GPT_1
+  style_sample: null
+  headless: false
+  log_level: INFO
+
+tts:
+  voice_id: null
+  provider_mode: auto
+  genmax_voice_id: null
+  model: eleven_multilingual_v2
+  speed: 1.0
+  inter_beat_pause: 0.15
+  concurrency: 3
+  normalize: true
+  cost_per_1k_chars: 0.0
+  log_level: INFO
+
+shots:
+  detector: adaptive
+  min_shot_len: 0.4
+  sample_frames: 5
+  face_detection: on
+  min_brightness: 0.06
+  skip_intro: 0
+  skip_outro: 0
+  downscale: auto
+  log_level: INFO
+
+match:
+  min_clip: 3.0
+  max_clip: 5.0
+  widen_margin: 15
+  max_widen: 3
+  allow_repeat: true
+  allow_speedfit: false
+  seed: 1234
+  w_motion: 0.60
+  w_face: 0.18
+  w_bright: 0.12
+  w_reuse: 0.35
+  log_level: INFO
+
+render:
+  width: 1920
+  height: 1080
+  fps: 30
+  fit: cover
+  crf: 20
+  preset: medium
+  concurrency: 4
+  log_level: INFO

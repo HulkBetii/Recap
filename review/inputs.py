@@ -30,6 +30,10 @@ def load_duration(film_map_path: Path, film_map: list[FilmMapSegment]) -> tuple[
             raw_duration = payload.get("duration_s", payload.get("duration"))
             if raw_duration is not None:
                 duration = float(raw_duration)
+                if payload.get("approximate_timecodes"):
+                    warnings.append("film_map timecodes are approximate; avoid overly narrow source spans")
+                for warning in payload.get("asr_warnings", []) or []:
+                    warnings.append(f"ASR warning: {warning}")
                 if duration > 0:
                     return duration, warnings
         except (json.JSONDecodeError, TypeError, ValueError):

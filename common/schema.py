@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 SegmentType = Literal["speech", "visual"]
 ProviderMode = Literal["auto", "ai33", "genmax"]
+AsrProvider = Literal["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"]
+AlignerProvider = Literal["none", "whisperx", "qwen3"]
+TimecodeQuality = Literal["strict", "approximate"]
 
 
 class FilmMapSegment(BaseModel):
@@ -63,7 +66,20 @@ class FilmMapMeta(BaseModel):
     visual_count: int = Field(ge=0)
     cache_hits: list[str] = Field(default_factory=list)
     warnings_count: int = Field(ge=0)
+    asr_provider: AsrProvider = "faster-whisper"
+    aligner_provider: AlignerProvider = "none"
+    timecode_quality: TimecodeQuality = "strict"
+    approximate_timecodes: bool = False
+    asr_warnings: list[str] = Field(default_factory=list)
 
+class TranscriptQuality(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asr_provider: AsrProvider
+    aligner_provider: AlignerProvider = "none"
+    timecode_quality: TimecodeQuality
+    approximate_timecodes: bool
+    warnings: list[str] = Field(default_factory=list)
 
 class TranscriptSegment(BaseModel):
     model_config = ConfigDict(extra="forbid")

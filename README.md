@@ -26,6 +26,34 @@ python -m pip install --upgrade pip
 python -m pip install -e .[dev]
 ```
 
+
+## Chạy toàn pipeline bằng `run.py`
+
+Orchestrator chạy 6 stage bằng một lệnh, tôn trọng cache của từng stage và ghi toàn bộ artifact vào `--run-dir`. GĐ4 `shots` chạy song song với chuỗi GĐ1→GĐ3, sau đó GĐ5/GĐ6 chạy khi đủ input.
+
+```powershell
+python run.py `
+  --input path\to\film.mp4 `
+  --run-dir runs\ep01 `
+  --config config.example.yaml
+```
+
+Tùy chọn resume/debug:
+
+```powershell
+python run.py --input path\to\film.mp4 --run-dir runs\ep01 --config config.yaml --dry-run
+python run.py --input path\to\film.mp4 --run-dir runs\ep01 --config config.yaml --from tts --to match
+python run.py --input path\to\film.mp4 --run-dir runs\ep01 --config config.yaml --force-stage match
+python run.py --input path\to\film.mp4 --run-dir runs\ep01 --config config.yaml --only render
+```
+
+Run directory chính:
+
+- `film_map.json`, `review_script.json`, `voiceover.mp3`, `beats_timing.json`, `shots.json`, `edl.json`, `recap.mp4`
+- `*.meta.json`, `audio/`, `shots/`, `work/<stage>/`, `run.log`, `summary.json`
+
+`summary.json` gom duration từng stage, trạng thái run/skip, warnings và ba số calibrate: `real_ratio`, `n_beats_widened`, `duration_match`.
+
 ## Chạy GĐ1
 
 ```powershell

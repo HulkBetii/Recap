@@ -120,7 +120,7 @@ repo/
   shots/                 # GĐ4 CLI: python -m shots
   match/                 # GĐ5 CLI: python -m match
   render/                # GĐ6 CLI: python -m render
-  run.py                 # orchestrator chạy cả pipeline
+  run.py                 # orchestrator chạy cả pipeline: python run.py
   work/                  # artifact trung gian (gitignore)
   out/                   # recap.mp4 (gitignore)
 ```
@@ -224,4 +224,31 @@ repo/
   - `common/media.py`: có thêm helper probe video stream/audio stream.
 - Cache GĐ6 nằm trong `--work-dir/temp_clips/` theo hash source span + speed + render params; `--force` xóa cache GĐ6.
 - Test tự động dùng mock ffmpeg/ffprobe; real smoke test chạy thủ công khi có `edl.json`, `voiceover.mp3`, `film.mp4` thật.
+## 16. ORCHESTRATOR IMPLEMENTATION HIỆN TẠI
+
+- Orchestrator chạy bằng `python run.py --input film.mp4 --run-dir runs/<name> --config config.yaml`.
+- Không sửa logic stage con; gọi từng stage qua subprocess `python -m ingest/review/tts/shots/match/render`.
+- DAG hiện tại: `shots` chạy song song với chuỗi `ingest → review → tts`; `match` chờ `review + tts + shots`; `render` chạy cuối.
+- Config chính là YAML/JSON một chỗ; mẫu đầy đủ nằm ở `config.example.yaml`. Dependency mới: `PyYAML`.
+- Resume/idempotent: output hợp lệ thì skip; `--force` chạy lại selected stages; `--force-stage <stage>` chạy lại stage đó và downstream selected stages.
+- Hỗ trợ `--from`, `--to`, `--only`, `--dry-run`; dry-run chỉ in plan, không gọi subprocess.
+- Validate output sau mỗi stage bằng schema chung trước khi chuyển stage kế tiếp.
+- `runs/` là artifact output/cache và không commit vào git.
+## 17. G?1 ASR/TIMECODE UPDATE HI?N T?I
+
+- G?1 gi? contract `film_map.json` nh?ng meta c? th?m `asr_provider`, `aligner_provider`, `timecode_quality`, `approximate_timecodes`, `asr_warnings`.
+- ASR provider hi?n c?: `faster-whisper` default, `openai-gpt4o`, `openai-gpt4o-hybrid`, v? `manual` ?? import transcript Markdown/JSON.
+- Cache transcript m?i trong `--work-dir`: `transcript_text.json`, `transcript_aligned.json`, `transcript_quality.json`.
+- Manual transcript d?ng `[MM:SS] text` ch? c? timestamp start; end-time ???c suy lu?n n?n lu?n ??nh d?u approximate n?u ch?a align.
+- `--aligner whisperx` ch?y WhisperX forced alignment th?t khi runtime `torch`/`whisperx` c? s?n; n?u l?i th? fallback timestamp hi?n t?i v? ghi warning. `qwen3` v?n l? placeholder an to?n.
+- Segment qu? d?i ???c split theo c?u/max duration ?? G?2/G?5 c? source windows m?n h?n.
+- G?2 ??c meta G?1 v? ghi warning khi timecode approximate; kh?ng ??i contract `review_script.json`.
+## 18. WHISPERX ALIGNMENT RUNTIME
+
+- M?y hi?n ?? ???c smoke test v?i RTX 3060 12GB, Torch CUDA v? WhisperX.
+- K?t qu? t?t nh?t cho audio th?t l? `openai-gpt4o-hybrid` t?o chunk rough windows r?i `whisperx` refine timestamp trong t?ng chunk.
+- Kh?ng d?ng OpenAI full-span m?t m?nh l?m timestamp v? API kh?ng tr? segment timestamp.
+- Kh?ng d?ng WhisperX full-span text kh?ng c? rough windows v? test th?c t? b? n?n timeline v? ??u audio.
+- Transcript QC sau alignment clamp theo duration, merge segment qu? ng?n, split/flag segment qu? d?i v? c?nh b?o subtitle/credit artifacts.
+- Runtime aligner n?n xem l? optional/heavy; automated tests mock WhisperX, kh?ng y?u c?u GPU.
 

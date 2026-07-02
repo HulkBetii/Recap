@@ -10,16 +10,18 @@ from common.media import MediaError, extract_audio, probe_duration, require_ffmp
 from common.schema import (
     FilmMapMeta,
     TranslatedSegment,
+    TranscriptQuality,
     TranscriptSegment,
     VisionSegment,
     validate_film_map,
     write_json,
 )
+from ingest.asr import apply_alignment, clean_aligned_segments, detect_transcript_warnings, parse_manual_transcript, split_long_segments
 from ingest.cache import StageCache
 from ingest.film_map import build_film_map
 from ingest.gaps import detect_silent_gaps, select_gaps_for_vision
 from ingest.llm import OpenAIIngestClient
-from ingest.transcribe import transcribe_korean
+from ingest.transcribe import transcribe_korean, transcribe_openai_chunked, transcribe_openai_gpt4o
 from ingest.vision import describe_gaps
 
 DEFAULT_TRANSLATE_MODEL = "gpt-4.1-mini"
@@ -43,21 +45,86 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--translate-model", default=DEFAULT_TRANSLATE_MODEL)
     parser.add_argument("--vision-model", default=DEFAULT_VISION_MODEL)
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
+    parser.add_argument("--asr-provider", default="faster-whisper", choices=["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"])
+    parser.add_argument("--aligner", default="none", choices=["none", "whisperx", "qwen3"])
+    parser.add_argument("--transcript-input", default=None, type=Path)
+    parser.add_argument("--timecode-quality", default="strict", choices=["strict", "approximate"])
+    parser.add_argument("--max-segment-s", default=30.0, type=float)
+    parser.add_argument("--merge-gap-s", default=0.0, type=float)
+    parser.add_argument("--openai-transcribe-model", default="gpt-4o-mini-transcribe")
+    parser.add_argument("--openai-chunk-s", default=20.0, type=float)
+    parser.add_argument("--alignment-device", default="cuda", choices=["cpu", "cuda"])
+    parser.add_argument("--vad-filter", action="store_true", default=True)
+    parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false")
     parser.add_argument("--work-dir", default=Path("work"), type=Path)
     parser.add_argument("--force", action="store_true", help="Rebuild stage artifacts")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
 
 
-def load_transcript(cache: StageCache, audio_path: Path, whisper_model: str, device: str, logger: logging.Logger) -> list[TranscriptSegment]:
-    if cache.has("transcript_raw.json"):
-        logger.info("[2/6] Using cached transcript_raw.json")
-        return [TranscriptSegment.model_validate(item) for item in cache.read_json("transcript_raw.json")]
-    logger.info("[2/6] Transcribing Korean audio with faster-whisper")
-    segments = transcribe_korean(audio_path, whisper_model, device)
-    cache.write_json("transcript_raw.json", segments)
-    return segments
+def load_transcript(
+    cache: StageCache,
+    audio_path: Path,
+    duration: float,
+    args: argparse.Namespace,
+    logger: logging.Logger,
+) -> tuple[list[TranscriptSegment], TranscriptQuality]:
+    if cache.has("transcript_aligned.json") and cache.has("transcript_quality.json"):
+        logger.info("[2/6] Using cached transcript_aligned.json")
+        segments = [TranscriptSegment.model_validate(item) for item in cache.read_json("transcript_aligned.json")]
+        quality = TranscriptQuality.model_validate(cache.read_json("transcript_quality.json"))
+        return segments, quality
 
+    for key, value in {"openai_transcribe_model": "gpt-4o-mini-transcribe", "openai_chunk_s": 20.0, "alignment_device": "cuda"}.items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+    logger.info("[2/6] Loading transcript with ASR provider: %s", args.asr_provider)
+    if args.asr_provider == "manual":
+        if args.transcript_input is None:
+            raise IngestError("--transcript-input is required when --asr-provider manual")
+        transcript, quality = parse_manual_transcript(args.transcript_input.expanduser().resolve(), duration)
+    elif args.asr_provider == "openai-gpt4o":
+        transcript, approximate = transcribe_openai_gpt4o(audio_path, duration, model=args.openai_transcribe_model)
+        quality = TranscriptQuality(
+            asr_provider="openai-gpt4o",
+            aligner_provider="none",
+            timecode_quality="approximate" if approximate else "strict",
+            approximate_timecodes=approximate,
+            warnings=["OpenAI transcription returned text without segment timestamps; duration was inferred"] if approximate else [],
+        )
+    elif args.asr_provider == "openai-gpt4o-hybrid":
+        transcript = transcribe_openai_chunked(
+            audio_path,
+            duration,
+            cache.path("openai_chunks"),
+            model=args.openai_transcribe_model,
+            chunk_s=args.openai_chunk_s,
+        )
+        quality = TranscriptQuality(
+            asr_provider="openai-gpt4o-hybrid",
+            aligner_provider="none",
+            timecode_quality="approximate",
+            approximate_timecodes=True,
+            warnings=["OpenAI chunked transcription uses rough chunk timestamps before alignment"],
+        )
+    else:
+        try:
+            transcript = transcribe_korean(audio_path, args.whisper_model, args.device, vad_filter=args.vad_filter)
+        except TypeError:
+            transcript = transcribe_korean(audio_path, args.whisper_model, args.device)
+        quality = TranscriptQuality(asr_provider="faster-whisper", aligner_provider="none", timecode_quality="strict", approximate_timecodes=False)
+
+    if not transcript:
+        raise IngestError("transcript is empty")
+    transcript = split_long_segments(transcript, args.max_segment_s)
+    transcript, quality = apply_alignment(transcript, quality, args.aligner, args.timecode_quality, audio_path=audio_path, alignment_device=args.alignment_device)
+    transcript, qc_warnings = clean_aligned_segments(transcript, duration=duration, min_segment_s=0.45, max_segment_s=args.max_segment_s or 30.0)
+    warnings = quality.warnings + qc_warnings + detect_transcript_warnings(transcript)
+    quality = quality.model_copy(update={"warnings": warnings})
+    cache.write_json("transcript_text.json", transcript)
+    cache.write_json("transcript_aligned.json", transcript)
+    cache.write_json("transcript_quality.json", quality)
+    return transcript, quality
 
 def load_translations(
     cache: StageCache,
@@ -111,15 +178,34 @@ def run_ingest(args: argparse.Namespace) -> int:
     output_path = args.output.expanduser().resolve()
     work_dir = args.work_dir.expanduser().resolve()
 
+    for key, value in {
+        "asr_provider": "faster-whisper",
+        "aligner": "none",
+        "transcript_input": None,
+        "timecode_quality": "strict",
+        "max_segment_s": 30.0,
+        "merge_gap_s": 0.0,
+        "vad_filter": True,
+        "openai_transcribe_model": "gpt-4o-mini-transcribe",
+        "openai_chunk_s": 20.0,
+        "alignment_device": "cuda",
+    }.items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+
     if not input_path.is_file():
         raise IngestError(f"Input video does not exist: {input_path}")
     if args.gap_threshold < 0:
         raise IngestError("--gap-threshold must be >= 0")
     if args.max_vision_frames < 0:
         raise IngestError("--max-vision-frames must be >= 0")
+    if args.max_segment_s < 0:
+        raise IngestError("--max-segment-s must be >= 0")
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise IngestError("OPENAI_API_KEY is required for translation and vision")
+    if args.asr_provider == "openai-gpt4o" and not api_key:
+        raise IngestError("OPENAI_API_KEY is required for openai-gpt4o ASR")
 
     require_ffmpeg()
     cache = StageCache(work_dir, force=args.force)
@@ -136,7 +222,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         extract_audio(input_path, audio_path)
 
     warnings_count = 0
-    transcript = load_transcript(cache, audio_path, args.whisper_model, args.device, logger)
+    transcript, transcript_quality = load_transcript(cache, audio_path, duration, args, logger)
     translated, translation_warnings = load_translations(cache, transcript, client, logger)
     warnings_count += translation_warnings
     vision_segments, vision_warnings = load_vision(
@@ -168,7 +254,12 @@ def run_ingest(args: argparse.Namespace) -> int:
         speech_count=sum(1 for item in film_map if item.type == "speech"),
         visual_count=sum(1 for item in film_map if item.type == "visual"),
         cache_hits=cache.cache_hits,
-        warnings_count=warnings_count,
+        warnings_count=warnings_count + len(transcript_quality.warnings),
+        asr_provider=transcript_quality.asr_provider,
+        aligner_provider=transcript_quality.aligner_provider,
+        timecode_quality=transcript_quality.timecode_quality,
+        approximate_timecodes=transcript_quality.approximate_timecodes,
+        asr_warnings=transcript_quality.warnings,
     )
     write_json(output_path.with_name(f"{output_path.stem}.meta.json"), meta)
     logger.info("Done: %s", output_path)
