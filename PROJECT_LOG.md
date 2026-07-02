@@ -301,3 +301,14 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Nhận xét chất lượng:
   - Glossary pass sửa được các lỗi nằm trong replacement list mà không đổi timecode/id.
   - Vẫn cần bổ sung glossary theo phim thật vì ASR có thể sinh alias mới như `최송F15`; đã thêm alias này vào glossary mẫu.
+
+### 2026-07-02 — Smoke test MP4 thật `test-recap.mp4`
+
+- Đã làm:
+  - Test `C:\Users\HulkBeoti\Downloads\test-recap.mp4` duration `402.217s`, H.264 1080p30 + AAC audio.
+  - GĐ1 pass với `openai-gpt4o-hybrid + whisperx + glossary`, sinh `runs/test-recap-video/film_map.json`.
+  - GĐ4 ban đầu lỗi do PySceneDetect runtime không expose `VideoManager` ở root; đã thêm compatibility path `open_video` + fallback legacy.
+  - GĐ4 pass sau patch, sinh `169` shots, `167` usable thumbnails/features.
+- Cần theo dõi:
+  - Segment đầu bị warning non-Korean CJK/Japanese; cần thêm policy skip/filter intro nếu phim thật có opening song/credit.
+  - OpenCV runtime hiện là `cv2 5.0.0` và không có `CascadeClassifier`, nên face detection fallback về zero face metrics; nếu cần face bonus thật, cài OpenCV 4.x headless đúng constraint.
