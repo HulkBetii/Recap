@@ -385,3 +385,16 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
   - Thêm unit tests cho session policy và command wiring.
 - Quyết định:
   - Metadata không lưu prompt/nội dung ChatGPT; chỉ lưu URL/profile/title/path để điều hướng đúng conversation.
+
+### 2026-07-02 — Smoke test GĐ3 AI33/VBee TTS thật
+
+- Đã làm:
+  - Đối chiếu AI33 docs và `auto_YT`: vá adapter để nhận status `doing`, submit response `task_id|id`, và tải CDN bằng `User-Agent` để tránh HTTP 403.
+  - Kiểm tra AI33 `/v1/health-check` OK và `/v1/credits` còn credits.
+  - Chạy GĐ3 thật với voice `vbee_hn_female_ngochuyen_full_24k-st`, provider mode `ai33`, concurrency `2`.
+  - Output: `runs/test-recap-video-split-visual/voiceover.mp3`, `beats_timing.json`, `tts_meta.json`.
+- Kết quả:
+  - `7` beat audio, provider `ai33`, total voiceover khoảng `117.48s`, real_ratio khoảng `0.292` so với phim `402.217s`.
+  - Rerun không `--force` hit cache đủ `audio/0.mp3` đến `audio/6.mp3`, không cần gọi API lại.
+- Lưu ý:
+  - Lần chạy đầu trước khi vá downloader đã tạo 3 task VBee nhỏ nhưng không tải được do CDN 403; sau vá đã chạy thành công.

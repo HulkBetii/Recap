@@ -15,7 +15,7 @@ ProviderMode = Literal["auto", "ai33", "genmax"]
 
 AI33_BASE_URL = "https://api.ai33.pro"
 GENMAX_BASE_URL = "https://api.genmax.io"
-RUNNING_STATUSES = {"pending", "queued", "processing", "running", "in_progress"}
+RUNNING_STATUSES = {"pending", "queued", "processing", "running", "in_progress", "doing"}
 
 
 class TtsProviderError(RuntimeError):
@@ -96,9 +96,9 @@ def submit_ai33(text: str, voice_id: str, speed: float) -> str:
         headers={"xi-api-key": api_key, "Content-Type": f"multipart/form-data; boundary={boundary}"},
         data=body,
     )
-    task_id = payload.get("task_id")
+    task_id = payload.get("task_id") or payload.get("id")
     if not task_id:
-        raise TtsProviderError(f"AI33 response has no task_id: {payload}")
+        raise TtsProviderError(f"AI33 response has no task_id/id: {payload}")
     return str(task_id)
 
 
@@ -186,5 +186,9 @@ def download_file(url: str, output_path: Path) -> None:
     if url.startswith("file://"):
         shutil.copyfile(Path(urllib.parse.urlparse(url).path), output_path)
         return
-    with urllib.request.urlopen(url, timeout=120) as response:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if urllib.parse.urlparse(url).netloc.endswith("ai33.pro") and os.getenv("VIVOO_API_KEY"):
+        headers["xi-api-key"] = os.getenv("VIVOO_API_KEY", "")
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=120) as response:
         output_path.write_bytes(response.read())

@@ -289,3 +289,10 @@ repo/
 - Mặc định `auto`: nếu có `work/review/chat_session_meta.json` thì mở lại `chat_url`; nếu chưa có thì bắt đầu từ `https://chatgpt.com/`.
 - `new` ép mở chat mới nhưng vẫn ghi đè metadata sau run; `resume` yêu cầu ưu tiên URL cũ và warning nếu meta chưa tồn tại.
 - Metadata chỉ lưu URL/profile/title/path, không lưu prompt hoặc nội dung trả lời; artifacts LLM vẫn là `outline.json`, `narration.json`, `qa.json`.
+
+## 24. GĐ3 AI33/VBEE TTS RUNTIME NOTES
+
+- AI33 polling phải coi status `doing` là running, ngoài các status pending/queued/processing/running/in_progress.
+- AI33 submit có thể trả `task_id` hoặc `id`; adapter phải chấp nhận cả hai.
+- CDN `https://cdn.ai33.pro/...` có thể trả `403` nếu tải không có `User-Agent`; downloader hiện gửi `User-Agent: Mozilla/5.0` và thêm `xi-api-key` cho domain `ai33.pro` khi có `VIVOO_API_KEY`.
+- Không commit `VIVOO_API_KEY`; chỉ set env runtime hoặc `.env` gitignored.
