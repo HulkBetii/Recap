@@ -22,6 +22,7 @@ ingest:
   transcript_correction: off
   glossary: null
   correction_model: gpt-4.1-mini
+  drop_non_korean_intro_s: 30
   log_level: INFO
 
 review:

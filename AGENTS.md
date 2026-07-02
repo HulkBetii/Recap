@@ -261,3 +261,9 @@ repo/
 - `openai` chỉ dùng cho correction nhẹ theo glossary/homophone rõ ràng; không được summarize, translate, merge/split segment hoặc thêm tình tiết mới.
 - Cache artifact mới: `transcript_corrected.json`; meta GĐ1 ghi `transcript_correction_mode`, `transcript_correction_model`, `transcript_correction_warnings`.
 - Nếu sau này đổi sang correction nặng bằng worker/browser hoặc thêm glossary tự động từ phim dài, phải cập nhật file này, README và PROJECT_LOG cùng task.
+
+## 20. GĐ1 INTRO LANGUAGE FILTER
+
+- GĐ1 mặc định dùng `--drop-non-korean-intro-s 30` để bỏ segment non-Korean CJK/Japanese trong intro/opening/credit đầu phim.
+- Filter này chỉ chạy trong QC transcript sau alignment, trước glossary correction/translation; không áp dụng ngoài cửa sổ intro để tránh xóa thoại thật.
+- Có thể tắt bằng `--drop-non-korean-intro-s 0` nếu phim có thoại tiếng Nhật/Trung thật ở đầu.

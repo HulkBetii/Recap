@@ -312,3 +312,19 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Cần theo dõi:
   - Segment đầu bị warning non-Korean CJK/Japanese; cần thêm policy skip/filter intro nếu phim thật có opening song/credit.
   - OpenCV runtime hiện là `cv2 5.0.0` và không có `CascadeClassifier`, nên face detection fallback về zero face metrics; nếu cần face bonus thật, cài OpenCV 4.x headless đúng constraint.
+
+### 2026-07-02 — Thêm filter intro non-Korean cho GĐ1
+
+- Đã làm:
+  - Thêm `--drop-non-korean-intro-s` mặc định `30s` để bỏ segment CJK/Japanese không phải Korean trong intro/opening/credit.
+  - Cho orchestrator/config truyền option này xuống GĐ1.
+  - Thêm unit tests cho filter và command wiring.
+- Lý do:
+  - Smoke test `test-recap.mp4` phát hiện segment đầu là Japanese/opening song, gây warning và làm bẩn `film_map`/review.
+
+### 2026-07-02 — Validate lại GĐ1 sau intro language filter
+
+- Đã chạy lại `test-recap.mp4` với `--drop-non-korean-intro-s 30`.
+- Kết quả: segment Japanese/opening gần `8.529s` được drop khỏi speech; `film_map` bắt đầu bằng visual gap rồi speech Korean tại `123.564s`.
+- Output smoke: `runs/test-recap-video-filtered/film_map.json` với `speech_count=26`, `visual_count=7`, `timecode_quality=strict`.
+- Cần cân nhắc tiếp: visual gap đầu phim dài `0–123.564s`; nếu review cần nhiều chi tiết intro/race footage hơn, nên thêm option split long visual gaps hoặc shot-aware visual summaries.

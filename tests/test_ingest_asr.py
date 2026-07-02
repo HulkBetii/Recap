@@ -96,3 +96,19 @@ def test_clean_aligned_segments_warns_when_transcript_ends_early() -> None:
     segments = [TranscriptSegment(id=0, tc_start=0, tc_end=2, ko="?????")]
     _cleaned, warnings = clean_aligned_segments(segments, duration=100, min_segment_s=0.45, max_segment_s=30)
     assert any("before media end" in warning for warning in warnings)
+
+def test_clean_aligned_segments_drops_non_korean_intro() -> None:
+    segments = [
+        TranscriptSegment(id=0, tc_start=8, tc_end=20, ko="白い砂漠 信号機がさびれ 愛しい君が真実だね いつかね"),
+        TranscriptSegment(id=1, tc_start=31, tc_end=34, ko="전기차로 개조했더니 조용하죠"),
+    ]
+    cleaned, warnings = clean_aligned_segments(
+        segments,
+        duration=40,
+        min_segment_s=0.45,
+        max_segment_s=30,
+        drop_non_korean_intro_s=30,
+    )
+    assert len(cleaned) == 1
+    assert cleaned[0].ko.startswith("전기차")
+    assert any("non-Korean intro" in warning for warning in warnings)

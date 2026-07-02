@@ -58,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--transcript-correction", default="off", choices=["off", "glossary", "openai"])
     parser.add_argument("--glossary", default=None, type=Path, help="JSON/YAML/TXT glossary for transcript name/entity correction")
     parser.add_argument("--correction-model", default="gpt-4.1-mini")
+    parser.add_argument("--drop-non-korean-intro-s", default=30.0, type=float)
     parser.add_argument("--vad-filter", action="store_true", default=True)
     parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false")
     parser.add_argument("--work-dir", default=Path("work"), type=Path)
@@ -79,7 +80,7 @@ def load_transcript(
         quality = TranscriptQuality.model_validate(cache.read_json("transcript_quality.json"))
         return segments, quality
 
-    for key, value in {"openai_transcribe_model": "gpt-4o-mini-transcribe", "openai_chunk_s": 20.0, "alignment_device": "cuda"}.items():
+    for key, value in {"openai_transcribe_model": "gpt-4o-mini-transcribe", "openai_chunk_s": 20.0, "alignment_device": "cuda", "drop_non_korean_intro_s": 30.0}.items():
         if not hasattr(args, key):
             setattr(args, key, value)
     logger.info("[2/6] Loading transcript with ASR provider: %s", args.asr_provider)
@@ -122,7 +123,13 @@ def load_transcript(
         raise IngestError("transcript is empty")
     transcript = split_long_segments(transcript, args.max_segment_s)
     transcript, quality = apply_alignment(transcript, quality, args.aligner, args.timecode_quality, audio_path=audio_path, alignment_device=args.alignment_device)
-    transcript, qc_warnings = clean_aligned_segments(transcript, duration=duration, min_segment_s=0.45, max_segment_s=args.max_segment_s or 30.0)
+    transcript, qc_warnings = clean_aligned_segments(
+        transcript,
+        duration=duration,
+        min_segment_s=0.45,
+        max_segment_s=args.max_segment_s or 30.0,
+        drop_non_korean_intro_s=args.drop_non_korean_intro_s,
+    )
     cache.write_json("transcript_text.json", transcript)
     transcript, quality = correct_transcript(cache, transcript, quality, args, logger)
     warnings = quality.warnings + qc_warnings + quality.correction_warnings + detect_transcript_warnings(transcript)
@@ -226,6 +233,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         "transcript_correction": "off",
         "glossary": None,
         "correction_model": "gpt-4.1-mini",
+        "drop_non_korean_intro_s": 30.0,
     }.items():
         if not hasattr(args, key):
             setattr(args, key, value)
@@ -238,6 +246,8 @@ def run_ingest(args: argparse.Namespace) -> int:
         raise IngestError("--max-vision-frames must be >= 0")
     if args.max_segment_s < 0:
         raise IngestError("--max-segment-s must be >= 0")
+    if args.drop_non_korean_intro_s < 0:
+        raise IngestError("--drop-non-korean-intro-s must be >= 0")
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise IngestError("OPENAI_API_KEY is required for translation and vision")

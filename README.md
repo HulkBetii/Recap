@@ -298,3 +298,9 @@ replacements:
 
 Artifact cache mới: `transcript_corrected.json`. Meta GĐ1 ghi `transcript_correction_mode`, `transcript_correction_model`, và `transcript_correction_warnings`.
 
+
+GĐ1 mặc định bỏ các segment non-Korean CJK/Japanese trong `30s` đầu để tránh opening song/credit làm bẩn review. Có thể chỉnh hoặc tắt:
+
+```powershell
+python -m ingest --input film.mp4 --output out\film_map.json --drop-non-korean-intro-s 0
+```

@@ -10,6 +10,7 @@ TIMESTAMP_RE = re.compile(r"^\s*-?\s*\[(?P<stamp>\d{1,2}:\d{2}(?::\d{2})?)\]\s*(
 SENTENCE_RE = re.compile(r"(?<=[.!?。！？]|[.?!]|[다요죠까니네])\s+")
 CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
 HANGUL_RE = re.compile(r"[\uac00-\ud7af]")
+HIRAGANA_KATAKANA_RE = re.compile(r"[\u3040-\u30ff]")
 
 
 def parse_timestamp(value: str) -> float:
@@ -113,17 +114,20 @@ def reassign_ids(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
 def detect_transcript_warnings(segments: list[TranscriptSegment]) -> list[str]:
     warnings: list[str] = []
     for segment in segments:
-        text = segment.ko
-        hangul_count = len(HANGUL_RE.findall(text))
-        chinese_count = len(CHINESE_RE.findall(text))
-        if chinese_count > max(8, hangul_count):
-            warnings.append(f"segment #{segment.id} has high non-Korean CJK character count")
-        words = text.split()
+        if is_non_korean_cjk_text(segment.ko):
+            warnings.append(f"segment #{segment.id} has high non-Korean CJK/Japanese character count")
+        words = segment.ko.split()
         if len(words) >= 6:
             unique_ratio = len(set(words)) / len(words)
             if unique_ratio < 0.35:
                 warnings.append(f"segment #{segment.id} may contain repeated hallucinated text")
     return warnings
+
+def is_non_korean_cjk_text(text: str) -> bool:
+    hangul_count = len(HANGUL_RE.findall(text))
+    chinese_count = len(CHINESE_RE.findall(text))
+    japanese_count = len(HIRAGANA_KATAKANA_RE.findall(text))
+    return chinese_count + japanese_count > max(8, hangul_count * 2)
 
 
 
@@ -133,6 +137,7 @@ def clean_aligned_segments(
     duration: float,
     min_segment_s: float = 0.45,
     max_segment_s: float = 30.0,
+    drop_non_korean_intro_s: float = 0.0,
 ) -> tuple[list[TranscriptSegment], list[str]]:
     warnings: list[str] = []
     normalized: list[TranscriptSegment] = []
@@ -144,6 +149,10 @@ def clean_aligned_segments(
             start = previous_end
         if end <= start:
             warnings.append(f"segment #{segment.id} dropped after clamp/overlap cleanup")
+            continue
+        if drop_non_korean_intro_s > 0 and start < drop_non_korean_intro_s and is_non_korean_cjk_text(segment.ko):
+            warnings.append(f"segment #{segment.id} dropped as non-Korean intro/credit text near {start:.3f}s")
+            previous_end = end
             continue
         normalized.append(TranscriptSegment(id=0, tc_start=round(start, 3), tc_end=round(end, 3), ko=segment.ko))
         previous_end = end

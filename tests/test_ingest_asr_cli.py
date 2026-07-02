@@ -67,3 +67,10 @@ def test_orchestrator_passes_transcript_correction_options(tmp_path: Path) -> No
     assert command[command.index("--transcript-correction") + 1] == "glossary"
     assert command[command.index("--glossary") + 1] == "glossary.yaml"
     assert command[command.index("--correction-model") + 1] == "gpt-4.1-mini"
+
+def test_orchestrator_passes_intro_language_filter_option(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"ingest": {"drop_non_korean_intro_s": 45}}), encoding="utf-8")
+    config = load_config(config_path)
+    command = build_command("ingest", build_paths(tmp_path / "run"), tmp_path / "film.mp4", config, force=False, python_exe="python")
+    assert command[command.index("--drop-non-korean-intro-s") + 1] == "45"
