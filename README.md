@@ -304,3 +304,9 @@ GĐ1 mặc định bỏ các segment non-Korean CJK/Japanese trong `30s` đầu 
 ```powershell
 python -m ingest --input film.mp4 --output out\film_map.json --drop-non-korean-intro-s 0
 ```
+
+GĐ1 cũng split visual/silent gaps dài trước khi gọi vision để tránh một visual segment bao trùm quá nhiều cảnh. Mặc định `--max-visual-gap-s 20`; đặt `0` để tắt:
+
+```powershell
+python -m ingest --input film.mp4 --output out\film_map.json --max-visual-gap-s 12
+```

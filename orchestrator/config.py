@@ -19,6 +19,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "whisper_model": "large-v3",
         "gap_threshold": 4.0,
         "max_vision_frames": 200,
+        "max_visual_gap_s": 20.0,
         "translate_model": "gpt-4.1-mini",
         "vision_model": "gpt-4.1-mini",
         "device": "cpu",

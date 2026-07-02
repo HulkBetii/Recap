@@ -20,7 +20,7 @@ from ingest.asr import apply_alignment, clean_aligned_segments, detect_transcrip
 from ingest.cache import StageCache
 from ingest.correction import OpenAITranscriptCorrector, apply_glossary_replacements, load_glossary
 from ingest.film_map import build_film_map
-from ingest.gaps import detect_silent_gaps, select_gaps_for_vision
+from ingest.gaps import detect_silent_gaps, select_gaps_for_vision, split_long_gaps
 from ingest.llm import OpenAIIngestClient
 from ingest.transcribe import transcribe_korean, transcribe_openai_chunked, transcribe_openai_gpt4o
 from ingest.vision import describe_gaps
@@ -30,6 +30,7 @@ DEFAULT_VISION_MODEL = "gpt-4.1-mini"
 DEFAULT_WHISPER_MODEL = "large-v3"
 DEFAULT_GAP_THRESHOLD = 4.0
 DEFAULT_MAX_VISION_FRAMES = 200
+DEFAULT_MAX_VISUAL_GAP_S = 20.0
 
 
 class IngestError(RuntimeError):
@@ -43,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
     parser.add_argument("--gap-threshold", default=DEFAULT_GAP_THRESHOLD, type=float)
     parser.add_argument("--max-vision-frames", default=DEFAULT_MAX_VISION_FRAMES, type=int)
+    parser.add_argument("--max-visual-gap-s", default=DEFAULT_MAX_VISUAL_GAP_S, type=float)
     parser.add_argument("--translate-model", default=DEFAULT_TRANSLATE_MODEL)
     parser.add_argument("--vision-model", default=DEFAULT_VISION_MODEL)
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
@@ -190,6 +192,7 @@ def load_vision(
     duration: float,
     gap_threshold: float,
     max_vision_frames: int,
+    max_visual_gap_s: float,
     client: OpenAIIngestClient,
     logger: logging.Logger,
 ) -> tuple[list[VisionSegment], int]:
@@ -197,9 +200,9 @@ def load_vision(
         logger.info("[5/6] Using cached vision.json")
         return [VisionSegment.model_validate(item) for item in cache.read_json("vision.json")], 0
     logger.info("[4/6] Detecting silent gaps")
-    gaps = detect_silent_gaps(translated, duration, gap_threshold)
+    gaps = split_long_gaps(detect_silent_gaps(translated, duration, gap_threshold), max_visual_gap_s)
     selected_gaps = select_gaps_for_vision(gaps, max_vision_frames)
-    logger.info("[5/6] Running vision on %d/%d gaps", len(selected_gaps), len(gaps))
+    logger.info("[5/6] Running vision on %d/%d split gaps", len(selected_gaps), len(gaps))
     vision_segments, warnings_count = describe_gaps(
         input_path=input_path,
         gaps=selected_gaps,
@@ -225,6 +228,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         "transcript_input": None,
         "timecode_quality": "strict",
         "max_segment_s": 30.0,
+        "max_visual_gap_s": DEFAULT_MAX_VISUAL_GAP_S,
         "merge_gap_s": 0.0,
         "vad_filter": True,
         "openai_transcribe_model": "gpt-4o-mini-transcribe",
@@ -244,6 +248,8 @@ def run_ingest(args: argparse.Namespace) -> int:
         raise IngestError("--gap-threshold must be >= 0")
     if args.max_vision_frames < 0:
         raise IngestError("--max-vision-frames must be >= 0")
+    if args.max_visual_gap_s < 0:
+        raise IngestError("--max-visual-gap-s must be >= 0")
     if args.max_segment_s < 0:
         raise IngestError("--max-segment-s must be >= 0")
     if args.drop_non_korean_intro_s < 0:
@@ -279,6 +285,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         duration=duration,
         gap_threshold=args.gap_threshold,
         max_vision_frames=args.max_vision_frames,
+        max_visual_gap_s=args.max_visual_gap_s,
         client=client,
         logger=logger,
     )
@@ -298,6 +305,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         vision_model=args.vision_model,
         gap_threshold=args.gap_threshold,
         max_vision_frames=args.max_vision_frames,
+        max_visual_gap_s=args.max_visual_gap_s,
         speech_count=sum(1 for item in film_map if item.type == "speech"),
         visual_count=sum(1 for item in film_map if item.type == "visual"),
         cache_hits=cache.cache_hits,

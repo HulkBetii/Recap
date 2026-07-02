@@ -115,7 +115,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
     command = [py, "-m", stage]
     if stage == "ingest":
         command += ["--input", str(film), "--output", str(paths.film_map)]
-        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "translate_model", "vision_model", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "log_level"):
+        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "vision_model", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "log_level"):
             add_option(command, key, section.get(key))
         if not section.get("vad_filter", True):
             command.append("--no-vad-filter")

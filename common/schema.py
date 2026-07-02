@@ -63,6 +63,7 @@ class FilmMapMeta(BaseModel):
     vision_model: str
     gap_threshold: float = Field(ge=0)
     max_vision_frames: int = Field(ge=0)
+    max_visual_gap_s: float = Field(ge=0, default=20.0)
     speech_count: int = Field(ge=0)
     visual_count: int = Field(ge=0)
     cache_hits: list[str] = Field(default_factory=list)

@@ -267,3 +267,10 @@ repo/
 - GĐ1 mặc định dùng `--drop-non-korean-intro-s 30` để bỏ segment non-Korean CJK/Japanese trong intro/opening/credit đầu phim.
 - Filter này chỉ chạy trong QC transcript sau alignment, trước glossary correction/translation; không áp dụng ngoài cửa sổ intro để tránh xóa thoại thật.
 - Có thể tắt bằng `--drop-non-korean-intro-s 0` nếu phim có thoại tiếng Nhật/Trung thật ở đầu.
+
+## 21. GĐ1 LONG VISUAL GAP SPLITTING
+
+- GĐ1 mặc định dùng `--max-visual-gap-s 20` để chia silent/visual gap dài thành nhiều visual segments nhỏ trước vision.
+- Split chỉ thay đổi visual gaps, không thay đổi speech timecodes từ ASR/alignment.
+- `--max-vision-frames` vẫn là cap tổng số frame gửi vision; nếu split tạo nhiều gap hơn cap, chọn gap dài nhất nhưng giữ thứ tự timeline.
+- Có thể tắt bằng `--max-visual-gap-s 0` khi muốn giữ behavior cũ.

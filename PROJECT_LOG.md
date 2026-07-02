@@ -328,3 +328,19 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Kết quả: segment Japanese/opening gần `8.529s` được drop khỏi speech; `film_map` bắt đầu bằng visual gap rồi speech Korean tại `123.564s`.
 - Output smoke: `runs/test-recap-video-filtered/film_map.json` với `speech_count=26`, `visual_count=7`, `timecode_quality=strict`.
 - Cần cân nhắc tiếp: visual gap đầu phim dài `0–123.564s`; nếu review cần nhiều chi tiết intro/race footage hơn, nên thêm option split long visual gaps hoặc shot-aware visual summaries.
+
+### 2026-07-02 — Thêm split visual gap dài cho GĐ1
+
+- Đã làm:
+  - Thêm `--max-visual-gap-s` mặc định `20s` để chia silent/visual gap dài trước vision.
+  - Cho orchestrator/config truyền option này xuống GĐ1.
+  - Thêm tests cho split gap và command wiring.
+- Lý do:
+  - Sau khi filter opening song, `test-recap.mp4` có visual gap đầu `0–123.564s`, quá thô cho GĐ2/GĐ5.
+
+### 2026-07-02 — Validate GĐ1 split visual gaps trên `test-recap.mp4`
+
+- Đã chạy lại GĐ1 với `--max-visual-gap-s 20` và `--max-vision-frames 20`.
+- Kết quả: đầu phim không còn visual gap `0–123.564s`; đã split thành các visual segments `0–20`, `20–40`, `40–60`, `60–80`, `80–100`, `100–120`, `120–123.564`.
+- Output smoke: `runs/test-recap-video-split-visual/film_map.json` với `visual_count=20`, `speech_count=27`, `max_visual_gap_s=20`.
+- Ghi chú: vision cap chọn `20/21` split gaps; nếu cần mô tả mọi visual chunk, tăng `--max-vision-frames` tương ứng.

@@ -74,3 +74,11 @@ def test_orchestrator_passes_intro_language_filter_option(tmp_path: Path) -> Non
     config = load_config(config_path)
     command = build_command("ingest", build_paths(tmp_path / "run"), tmp_path / "film.mp4", config, force=False, python_exe="python")
     assert command[command.index("--drop-non-korean-intro-s") + 1] == "45"
+
+
+def test_orchestrator_passes_max_visual_gap_option(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"ingest": {"max_visual_gap_s": 12}}), encoding="utf-8")
+    config = load_config(config_path)
+    command = build_command("ingest", build_paths(tmp_path / "run"), tmp_path / "film.mp4", config, force=False, python_exe="python")
+    assert command[command.index("--max-visual-gap-s") + 1] == "12"
