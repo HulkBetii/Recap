@@ -9,7 +9,7 @@ from pathlib import Path
 
 from common.schema import BeatTiming, EdlMeta, EdlPlacement, ReviewBeat, Shot, validate_edl, write_json
 from match.cache import MatchCache, file_hash, stable_hash
-from match.fill import assign_timeline, fill_beat
+from match.fill import assign_timeline, fill_beat, fill_timeline_gaps
 from match.inputs import load_beats_timing, load_review_script, load_shots
 from match.scoring import ScoringWeights
 from match.timing import average_clip_len, validate_timeline
@@ -130,8 +130,14 @@ def run_match(args: argparse.Namespace) -> int:
         placements.extend(assign_timeline(result.fragments, timing))
 
     total_duration = max((timing.tl_end for timing in timings), default=0.0)
+    before_gap_fill = len(placements)
+    placements = fill_timeline_gaps(placements, total_duration)
+    pause_fillers = len(placements) - before_gap_fill
+    if pause_fillers:
+        warnings.append(f"inserted {pause_fillers} pause filler placement(s) to cover TTS inter-beat silence")
+        n_reused += pause_fillers
     placements = validate_timeline(placements, total_duration)
-    coverage_ok = len(warnings) == 0
+    coverage_ok = not any("pause filler" not in warning for warning in warnings)
     meta = EdlMeta(
         total_duration_s=total_duration,
         n_placements=len(placements),

@@ -183,3 +183,39 @@ def assign_timeline(fragments: list[Fragment], timing: BeatTiming) -> list[EdlPl
         )
         cursor = tl_end
     return placements
+
+
+def fill_timeline_gaps(placements: list[EdlPlacement], total_duration: float) -> list[EdlPlacement]:
+    ordered = sorted(placements, key=lambda item: (item.tl_start, item.tl_end, item.beat_id))
+    if not ordered:
+        return ordered
+    output: list[EdlPlacement] = []
+    previous: EdlPlacement | None = None
+    for placement in ordered:
+        if previous is not None and placement.tl_start > previous.tl_end + 1e-3:
+            gap = round(placement.tl_start - previous.tl_end, 3)
+            output.append(make_pause_filler(previous, previous.tl_end, placement.tl_start, gap))
+        output.append(placement)
+        previous = placement
+    if previous is not None and total_duration > previous.tl_end + 1e-3:
+        gap = round(total_duration - previous.tl_end, 3)
+        output.append(make_pause_filler(previous, previous.tl_end, total_duration, gap))
+    return output
+
+def make_pause_filler(previous: EdlPlacement, tl_start: float, tl_end: float, duration: float) -> EdlPlacement:
+    src_out = previous.src_out
+    src_in = max(previous.src_in, src_out - duration)
+    if src_out <= src_in + 1e-6:
+        src_in = previous.src_in
+        src_out = min(previous.src_out, previous.src_in + max(duration, 0.001))
+    return EdlPlacement(
+        tl_start=round(tl_start, 3),
+        tl_end=round(tl_end, 3),
+        src=previous.src,
+        src_in=round(src_in, 3),
+        src_out=round(src_out, 3),
+        beat_id=previous.beat_id,
+        shot_index=previous.shot_index,
+        reused=True,
+        speed=1.0,
+    )

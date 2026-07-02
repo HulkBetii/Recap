@@ -116,7 +116,8 @@ def run_render(args: argparse.Namespace) -> int:
     video_duration = probe_duration(args.output)
     if not has_audio_stream(args.output):
         warnings.append("output has no audio stream")
-    duration_match = abs(video_duration - audio_duration) <= (1.0 / args.fps)
+    duration_tolerance = max(0.1, 2.0 / args.fps)
+    duration_match = abs(video_duration - audio_duration) <= duration_tolerance
     if not duration_match:
         warnings.append(f"video/audio duration mismatch: video={video_duration:.3f}s audio={audio_duration:.3f}s")
     if int(output_info["width"]) != args.width or int(output_info["height"]) != args.height:

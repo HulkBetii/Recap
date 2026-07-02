@@ -398,3 +398,16 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
   - Rerun không `--force` hit cache đủ `audio/0.mp3` đến `audio/6.mp3`, không cần gọi API lại.
 - Lưu ý:
   - Lần chạy đầu trước khi vá downloader đã tạo 3 task VBee nhỏ nhưng không tải được do CDN 403; sau vá đã chạy thành công.
+
+### 2026-07-02 — Smoke test GĐ5/GĐ6 tạo recap đầu tiên
+
+- Đã làm:
+  - Chạy GĐ5 match từ `review_script_consistent.json`, `beats_timing.json`, `shots.json` và sinh `edl.json`.
+  - Phát hiện GĐ5 chưa hỗ trợ `inter_beat_pause_s` từ GĐ3; đã vá để đọc `tts_meta.json`, infer pause khi thiếu meta, và chèn pause filler placements để EDL kín timeline.
+  - Chạy GĐ6 render từ `edl.json`, `voiceover.mp3`, `test-recap.mp4` và sinh `recap.mp4`.
+  - Điều chỉnh render duration tolerance thực tế để tránh false negative do ffmpeg rounding nhỏ.
+- Kết quả:
+  - Output cuối: `runs/test-recap-video-split-visual/recap.mp4`.
+  - `edl.meta.json`: `n_placements=52`, `coverage_ok=true`, warning chỉ là `6` pause filler placements.
+  - `render.meta.json`: `1920x1080`, `30fps`, H.264 + AAC, `duration_match=true`, no warnings.
+  - Full tests sau vá: `105 passed`.
