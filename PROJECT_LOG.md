@@ -344,3 +344,16 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Kết quả: đầu phim không còn visual gap `0–123.564s`; đã split thành các visual segments `0–20`, `20–40`, `40–60`, `60–80`, `80–100`, `100–120`, `120–123.564`.
 - Output smoke: `runs/test-recap-video-split-visual/film_map.json` với `visual_count=20`, `speech_count=27`, `max_visual_gap_s=20`.
 - Ghi chú: vision cap chọn `20/21` split gaps; nếu cần mô tả mọi visual chunk, tăng `--max-vision-frames` tương ứng.
+
+### 2026-07-02 — Smoke test GĐ2 review trên `test-recap.mp4`
+
+- Đã làm:
+  - Cài runtime `playwright` + Chromium cho môi trường Python hiện tại.
+  - Chạy GĐ2 thật bằng ChatGPT Playwright profile từ `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`.
+  - Input: `runs/test-recap-video-split-visual/film_map.json`.
+  - Output: `runs/test-recap-video-split-visual/review_script.json` và `review_script.meta.json`.
+- Kết quả:
+  - `beats=7`, `coverage_pct≈0.915`, `n_qa_iterations=1`, `char_budget=1991`, `est_total_chars=2013`.
+  - Cache GĐ2 gồm `outline.json`, `narration.json`, `qa.json`, `revisions/narration-1.json`, `revisions/qa-1.json`.
+- Cần theo dõi:
+  - Tên/entity tiếng Việt/Latin trong narration còn chưa nhất quán (`Choi Seong/Choi Seon`), nên GĐ2 cần nhận glossary canonical mạnh hơn hoặc post-QA consistency check.
