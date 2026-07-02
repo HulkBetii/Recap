@@ -15,6 +15,7 @@ from review.inputs import ReviewInputError, load_duration, load_film_map
 from review.llm_flow import regenerate_beat, request_narration, request_outline, request_qa
 from review.models import NarrationBeat, OutlineResult, QaResult
 from review.playwright_chat import PlaywrightChatClient, PlaywrightChatError
+from review.session import build_chat_session_meta, resolve_initial_chat_url, save_chat_session
 from review.timecode import derive_review_beats
 from review.view import build_film_map_view, read_style_sample
 
@@ -40,6 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--style-sample", default=None)
     parser.add_argument("--work-dir", default=Path("work/review"), type=Path)
     parser.add_argument("--chatgpt-profile-dir", default=DEFAULT_PROFILE_DIR, type=Path)
+    parser.add_argument("--chat-session-policy", default="auto", choices=["auto", "new", "resume"], help="ChatGPT conversation policy for this video/run")
+    parser.add_argument("--chat-session-meta", default=None, type=Path, help="Path to chat_session_meta.json; defaults to work-dir/chat_session_meta.json")
+    parser.add_argument("--chat-title", default=None, help="Optional human title saved in chat_session_meta.json")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -189,8 +193,21 @@ def ensure_narration_consistency(
 
 async def run_review(args: argparse.Namespace) -> int:
     profile_dir = args.chatgpt_profile_dir.expanduser().resolve()
-    async with PlaywrightChatClient(profile_dir, headless=args.headless) as client:
+    work_dir = args.work_dir.expanduser().resolve()
+    session_meta_path = (args.chat_session_meta or (work_dir / "chat_session_meta.json")).expanduser().resolve()
+    initial_url, previous_session, session_warnings = resolve_initial_chat_url(session_meta_path, args.chat_session_policy)
+    async with PlaywrightChatClient(profile_dir, headless=args.headless, initial_url=initial_url) as client:
         await build_review_with_client(args, client)
+        session_meta = build_chat_session_meta(
+            policy=args.chat_session_policy,
+            chat_url=client.current_url,
+            profile_dir=profile_dir,
+            film_map_path=args.film_map.expanduser().resolve(),
+            title=args.chat_title or args.output.stem,
+            previous=previous_session,
+            warnings=session_warnings,
+        )
+        save_chat_session(session_meta_path, session_meta)
     return 0
 
 

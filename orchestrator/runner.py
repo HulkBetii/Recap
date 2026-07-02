@@ -121,7 +121,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--no-vad-filter")
     elif stage == "review":
         command += ["--film-map", str(paths.film_map), "--output", str(paths.review_script)]
-        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "style_sample", "chatgpt_profile_dir", "log_level"):
+        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "style_sample", "chatgpt_profile_dir", "chat_session_policy", "chat_session_meta", "chat_title", "log_level"):
             add_option(command, key, section.get(key))
         if section.get("headless"):
             command.append("--headless")

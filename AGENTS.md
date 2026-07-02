@@ -281,3 +281,11 @@ repo/
 - Pass này dùng glossary do outline tạo ra, cộng alias phổ biến, để chuẩn hóa tên/entity trong narration; không gọi API thêm.
 - Artifact cache: `narration_consistent.json`.
 - Pass chỉ sửa text narration, không đổi beat ids, segment spans hoặc timecode derived từ `film_map`.
+
+## 23. GĐ2 PER-VIDEO CHAT SESSION MANAGEMENT
+
+- Một video/run GĐ2 phải dùng một ChatGPT conversation riêng để giữ ngữ cảnh outline/narration/QA đồng bộ và tránh lẫn video khác.
+- CLI: `--chat-session-policy auto|new|resume`, `--chat-session-meta path`, `--chat-title title`.
+- Mặc định `auto`: nếu có `work/review/chat_session_meta.json` thì mở lại `chat_url`; nếu chưa có thì bắt đầu từ `https://chatgpt.com/`.
+- `new` ép mở chat mới nhưng vẫn ghi đè metadata sau run; `resume` yêu cầu ưu tiên URL cũ và warning nếu meta chưa tồn tại.
+- Metadata chỉ lưu URL/profile/title/path, không lưu prompt hoặc nội dung trả lời; artifacts LLM vẫn là `outline.json`, `narration.json`, `qa.json`.

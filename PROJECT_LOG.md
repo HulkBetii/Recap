@@ -374,3 +374,14 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Output kiểm tra: `runs/test-recap-video-split-visual/review_script_consistent.json`.
 - Kết quả: narration dùng canonical `Hwang Jun-hyun` và `Choi Seong`; cache hit `outline.json`, `narration.json`, `narration_consistent.json`, `qa.json`.
 - Lưu ý: chạy lại với QA iteration cũ có thể trigger regeneration qua ChatGPT và bị timeout streaming; khi chỉ cần validate deterministic consistency, dùng `--max-qa-iterations 0`.
+
+### 2026-07-02 — Thêm GĐ2 per-video ChatGPT session management
+
+- Đã làm:
+  - Thêm `review/session.py` và `chat_session_meta.json` để lưu/khôi phục ChatGPT conversation URL cho từng video/run.
+  - Thêm CLI GĐ2: `--chat-session-policy auto|new|resume`, `--chat-session-meta`, `--chat-title`.
+  - Mở rộng Playwright adapter nhận `initial_url` và expose `current_url` sau run.
+  - Cho orchestrator/config truyền các option session xuống GĐ2.
+  - Thêm unit tests cho session policy và command wiring.
+- Quyết định:
+  - Metadata không lưu prompt/nội dung ChatGPT; chỉ lưu URL/profile/title/path để điều hướng đúng conversation.

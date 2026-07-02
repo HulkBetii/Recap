@@ -312,3 +312,15 @@ python -m ingest --input film.mp4 --output out\film_map.json --max-visual-gap-s 
 ```
 
 GĐ2 có deterministic narration consistency pass sau khi ChatGPT viết narration: pass này dùng glossary để chuẩn hóa alias tên/entity như `Choi Seon/Sung/Song -> Choi Seong` hoặc `Hwang Junhyun -> Hwang Jun-hyun`. Artifact cache: `work/review/narration_consistent.json`.
+
+GĐ2 lưu session ChatGPT theo từng video/run để tránh trộn ngữ cảnh giữa video khác nhau. Mặc định `--chat-session-policy auto` sẽ resume `work/review/chat_session_meta.json` nếu có, nếu chưa có thì mở chat mới. Có thể ép chat mới bằng:
+
+```powershell
+python -m review `
+  --film-map runs\ep01\film_map.json `
+  --output runs\ep01\review_script.json `
+  --chat-session-policy new `
+  --chat-title ep01
+```
+
+Các policy: `auto`, `new`, `resume`. Metadata được lưu ở `work/review/chat_session_meta.json` hoặc path từ `--chat-session-meta`.

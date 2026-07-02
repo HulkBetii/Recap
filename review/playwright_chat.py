@@ -82,10 +82,18 @@ async def _wait_text_stable(page) -> str:
 
 
 class PlaywrightChatClient:
-    def __init__(self, profile_dir: Path, *, headless: bool = False, timeout_s: int = DEFAULT_REPLY_TIMEOUT_S) -> None:
+    def __init__(
+        self,
+        profile_dir: Path,
+        *,
+        headless: bool = False,
+        timeout_s: int = DEFAULT_REPLY_TIMEOUT_S,
+        initial_url: str = "https://chatgpt.com/",
+    ) -> None:
         self.profile_dir = profile_dir
         self.headless = headless
         self.timeout_s = timeout_s
+        self.initial_url = initial_url
         self._playwright = None
         self._context = None
         self._page = None
@@ -104,7 +112,7 @@ class PlaywrightChatClient:
             viewport={"width": 1280, "height": 900},
         )
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
-        await self._page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
+        await self._page.goto(self.initial_url, wait_until="domcontentloaded")
         try:
             await self._page.locator(PROMPT_INPUT_SEL).first.wait_for(timeout=15_000)
         except Exception as exc:
@@ -118,6 +126,12 @@ class PlaywrightChatClient:
             await self._context.close()
         if self._playwright is not None:
             await self._playwright.stop()
+
+    @property
+    def current_url(self) -> str:
+        if self._page is None:
+            return self.initial_url
+        return str(self._page.url)
 
     async def ask(self, prompt: str) -> str:
         if self._page is None:

@@ -82,3 +82,12 @@ def test_orchestrator_passes_max_visual_gap_option(tmp_path: Path) -> None:
     config = load_config(config_path)
     command = build_command("ingest", build_paths(tmp_path / "run"), tmp_path / "film.mp4", config, force=False, python_exe="python")
     assert command[command.index("--max-visual-gap-s") + 1] == "12"
+
+def test_orchestrator_passes_review_chat_session_options(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"review": {"chat_session_policy": "new", "chat_session_meta": "session.json", "chat_title": "ep01"}}), encoding="utf-8")
+    config = load_config(config_path)
+    command = build_command("review", build_paths(tmp_path / "run"), tmp_path / "film.mp4", config, force=False, python_exe="python")
+    assert command[command.index("--chat-session-policy") + 1] == "new"
+    assert command[command.index("--chat-session-meta") + 1] == "session.json"
+    assert command[command.index("--chat-title") + 1] == "ep01"

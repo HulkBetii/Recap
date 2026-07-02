@@ -32,6 +32,9 @@ review:
   min_coverage: 0.85
   max_qa_iterations: 3
   chatgpt_profile_dir: data/chrome_user_data/PROFILE_GPT_1
+  chat_session_policy: auto
+  chat_session_meta: null
+  chat_title: null
   style_sample: null
   headless: false
   log_level: INFO
