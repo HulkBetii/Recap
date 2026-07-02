@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recap"
+version = "0.1.0"
+description = "Auto movie recap pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7,<3",
+    "openai>=1.40,<2",
+    "faster-whisper>=1.0,<2",
+    "playwright>=1.40,<2",
+    "scenedetect>=0.6,<1",
+    "opencv-python-headless>=4.9,<5",
+    "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
