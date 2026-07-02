@@ -274,3 +274,10 @@ repo/
 - Split chỉ thay đổi visual gaps, không thay đổi speech timecodes từ ASR/alignment.
 - `--max-vision-frames` vẫn là cap tổng số frame gửi vision; nếu split tạo nhiều gap hơn cap, chọn gap dài nhất nhưng giữ thứ tự timeline.
 - Có thể tắt bằng `--max-visual-gap-s 0` khi muốn giữ behavior cũ.
+
+## 22. GĐ2 NARRATION CONSISTENCY PASS
+
+- GĐ2 chạy deterministic consistency pass sau narration và sau mỗi regeneration QA.
+- Pass này dùng glossary do outline tạo ra, cộng alias phổ biến, để chuẩn hóa tên/entity trong narration; không gọi API thêm.
+- Artifact cache: `narration_consistent.json`.
+- Pass chỉ sửa text narration, không đổi beat ids, segment spans hoặc timecode derived từ `film_map`.

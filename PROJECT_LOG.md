@@ -357,3 +357,20 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
   - Cache GĐ2 gồm `outline.json`, `narration.json`, `qa.json`, `revisions/narration-1.json`, `revisions/qa-1.json`.
 - Cần theo dõi:
   - Tên/entity tiếng Việt/Latin trong narration còn chưa nhất quán (`Choi Seong/Choi Seon`), nên GĐ2 cần nhận glossary canonical mạnh hơn hoặc post-QA consistency check.
+
+### 2026-07-02 — Thêm GĐ2 narration consistency pass
+
+- Đã làm:
+  - Thêm `review/consistency.py` để chuẩn hóa alias tên/entity từ glossary trong narration.
+  - GĐ2 chạy consistency pass sau narration và sau mỗi regeneration QA, trước khi derive `review_script.json`.
+  - Thêm cache `narration_consistent.json` và meta `consistency_warnings`.
+  - Thêm unit tests cho alias như `Choi Seon/Sung -> Choi Seong`, `Hwang Junhyun -> Hwang Jun-hyun`.
+- Lý do:
+  - Smoke GĐ2 trên `test-recap.mp4` phát hiện narration dùng lẫn `Choi Seong/Choi Seon`.
+
+### 2026-07-02 — Validate GĐ2 consistency pass bằng cache smoke
+
+- Đã chạy lại GĐ2 trên cache `test-recap-video-split-visual` với `--max-qa-iterations 0` để không gọi ChatGPT thêm.
+- Output kiểm tra: `runs/test-recap-video-split-visual/review_script_consistent.json`.
+- Kết quả: narration dùng canonical `Hwang Jun-hyun` và `Choi Seong`; cache hit `outline.json`, `narration.json`, `narration_consistent.json`, `qa.json`.
+- Lưu ý: chạy lại với QA iteration cũ có thể trigger regeneration qua ChatGPT và bị timeout streaming; khi chỉ cần validate deterministic consistency, dùng `--max-qa-iterations 0`.

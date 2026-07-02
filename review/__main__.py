@@ -10,6 +10,7 @@ from common.schema import ReviewBeat, ReviewMeta, validate_review_script, write_
 from review.budget import allocate_char_targets, compute_budget, estimate_total_chars
 from review.cache import ReviewCache
 from review.coverage import coverage_ratio
+from review.consistency import apply_narration_consistency
 from review.inputs import ReviewInputError, load_duration, load_film_map
 from review.llm_flow import regenerate_beat, request_narration, request_outline, request_qa
 from review.models import NarrationBeat, OutlineResult, QaResult
@@ -99,6 +100,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         )
         cache.write_json("narration.json", narration)
 
+    narration, consistency_warnings = ensure_narration_consistency(cache, narration, outline_result.glossary, logger)
+    warnings.extend(consistency_warnings)
     beats = derive_review_beats(outline=outline_result.outline, narration=narration, film_map=film_map)
     qa_report: list[dict] = []
     n_qa_iterations = 0
@@ -139,6 +142,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             )
             narration_by_id[revised.beat_id] = revised
         narration = [narration_by_id[index] for index in sorted(narration_by_id)]
+        narration, revision_consistency_warnings = apply_narration_consistency(narration, outline_result.glossary)
+        warnings.extend(revision_consistency_warnings)
         cache.write_json(f"revisions/narration-{iteration + 1}.json", narration)
         beats = derive_review_beats(outline=outline_result.outline, narration=narration, film_map=film_map)
 
@@ -159,10 +164,27 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         created_at=datetime.now(timezone.utc),
         warnings=warnings,
         cache_hits=cache.cache_hits,
+        consistency_warnings=[warning for warning in warnings if "consistency" in warning],
     )
     write_json(output_path, beats)
     write_json(output_path.with_name(f"{output_path.stem}.meta.json"), meta)
     return beats, meta
+
+
+def ensure_narration_consistency(
+    cache: ReviewCache,
+    narration: list[NarrationBeat],
+    glossary: list[dict],
+    logger: logging.Logger,
+) -> tuple[list[NarrationBeat], list[str]]:
+    if cache.has("narration_consistent.json"):
+        logger.info("[2/4] Using cached narration_consistent.json")
+        return [NarrationBeat.model_validate(item) for item in cache.read_json("narration_consistent.json")], []
+    consistent, consistency_warnings = apply_narration_consistency(narration, glossary)
+    if consistency_warnings:
+        logger.info("[2/4] Applied narration consistency pass")
+    cache.write_json("narration_consistent.json", consistent)
+    return consistent, consistency_warnings
 
 
 async def run_review(args: argparse.Namespace) -> int:

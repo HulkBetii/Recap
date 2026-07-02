@@ -310,3 +310,5 @@ GĐ1 cũng split visual/silent gaps dài trước khi gọi vision để tránh 
 ```powershell
 python -m ingest --input film.mp4 --output out\film_map.json --max-visual-gap-s 12
 ```
+
+GĐ2 có deterministic narration consistency pass sau khi ChatGPT viết narration: pass này dùng glossary để chuẩn hóa alias tên/entity như `Choi Seon/Sung/Song -> Choi Seong` hoặc `Hwang Junhyun -> Hwang Jun-hyun`. Artifact cache: `work/review/narration_consistent.json`.

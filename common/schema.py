@@ -211,6 +211,7 @@ class ReviewMeta(BaseModel):
     created_at: datetime
     warnings: list[str] = Field(default_factory=list)
     cache_hits: list[str] = Field(default_factory=list)
+    consistency_warnings: list[str] = Field(default_factory=list)
 
 
 class BeatTiming(BaseModel):
