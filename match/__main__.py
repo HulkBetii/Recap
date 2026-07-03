@@ -10,8 +10,10 @@ from pathlib import Path
 from common.schema import BeatTiming, EdlMeta, EdlPlacement, ReviewBeat, Shot, validate_edl, write_json
 from match.cache import MatchCache, file_hash, stable_hash
 from match.fill import assign_timeline, fill_beat, fill_timeline_gaps
-from match.inputs import load_beats_timing, load_review_script, load_shots
+from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
+from match.qa import build_edl_qa
 from match.scoring import ScoringWeights
+from match.semantic import DEFAULT_EMBEDDING_MODEL, SemanticConfig, SemanticError, compute_semantic_result
 from match.timing import average_clip_len, validate_timeline
 
 
@@ -25,6 +27,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--beats-timing", required=True, type=Path)
     parser.add_argument("--shots", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--output-qa", default=None, type=Path)
+    parser.add_argument("--film-map", default=None, type=Path)
+    parser.add_argument("--semantic-mode", default="off", choices=["off", "tfidf", "bge-m3"])
+    parser.add_argument("--semantic-model", default=DEFAULT_EMBEDDING_MODEL)
+    parser.add_argument("--semantic-device", default="auto", choices=["auto", "cpu", "cuda"])
+    parser.add_argument("--semantic-batch-size", default=16, type=int)
+    parser.add_argument("--semantic-cache-dir", default=None, type=Path)
     parser.add_argument("--min-clip", default=3.0, type=float)
     parser.add_argument("--max-clip", default=5.0, type=float)
     parser.add_argument("--widen-margin", default=15.0, type=float)
@@ -40,6 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--w-face", default=0.18, type=float)
     parser.add_argument("--w-bright", default=0.12, type=float)
     parser.add_argument("--w-reuse", default=0.35, type=float)
+    parser.add_argument("--w-semantic", default=0.35, type=float)
+    parser.add_argument("--min-semantic-score", default=0.12, type=float)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
 
@@ -56,7 +67,14 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "allow_repeat": args.allow_repeat,
         "allow_speedfit": args.allow_speedfit,
         "seed": args.seed,
-        "weights": [args.w_motion, args.w_face, args.w_bright, args.w_reuse],
+        "weights": [args.w_motion, args.w_face, args.w_bright, args.w_reuse, args.w_semantic],
+        "film_map": file_hash(args.film_map.expanduser().resolve()) if args.film_map else None,
+        "semantic_mode": args.semantic_mode,
+        "semantic_model": args.semantic_model,
+        "semantic_device": args.semantic_device,
+        "semantic_batch_size": args.semantic_batch_size,
+        "semantic_cache_dir": str(args.semantic_cache_dir) if args.semantic_cache_dir else None,
+        "min_semantic_score": args.min_semantic_score,
     })
 
 
@@ -71,6 +89,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError("--max-clip must be >= --min-clip")
     if args.widen_margin < 0 or args.max_widen < 0:
         raise MatchError("widen settings must be >= 0")
+    if args.semantic_mode != "off" and args.film_map is None:
+        raise MatchError("--film-map is required when --semantic-mode=tfidf")
+    if args.film_map is not None and not args.film_map.expanduser().resolve().is_file():
+        raise MatchError(f"input file does not exist: {args.film_map}")
+    if args.min_semantic_score < 0:
+        raise MatchError("--min-semantic-score must be >= 0")
+    if args.semantic_batch_size <= 0:
+        raise MatchError("--semantic-batch-size must be > 0")
 
 
 def run_match(args: argparse.Namespace) -> int:
@@ -78,6 +104,7 @@ def run_match(args: argparse.Namespace) -> int:
     validate_args(args)
     random.seed(args.seed)
     output_path = args.output.expanduser().resolve()
+    qa_path = args.output_qa.expanduser().resolve() if args.output_qa else output_path.with_name("edl.qa.json")
     cache = MatchCache(args.work_dir.expanduser().resolve(), force=args.force)
     cache.prepare()
     cache_key = make_cache_key(args)
@@ -88,6 +115,8 @@ def run_match(args: argparse.Namespace) -> int:
         meta = meta.model_copy(update={"cache_hits": cache.cache_hits})
         write_json(output_path, edl)
         write_json(output_path.with_name("edl.meta.json"), meta)
+        if "qa" in cached:
+            write_json(qa_path, cached["qa"])
         return 0
 
     review_beats = load_review_script(args.review_script.expanduser().resolve())
@@ -98,7 +127,25 @@ def run_match(args: argparse.Namespace) -> int:
     missing = sorted(set(beats_by_id) ^ set(timings_by_id))
     if missing:
         raise MatchError(f"review_script and beats_timing beat ids differ: {missing}")
-    weights = ScoringWeights(args.w_motion, args.w_face, args.w_bright, args.w_reuse)
+    semantic_result = None
+    semantic_scores: dict[tuple[int, int], float] = {}
+    if args.semantic_mode != "off":
+        film_map = load_film_map(args.film_map.expanduser().resolve())
+        semantic_cache_dir = args.semantic_cache_dir.expanduser().resolve() if args.semantic_cache_dir else args.work_dir.expanduser().resolve() / "semantic"
+        semantic_result = compute_semantic_result(
+            review_beats,
+            shots,
+            film_map,
+            SemanticConfig(
+                mode=args.semantic_mode,
+                model=args.semantic_model,
+                device=args.semantic_device,
+                batch_size=args.semantic_batch_size,
+                cache_dir=semantic_cache_dir,
+            ),
+        )
+        semantic_scores = semantic_result.scores
+    weights = ScoringWeights(args.w_motion, args.w_face, args.w_bright, args.w_reuse, args.w_semantic)
     reuse_counts: dict[int, int] = {}
     placements: list[EdlPlacement] = []
     warnings: list[str] = []
@@ -121,6 +168,7 @@ def run_match(args: argparse.Namespace) -> int:
             max_widen=args.max_widen,
             allow_repeat=args.allow_repeat,
             allow_speedfit=args.allow_speedfit,
+            semantic_scores=semantic_scores,
         )
         if result.widened:
             n_beats_widened += 1
@@ -151,9 +199,20 @@ def run_match(args: argparse.Namespace) -> int:
         created_at=datetime.now(timezone.utc),
         cache_hits=cache.cache_hits,
     )
+    qa = build_edl_qa(
+        beats=review_beats,
+        placements=placements,
+        shots=shots,
+        semantic_scores=semantic_scores,
+        weights=weights,
+        semantic_result=semantic_result,
+        min_semantic_score=args.min_semantic_score,
+        warnings=warnings,
+    )
     write_json(output_path, placements)
     write_json(output_path.with_name("edl.meta.json"), meta)
-    cache.write_plan(cache_key, [item.model_dump() for item in placements], meta.model_dump(mode="json"))
+    write_json(qa_path, qa)
+    cache.write_plan(cache_key, [item.model_dump(mode="json") for item in placements], meta.model_dump(mode="json"), qa)
     return 0
 
 
@@ -163,7 +222,7 @@ def main() -> int:
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
     try:
         return run_match(args)
-    except (MatchError, ValueError, json.JSONDecodeError) as exc:
+    except (MatchError, SemanticError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(2, f"match: error: {exc}\n")
 
 

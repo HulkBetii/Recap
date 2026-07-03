@@ -46,7 +46,7 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "review": StageSpec("review", ("review_script", "review_meta"), "review_meta"),
     "tts": StageSpec("tts", ("voiceover", "beats_timing", "tts_meta"), "tts_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
-    "match": StageSpec("match", ("edl", "edl_meta"), "edl_meta"),
+    "match": StageSpec("match", ("edl", "edl_meta", "edl_qa"), "edl_meta"),
     "render": StageSpec("render", ("recap", "render_meta"), "render_meta"),
 }
 
@@ -138,7 +138,14 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             add_option(command, key, section.get(key))
     elif stage == "match":
         command += ["--review-script", str(paths.review_script), "--beats-timing", str(paths.beats_timing), "--shots", str(paths.shots), "--output", str(paths.edl)]
-        for key in ("min_clip", "max_clip", "widen_margin", "max_widen", "seed", "w_motion", "w_face", "w_bright", "w_reuse", "log_level"):
+        film_map_setting = section.get("film_map", "auto")
+        if film_map_setting == "auto":
+            command += ["--film-map", str(paths.film_map)]
+        elif film_map_setting:
+            command += ["--film-map", str(film_map_setting)]
+        output_qa = section.get("output_qa")
+        command += ["--output-qa", str(output_qa or paths.edl_qa)]
+        for key in ("min_clip", "max_clip", "widen_margin", "max_widen", "seed", "w_motion", "w_face", "w_bright", "w_reuse", "w_semantic", "min_semantic_score", "semantic_mode", "semantic_model", "semantic_device", "semantic_batch_size", "semantic_cache_dir", "log_level"):
             add_option(command, key, section.get(key))
         command.append("--allow-repeat" if section.get("allow_repeat", True) else "--no-allow-repeat")
         command.append("--allow-speedfit" if section.get("allow_speedfit", False) else "--no-allow-speedfit")

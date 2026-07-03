@@ -44,6 +44,7 @@ def fill_beat(
     max_widen: int,
     allow_repeat: bool,
     allow_speedfit: bool,
+    semantic_scores: dict[tuple[int, int], float] | None = None,
 ) -> FillResult:
     warnings: list[str] = []
     window_start, window_end, candidates, widen_count = widen_until_enough(
@@ -72,7 +73,7 @@ def fill_beat(
             repeated = True
         if not available:
             break
-        ranked = rank_shots(available, reuse_counts, weights)
+        ranked = rank_shots(available, reuse_counts, weights, semantic_scores, beat.beat_id)
         shot = ranked[0]
         src_start = max(window_start, shot.tc_start)
         src_end = min(window_end, shot.tc_end)
@@ -105,7 +106,7 @@ def fill_beat(
         if allow_repeat and candidates:
             warnings.append(f"beat {beat.beat_id} required controlled repeat fallback")
             while remaining > 1e-6:
-                shot = rank_shots(candidates, reuse_counts, weights)[0]
+                shot = rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id)[0]
                 clip_len = min(max_clip, max(0.05, remaining), shot.duration)
                 src_start = shot.tc_start
                 fragments.append(

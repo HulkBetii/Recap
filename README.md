@@ -213,14 +213,23 @@ Cache GĐ4:
 Thêm `--force` để detect/tính feature lại.
 ## Chạy GĐ5
 
-GĐ5 nhận `review_script.json`, `beats_timing.json`, `shots.json` và tạo `edl.json` + `edl.meta.json`. Stage này chỉ xử lý JSON, không decode video và không dùng API.
+GD5 nhan `review_script.json`, `beats_timing.json`, `shots.json` va tao `edl.json` + `edl.meta.json` + `edl.qa.json`. Neu truyen them `--film-map`, GD5 co the dung semantic offline: `bge-m3` multilingual embedding la default orchestrator, con `tfidf` la fallback nhe. Stage nay chi xu ly JSON, khong decode video va khong dung API.
 
 ```powershell
 python -m match `
   --review-script out\review_script.json `
   --beats-timing out\beats_timing.json `
   --shots out\shots.json `
+  --film-map out\film_map.json `
   --output out\edl.json `
+  --output-qa out\edl.qa.json `
+  --semantic-mode bge-m3 `
+  --semantic-model BAAI/bge-m3 `
+  --semantic-device auto `
+  --semantic-batch-size 16 `
+  --semantic-cache-dir work\match\semantic `
+  --w-semantic 0.45 `
+  --min-semantic-score 0.22 `
   --min-clip 3.0 `
   --max-clip 5.0 `
   --widen-margin 15 `
@@ -232,10 +241,13 @@ python -m match `
 
 Nguyên tắc GĐ5:
 
-- Face là điểm cộng mềm, không lọc cứng.
-- Placement mặc định 1:1 speed `1.0`.
-- Thiếu footage thì nới cửa sổ nguồn trước, sau đó mới repeat có kiểm soát.
-- Cache nằm ở `work/match/plan.json`; thêm `--force` để recompute.
+- Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding; `tfidf` van giu lam fallback khong can dependency nang.
+- Cai embedding deps khi dung `bge-m3`: `pip install -e ".[semantic-embed]"`.
+- `edl.qa.json` ghi provider/model/device/cache hits, tung beat chon shot nao, semantic rank/score va warning `low semantic match`.
+- Face l? ?i?m c?ng m?m, kh?ng l?c c?ng.
+- Placement m?c ??nh 1:1 speed `1.0`.
+- Thi?u footage th? n?i c?a s? ngu?n tr??c, sau ?? m?i repeat c? ki?m so?t.
+- Cache n?m ? `work/match/plan.json`; hash cache bao g?m `film_map.json` v? config semantic n?u b?t; th?m `--force` ?? recompute.
 
 ## Chạy GĐ6
 

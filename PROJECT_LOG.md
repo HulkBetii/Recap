@@ -430,3 +430,32 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Cần theo dõi:
   - Source video có phụ đề Việt lớn sẵn ở một số đoạn; nếu muốn output sạch hơn cần thêm crop/blur subtitle region hoặc chọn source không hard-sub.
   - Footage vẫn có thể chưa sát narration vì GĐ5 scoring còn semantic yếu; bước sau nên cải thiện match bằng keyword/segment-window scoring và face detection runtime.
+
+### 2026-07-03 ? GD5 Phase 1 semantic matching + edl.qa.json
+
+- Da lam:
+  - Them `match/semantic.py` de build context tu `review_script.json` + optional `film_map.json` va tinh TF-IDF/cosine offline cho tung cap beat-shot.
+  - Them `match/qa.py` de sinh `edl.qa.json`, gom selected shots, semantic score, motion/brightness/face/reuse va warning `low semantic match`.
+  - CLI `python -m match` co them `--film-map`, `--output-qa`, `--semantic-mode off|tfidf`, `--w-semantic`, `--min-semantic-score`.
+  - Orchestrator/config mac dinh truyen `film_map.json`, bat `semantic_mode: tfidf`, va ghi `edl.qa.json` trong run-dir.
+  - Cache GD5 include hash `film_map.json` va config semantic.
+- Ghi chu ky thuat:
+  - Semantic chi la soft bonus, khong hard filter; khong dung API/ChatGPT/embedding model nang o Phase 1.
+  - `edl.qa.json` la artifact debug, khong phai input bat buoc cua GD6.
+- Validation:
+  - Targeted tests: `pytest tests/test_match_cli.py tests/test_match_scoring.py tests/test_match_semantic.py tests/test_orchestrator_runner.py -q` -> 14 passed.
+
+### 2026-07-03 ? GD5 Phase 2 multilingual embedding
+
+- Da lam:
+  - Them adapter semantic `off|tfidf|bge-m3`, default orchestrator dung `BAAI/bge-m3` local embedding; CLI package van default `off`.
+  - Them optional deps `semantic-embed` gom `torch` va `sentence-transformers`; thieu deps khi chay `bge-m3` se fail-fast voi huong dan cai.
+  - Them cache embedding theo hash `{model, device, text}` trong `--semantic-cache-dir`; rerun chi encode text moi.
+  - Mo rong `edl.qa.json` voi `semantic_provider`, `semantic_model`, `semantic_device`, `semantic_cache_hits`, va per-shot `semantic_rank`.
+  - Orchestrator/config bat `semantic_mode: bge-m3`, `w_semantic: 0.45`, `min_semantic_score: 0.22`.
+- Ghi chu:
+  - Phase 2 van offline/local, khong dung API/ChatGPT; `edl.json` khong doi contract.
+- Validation:
+  - `pytest -q` -> 116 passed.
+  - Smoke tren `runs/test-recap-video-no-intro`: `semantic_provider=bge-m3`, `semantic_model=BAAI/bge-m3`, `semantic_device=cuda`, `min_src_in=120.4`, `duration_match=true`.
+  - Rerun GD5 voi `--force` xac nhan embedding cache hit 129 entries.

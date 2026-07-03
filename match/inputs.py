@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from common.schema import BeatTiming, ReviewBeat, Shot, validate_beats_timing, validate_shots
+from common.schema import BeatTiming, FilmMapSegment, ReviewBeat, Shot, validate_beats_timing, validate_film_map, validate_shots
 
 
 def load_review_script(path: Path) -> list[ReviewBeat]:
@@ -37,3 +37,9 @@ def load_shots(path: Path) -> list[Shot]:
     data = json.loads(path.read_text(encoding="utf-8"))
     shots = [Shot.model_validate(item) for item in data]
     return validate_shots(shots)
+
+
+def load_film_map(path: Path) -> list[FilmMapSegment]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    segments = [FilmMapSegment.model_validate(item) for item in data]
+    return validate_film_map(segments)

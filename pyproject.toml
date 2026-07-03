@@ -26,6 +26,10 @@ asr-align = [
     "torchaudio>=2.8",
     "whisperx>=3.8,<4",
 ]
+semantic-embed = [
+    "torch>=2.8",
+    "sentence-transformers>=3.0,<5",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

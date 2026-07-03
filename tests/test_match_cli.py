@@ -47,6 +47,15 @@ def make_args(tmp_path, paths, force=False):  # type: ignore[no-untyped-def]
         w_face=0.18,
         w_bright=0.12,
         w_reuse=0.35,
+        w_semantic=0.35,
+        min_semantic_score=0.12,
+        semantic_mode="off",
+        semantic_model="BAAI/bge-m3",
+        semantic_device="auto",
+        semantic_batch_size=16,
+        semantic_cache_dir=None,
+        film_map=None,
+        output_qa=None,
         log_level="ERROR",
     )
 
@@ -56,6 +65,7 @@ def test_match_cli_outputs_valid_edl_and_meta(tmp_path) -> None:
     assert run_match(make_args(tmp_path, paths)) == 0
     assert (tmp_path / "edl.json").exists()
     assert (tmp_path / "edl.meta.json").exists()
+    assert (tmp_path / "edl.qa.json").exists()
     meta = json.loads((tmp_path / "edl.meta.json").read_text(encoding="utf-8"))
     assert meta["n_beats_widened"] >= 1
     assert meta["n_placements"] > 0

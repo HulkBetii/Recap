@@ -75,6 +75,15 @@ match:
   w_face: 0.18
   w_bright: 0.12
   w_reuse: 0.35
+  w_semantic: 0.45
+  min_semantic_score: 0.22
+  semantic_mode: bge-m3
+  semantic_model: BAAI/bge-m3
+  semantic_device: auto
+  semantic_batch_size: 16
+  semantic_cache_dir: null
+  film_map: auto
+  output_qa: null
   log_level: INFO
 
 render:

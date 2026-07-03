@@ -38,6 +38,7 @@ class RunPaths:
     shots_dir: Path
     edl: Path
     edl_meta: Path
+    edl_qa: Path
     recap: Path
     render_meta: Path
     work_dir: Path
@@ -62,6 +63,7 @@ def build_paths(run_dir: Path) -> RunPaths:
         shots_dir=run_dir / "shots",
         edl=run_dir / "edl.json",
         edl_meta=run_dir / "edl.meta.json",
+        edl_qa=run_dir / "edl.qa.json",
         recap=run_dir / "recap.mp4",
         render_meta=run_dir / "render.meta.json",
         work_dir=run_dir / "work",

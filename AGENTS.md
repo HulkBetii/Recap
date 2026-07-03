@@ -22,7 +22,7 @@ Pipeline tự động end-to-end: nhận **1 tập phim** (drama Hàn) → sinh 
 | 2 | Viết review (GPT) + tự duyệt | `film_map.json` | `review_script.json` |
 | 3 | TTS (ElevenLabs) | `review_script.json` | `voiceover.mp3` + `beats_timing.json` |
 | 4 | Shot library | `film.mp4` | `shots.json` (+ thumbnails) |
-| 5 | Auto-match & chọn footage | `review_script.json` + `beats_timing.json` + `shots.json` | `edl.json` |
+| 5 | Auto-match & chon footage | `review_script.json` + `beats_timing.json` + `shots.json` + optional `film_map.json` | `edl.json` + `edl.qa.json` |
 | 6 | Render | `edl.json` + `voiceover.mp3` + `film.mp4` | `recap.mp4` |
 | 7 | Output | `recap.mp4` | (giao file) |
 
@@ -199,17 +199,20 @@ repo/
   - `common/schema.py`: có thêm `Shot`, `ShotsMeta`, `validate_shots`.
 - Cache GĐ4 nằm trong `--work-dir`: `detection.json`, `features.json`, `thumbs/`.
 - Test tự động dùng mock/frame synthetic; real clip smoke test sẽ chạy khi có video mẫu.
-## 14. GĐ5 IMPLEMENTATION HIỆN TẠI
+## 14. GD5 IMPLEMENTATION HIEN TAI
 
-- GĐ5 là CLI local/offline, chạy bằng `python -m match`.
-- GĐ5 chỉ đọc `review_script.json`, `beats_timing.json`, `shots.json` và sinh `edl.json` + `edl.meta.json`; không decode video, không dùng API.
-- Face là soft bonus, không phải hard filter. Shot `face_count=0` vẫn được chọn nếu motion/brightness tốt.
-- Package thực tế:
-  - `match/`: candidate filtering/widening, scoring, greedy fill, timeline assignment, cache và CLI orchestration.
-  - `common/schema.py`: có thêm `EdlPlacement`, `EdlMeta`, `validate_edl`.
-- Fallback thiếu footage: nới cửa sổ nguồn trước, sau đó repeat có kiểm soát; speedfit mặc định tắt.
-- Cache GĐ5 nằm trong `--work-dir/plan.json` theo hash của 3 input JSON + config CLI.
-- Test tự động dùng JSON fixtures/mock; không dùng video/ffmpeg/API.
+- GD5 la CLI local/offline, chay bang `python -m match`.
+- GD5 doc `review_script.json`, `beats_timing.json`, `shots.json` va optional `film_map.json`; sinh `edl.json` + `edl.meta.json` + `edl.qa.json`; khong decode video, khong dung API.
+- Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding qua optional deps `semantic-embed`; `tfidf` van la fallback nhe. Semantic la soft bonus, khong hard filter.
+- `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse va warning `low semantic match` theo beat.
+- Face la soft bonus, khong phai hard filter. Shot `face_count=0` van duoc chon neu motion/brightness/semantic tot.
+- Package thuc te:
+  - `match/`: candidate filtering/widening, scoring, semantic adapters, greedy fill, timeline assignment, cache va CLI orchestration.
+  - `common/schema.py`: co them `EdlPlacement`, `EdlMeta`, `validate_edl`.
+- Fallback thieu footage: noi cua so nguon truoc, sau do repeat co kiem soat; speedfit mac dinh tat.
+- Cache GD5 nam trong `--work-dir/plan.json`; embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
+- Test tu dong dung JSON fixtures/mock; khong dung video/ffmpeg/API.
+
 
 ## 15. GĐ6 IMPLEMENTATION HIỆN TẠI
 
