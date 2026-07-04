@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 
@@ -12,7 +13,7 @@ SEND_BUTTON_SELS = (
 )
 ASSISTANT_MSG_SEL = '[data-message-author-role="assistant"]'
 STOP_BUTTON_SEL = 'button[data-testid="stop-button"], button[aria-label="Stop generating"]'
-DEFAULT_REPLY_TIMEOUT_S = 240
+DEFAULT_REPLY_TIMEOUT_S = 600
 POLL_INTERVAL_S = 2
 TEXT_STABLE_SAMPLES = 3
 TEXT_STABLE_INTERVAL_S = 2
@@ -89,11 +90,13 @@ class PlaywrightChatClient:
         headless: bool = False,
         timeout_s: int = DEFAULT_REPLY_TIMEOUT_S,
         initial_url: str = "https://chatgpt.com/",
+        session_file: Path | None = None,
     ) -> None:
         self.profile_dir = profile_dir
         self.headless = headless
         self.timeout_s = timeout_s
         self.initial_url = initial_url
+        self.session_file = session_file
         self._playwright = None
         self._context = None
         self._page = None
@@ -112,6 +115,14 @@ class PlaywrightChatClient:
             viewport={"width": 1280, "height": 900},
         )
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+        if self.session_file and self.session_file.exists():
+            try:
+                payload = json.loads(self.session_file.read_text(encoding="utf-8"))
+                cookies = payload.get("cookies", []) if isinstance(payload, dict) else payload
+                if cookies:
+                    await self._context.add_cookies(cookies)
+            except Exception as exc:
+                self.logger.warning("Could not restore ChatGPT session cookies from %s: %s", self.session_file, exc)
         await self._page.goto(self.initial_url, wait_until="domcontentloaded")
         try:
             await self._page.locator(PROMPT_INPUT_SEL).first.wait_for(timeout=15_000)

@@ -66,6 +66,11 @@ def make_args(tmp_path, film_map_path):  # type: ignore[no-untyped-def]
         min_coverage=0.85,
         max_qa_iterations=2,
         style_sample=None,
+        style_preset="viral-recap-vi",
+        style_strength="strong",
+        style_qa=True,
+        target_sentence_chars=160,
+        max_sentence_chars=220,
         work_dir=tmp_path / "work" / "review",
         chatgpt_profile_dir=tmp_path / "profile",
         force=False,
@@ -94,6 +99,8 @@ def test_build_review_with_mock_client_end_to_end(tmp_path) -> None:
     assert (tmp_path / "work" / "review" / "outline.json").exists()
     assert (tmp_path / "work" / "review" / "narration.json").exists()
     assert (tmp_path / "work" / "review" / "qa.json").exists()
+    assert (tmp_path / "work" / "review" / "style_qa.json").exists()
+    assert meta.style_preset == "viral-recap-vi"
 
 
 def test_build_review_falls_back_duration_without_meta(tmp_path) -> None:

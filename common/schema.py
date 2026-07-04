@@ -212,6 +212,12 @@ class ReviewMeta(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     cache_hits: list[str] = Field(default_factory=list)
     consistency_warnings: list[str] = Field(default_factory=list)
+    style_preset: str | None = None
+    style_strength: str | None = None
+    style_sample_path: str | None = None
+    style_qa_report: list[dict[str, Any]] = Field(default_factory=list)
+    n_style_rewrites: int = Field(ge=0, default=0)
+    readability_warnings: list[str] = Field(default_factory=list)
 
 
 class BeatTiming(BaseModel):

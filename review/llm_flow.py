@@ -22,7 +22,7 @@ def build_outline_prompt(
     min_coverage: float,
     style_sample: str = "",
 ) -> str:
-    style_block = f"\nSTYLE SAMPLE:\n{style_sample}\n" if style_sample else ""
+    style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
     return f"""
 You are planning a Vietnamese movie recap script.
 Return ONLY valid JSON with keys: glossary, outline, hook.
@@ -31,7 +31,7 @@ Rules:
 - Do NOT output timecodes.
 - Use only segment ids from the FILM_MAP.
 - glossary: list of characters with Vietnamese canonical name and short role.
-- outline: ordered beats covering the full plot. Each beat has from_seg_id, to_seg_id, summary.
+- outline: ordered beats covering the full plot with recap pacing. Each beat has from_seg_id, to_seg_id, summary.
 - hook: list of exciting segment ids for a cold-open, usually from later in the story, without spoiling the ending.
 - Non-hook outline beats must be chronological and cover at least {min_coverage:.0%} of segment ids.
 - Target recap length: about {target_video_s:.1f}s, char budget about {char_budget} Vietnamese characters.
@@ -48,7 +48,7 @@ def build_narration_prompt(
     char_targets: list[int],
     style_sample: str = "",
 ) -> str:
-    style_block = f"\nSTYLE SAMPLE:\n{style_sample}\n" if style_sample else ""
+    style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
     payload = [
         {
             "beat_id": index,
@@ -115,7 +115,9 @@ def build_regenerate_prompt(
     issue: str,
     glossary: list[dict],
     char_target: int,
+    style_sample: str = "",
 ) -> str:
+    style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
     return f"""
 Regenerate only this one Vietnamese recap beat.
 Return ONLY JSON: {{"beat_id": {beat.beat_id}, "narration": string}}.
@@ -126,7 +128,8 @@ Rules:
 - Do not quote original dialogue verbatim.
 - Use glossary names consistently.
 - Aim for about {char_target} Vietnamese characters.
-
+- Keep narration TTS-friendly with natural punctuation and no long run-on sentence.
+{style_block}
 CURRENT_BEAT:
 {json.dumps(beat.model_dump(), ensure_ascii=False)}
 
@@ -214,9 +217,10 @@ async def regenerate_beat(
     issue: str,
     glossary: list[dict],
     char_target: int,
+    style_sample: str = "",
 ) -> NarrationBeat:
     response = await client.ask(
-        build_regenerate_prompt(beat=beat, issue=issue, glossary=glossary, char_target=char_target)
+        build_regenerate_prompt(beat=beat, issue=issue, glossary=glossary, char_target=char_target, style_sample=style_sample)
     )
     return NarrationBeat.model_validate(extract_json(response))
 
@@ -236,4 +240,3 @@ def normalize_outline(outline_result: OutlineResult) -> OutlineResult:
         first = outline_result.outline[0].model_copy(update={"is_hook": True})
         normalized.insert(0, first)
     return OutlineResult(glossary=outline_result.glossary, outline=normalized, hook=outline_result.hook)
-

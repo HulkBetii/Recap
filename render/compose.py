@@ -37,6 +37,26 @@ def concat_video(temp_paths: list[Path], output_path: Path, work_dir: Path) -> P
     return list_file
 
 
+def pad_video_to_duration(video_path: Path, output_path: Path, duration_s: float) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    run_command([
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-vf",
+        "tpad=stop_mode=clone:stop_duration=10",
+        "-t",
+        f"{duration_s:.6f}",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        str(output_path),
+    ])
+
+
 def mux_voiceover(video_path: Path, voiceover_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_command([

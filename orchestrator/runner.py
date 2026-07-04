@@ -74,15 +74,18 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
             validate_review_script(beats, film_map)
             ReviewMeta.model_validate(load_json(paths.review_meta))
         elif stage == "tts":
-            validate_beats_timing([BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)], pause_s=0.0)
-            TtsMeta.model_validate(load_json(paths.tts_meta))
+            tts_meta = TtsMeta.model_validate(load_json(paths.tts_meta))
+            validate_beats_timing([BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)], pause_s=tts_meta.inter_beat_pause_s)
             if not paths.voiceover.is_file():
                 raise ValueError("voiceover.mp3 is missing")
         elif stage == "shots":
             meta = ShotsMeta.model_validate(load_json(paths.shots_meta))
             validate_shots([Shot.model_validate(item) for item in load_json(paths.shots)], duration=meta.duration_s)
         elif stage == "match":
-            timings = validate_beats_timing([BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)], pause_s=0.0)
+            pause_s = 0.0
+            if paths.tts_meta.is_file():
+                pause_s = TtsMeta.model_validate(load_json(paths.tts_meta)).inter_beat_pause_s
+            timings = validate_beats_timing([BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)], pause_s=pause_s)
             total_duration = timings[-1].tl_end if timings else None
             validate_edl([EdlPlacement.model_validate(item) for item in load_json(paths.edl)], total_duration=total_duration)
         elif stage == "render":
@@ -121,8 +124,9 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--no-vad-filter")
     elif stage == "review":
         command += ["--film-map", str(paths.film_map), "--output", str(paths.review_script)]
-        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "style_sample", "chatgpt_profile_dir", "chat_session_policy", "chat_session_meta", "chat_title", "log_level"):
+        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "log_level"):
             add_option(command, key, section.get(key))
+        command.append("--style-qa" if section.get("style_qa", True) else "--no-style-qa")
         if section.get("headless"):
             command.append("--headless")
     elif stage == "tts":

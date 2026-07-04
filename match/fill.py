@@ -145,6 +145,8 @@ def trim_fragments_to_duration(fragments: list[Fragment], target_duration: float
         if remaining <= 1e-6:
             break
         duration = min(fragment.duration, remaining)
+        if duration < 0.05 and output:
+            break
         output.append(
             Fragment(
                 src=fragment.src,
@@ -205,10 +207,13 @@ def fill_timeline_gaps(placements: list[EdlPlacement], total_duration: float) ->
 
 def make_pause_filler(previous: EdlPlacement, tl_start: float, tl_end: float, duration: float) -> EdlPlacement:
     src_out = previous.src_out
-    src_in = max(previous.src_in, src_out - duration)
+    src_in = src_out - duration
+    if src_in < 0:
+        src_in = previous.src_in
+        src_out = src_in + max(duration, 0.001)
     if src_out <= src_in + 1e-6:
         src_in = previous.src_in
-        src_out = min(previous.src_out, previous.src_in + max(duration, 0.001))
+        src_out = src_in + max(duration, 0.001)
     return EdlPlacement(
         tl_start=round(tl_start, 3),
         tl_end=round(tl_end, 3),

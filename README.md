@@ -123,7 +123,10 @@ Artifacts cache GĐ2:
 - `work/review/outline.json`
 - `work/review/narration.json`
 - `work/review/qa.json`
+- `work/review/style_qa.json`
+- `work/review/narration_style_checked.json`
 - `work/review/revisions/`
+- `work/review/style_revisions/`
 
 Thêm `--force` để rebuild cache GĐ2.
 ## Chạy GĐ3
@@ -343,3 +346,11 @@ Nếu phim/tập có intro/opening chỉ có hình ảnh không liên quan narra
 python -m ingest --input film.mp4 --output runs\ep01\film_map.json --drop-visual-before-s 120
 python -m shots --input film.mp4 --output runs\ep01\shots.json --thumb-dir runs\ep01\shots --skip-intro 120
 ```
+
+## Runtime Notes From Real E2E
+
+- For long movie reviews, use the logged-in ChatGPT persistent profile and keep other Chrome windows for that profile closed before running GĐ2.
+- If using cookies from `auto_YT`, pass only a freshly captured `session_chatgpt.json`; stale cookies can trigger ChatGPT `expired-session` modal.
+- GĐ2 supports `--reply-timeout-s`; long movie outline/narration/QA can require `900` seconds per response.
+- Local runtime artifacts are ignored: `.env`, `data/`, `runs/`, `work/`, and `out/` must not be committed.
+- Movie mode is independent per video. Series mode should later add shared glossary/entity bible and episode summaries rather than relying on one giant chat history.

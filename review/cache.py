@@ -17,14 +17,16 @@ class ReviewCache:
 
     def prepare(self) -> None:
         if self.force and self.work_dir.exists():
-            for name in ("outline.json", "narration.json", "qa.json"):
+            for name in ("outline.json", "narration.json", "narration_consistent.json", "narration_style_checked.json", "qa.json", "style_qa.json", "style_config.json"):
                 target = self.work_dir / name
                 if target.exists():
                     target.unlink()
-            revisions = self.work_dir / "revisions"
-            if revisions.exists():
-                shutil.rmtree(revisions)
+            for dirname in ("revisions", "style_revisions"):
+                target_dir = self.work_dir / dirname
+                if target_dir.exists():
+                    shutil.rmtree(target_dir)
         (self.work_dir / "revisions").mkdir(parents=True, exist_ok=True)
+        (self.work_dir / "style_revisions").mkdir(parents=True, exist_ok=True)
 
     def path(self, relative_path: str) -> Path:
         return self.work_dir / relative_path

@@ -36,7 +36,12 @@ review:
   chat_session_policy: auto
   chat_session_meta: null
   chat_title: null
-  style_sample: null
+  style_sample: examples/style/viral_recap_vi.cleaned.txt
+  style_preset: viral-recap-vi
+  style_strength: strong
+  style_qa: true
+  target_sentence_chars: 160
+  max_sentence_chars: 220
   headless: false
   log_level: INFO
 

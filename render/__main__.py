@@ -10,7 +10,7 @@ from pathlib import Path
 from common.media import MediaError, has_audio_stream, probe_duration, probe_video_stream, require_ffmpeg
 from common.schema import EdlPlacement, RenderMeta, validate_edl, write_json
 from render.cache import RenderCache
-from render.compose import concat_video, mux_voiceover
+from render.compose import concat_video, mux_voiceover, pad_video_to_duration
 from render.cut import RenderParams, clamp_source, cut_temp_clip, temp_cache_key
 from render.quantize import quantize_placements
 
@@ -110,8 +110,16 @@ def run_render(args: argparse.Namespace) -> int:
     video_only = args.work_dir / "video_only.mp4"
     logging.info("concat %s temp clips", len(temp_paths))
     concat_video(temp_paths, video_only, args.work_dir)
+    video_for_mux = video_only
+    video_only_duration = probe_duration(video_only)
+    if video_only_duration + max(0.1, 2.0 / args.fps) < audio_duration:
+        padded_video = args.work_dir / "video_only_padded.mp4"
+        warnings.append(f"video-only concat was padded from {video_only_duration:.3f}s to audio duration {audio_duration:.3f}s")
+        logging.info("pad video-only concat to voiceover duration")
+        pad_video_to_duration(video_only, padded_video, audio_duration)
+        video_for_mux = padded_video
     logging.info("mux voiceover")
-    mux_voiceover(video_only, args.voiceover, args.output)
+    mux_voiceover(video_for_mux, args.voiceover, args.output)
     output_info = probe_video_stream(args.output)
     video_duration = probe_duration(args.output)
     if not has_audio_stream(args.output):

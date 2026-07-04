@@ -306,3 +306,32 @@ repo/
 - GĐ1: `--drop-visual-before-s <seconds>` để không tạo visual segments từ intro trong `film_map`.
 - GĐ4: `--skip-intro <seconds>` để shot library/match không chọn footage intro.
 - Nếu chỉ dùng một trong hai option, GĐ2/GĐ5 vẫn có thể lấy nhầm footage intro.
+
+## 26. GĐ2 STYLE PRESET / READABILITY QA HIỆN TẠI
+
+- GĐ2 mặc định dùng style preset `viral-recap-vi` để viết recap tiếng Việt đời thường, drama, TTS-friendly; không dùng raw `content.text` vì file đó thiếu dấu câu/câu quá dài.
+- Style sample sạch nằm ở `examples/style/viral_recap_vi.cleaned.txt` và được đưa vào prompt như guide tham khảo tone, không phải contract cứng.
+- CLI GĐ2 có `--style-preset`, `--style-strength`, `--style-qa/--no-style-qa`, `--target-sentence-chars`, `--max-sentence-chars`.
+- Readability QA deterministic reject câu quá dài, thiếu dấu câu, beat một câu dài/run-on; nếu fail thì chỉ regenerate beat lỗi, giữ nguyên `beat_id` và source span.
+- Review meta ghi `style_preset`, `style_strength`, `style_sample_path`, `style_qa_report`, `n_style_rewrites`, `readability_warnings`.
+
+## 27. GĐ2 CHATGPT SESSION RUNTIME NOTES
+
+- GĐ2 vẫn chạy task viết nặng bằng ChatGPT qua Playwright persistent profile, không dùng paid API.
+- CLI có `--reply-timeout-s` vì phim lẻ dài có response outline/narration/QA vượt 240s; default runtime hiện là 600s, run phim dài có thể dùng 900s.
+- CLI có `--chatgpt-session-file` để restore cookies từ `auto_YT` khi cần; chỉ dùng session file mới capture, không dùng cookie cũ vì có thể bật modal `expired-session`.
+- Nếu profile đã login tốt, ưu tiên dùng trực tiếp `--chatgpt-profile-dir` và đảm bảo không có Chrome/Playwright khác đang giữ lock profile.
+- Runtime browser profile/cookies là artifact local, không commit; `data/`, `.env`, `runs/` phải luôn gitignored.
+
+## 28. PHIM LẺ VS PHIM BỘ RUNTIME MODE
+
+- Phim lẻ dùng mode single-video: một input phim tạo một recap độc lập; GĐ2 phải kể arc trọn vẹn từ mở đầu, twist, cao trào đến kết.
+- Phim bộ nhiều tập cần series memory riêng ở bước sau: glossary/entity bible + episode summaries để mỗi tập vẫn ra một review riêng nhưng giữ tên nhân vật và mạch truyện xuyên suốt.
+- Config phim lẻ nên cân nhắc `target_ratio` khoảng `0.22–0.28` nếu muốn video gọn; test thực tế `DemThanhDoiSanQuy` đạt ratio khoảng `0.253`.
+
+## 29. E2E LESSONS TỪ PHIM LẺ DÀI
+
+- `openai-gpt4o-hybrid` chunked ASR phải skip/cache chunk audio quá nhỏ/invalid để không crash ở chunk cuối phim dài.
+- `film_map` approximate timecode vẫn là rủi ro chính cho footage matching; phim dài nên ưu tiên alignment/QC tốt hơn khi cần sát hình.
+- GĐ4 hiện vẫn có thể mất face feature nếu OpenCV runtime thiếu `CascadeClassifier`; GĐ5 không được hard-filter theo face.
+- GĐ6 padding video-only giúp giữ `duration_match=true`, nhưng padding concat dài có thể tốn thời gian vì phải re-encode video-only concat.

@@ -459,3 +459,34 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
   - `pytest -q` -> 116 passed.
   - Smoke tren `runs/test-recap-video-no-intro`: `semantic_provider=bge-m3`, `semantic_model=BAAI/bge-m3`, `semantic_device=cuda`, `min_src_in=120.4`, `duration_match=true`.
   - Rerun GD5 voi `--force` xac nhan embedding cache hit 129 entries.
+
+### 2026-07-03 ? GD2 style preset + readability QA
+
+- Da lam:
+  - Them style preset `viral-recap-vi` va sample sach `examples/style/viral_recap_vi.cleaned.txt`.
+  - Them `review/style.py` de build style guide va check readability/TTS-friendly.
+  - Prompt outline/narration/regenerate nhan style guide; khong dung raw `content.text` lam runtime sample.
+  - GD2 tu rewrite beat bi loi cau qua dai, thieu dau cau, hoac run-on sentence; giu nguyen beat id/source span.
+  - Meta review them style preset/strength/sample path, style QA report, rewrite count va readability warnings.
+  - Orchestrator/config bat style preset/readability QA mac dinh.
+- Validation:
+  - Targeted tests: `pytest tests/test_review_cli.py tests/test_review_style.py tests/test_orchestrator_runner.py -q` -> 12 passed.
+  - Full suite: `pytest -q` -> 120 passed.
+
+### 2026-07-04 — E2E phim lẻ thật: DemThanhDoiSanQuy
+
+- Input: `C:\Users\HulkBeoti\Downloads\DemThanhDoiSanQuy.mp4`, duration `5503.456s` (~91m43s).
+- Run dir: `runs/dem-thanh-doi-san-quy`.
+- Kết quả: pipeline GĐ1→GĐ6 chạy xong, output `runs/dem-thanh-doi-san-quy/recap.mp4`.
+- Output final: `1920x1080`, `30fps`, H.264, dung lượng khoảng `515 MB`, duration video `1390.929s`, audio `1390.930s`, `duration_match=true`.
+- Counts: `film_map=273`, `review_beats=40`, `shots=1272`, `edl=442`; TTS `24701` chars, `real_ratio=0.2527`.
+- Ghi chú runtime:
+  - GĐ2 dùng ChatGPT `PROFILE_GPT_1` + session mới từ `auto_YT`; stale session cookie gây modal `expired-session`, cần dùng cookie mới hoặc profile đã login không bị lock.
+  - GĐ2 phim dài cần `reply_timeout_s=900`; review mất khoảng `1382s` do narration + QA/regenerate.
+  - GĐ3 AI33/VBee chạy ổn với 40 beats, không warning.
+  - GĐ4 vẫn warning face detection disabled vì `cv2` thiếu `CascadeClassifier`.
+  - GĐ6 pad video-only từ `1389.865s` lên audio `1390.930s`; final sync đạt.
+- Bài học:
+  - Phim lẻ nên có config/movie preset riêng (`target_ratio` khoảng `0.22–0.28` nếu muốn gọn).
+  - Timecode approximate từ ASR chunked vẫn là rủi ro chính; cần alignment/QC tốt hơn nếu footage chưa sát narration.
+  - Runtime profile/session ChatGPT cần logic rõ: profile lock, fresh session file, và message lỗi dễ hiểu.
