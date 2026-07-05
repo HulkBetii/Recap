@@ -68,6 +68,17 @@ def detection_cache_key(input_path: Path, args: argparse.Namespace) -> str:
     })
 
 
+
+def legacy_detection_cache_key(input_path: Path, args: argparse.Namespace) -> str:
+    return stable_hash({
+        "input": input_signature(input_path),
+        "detector": args.detector,
+        "skip_intro": args.skip_intro,
+        "skip_outro": args.skip_outro,
+        "downscale": args.downscale,
+        "video_profile": str(args.video_profile) if args.video_profile else None,
+    })
+
 def feature_cache_key(spans: list[ShotSpan], args: argparse.Namespace) -> str:
     return stable_hash({
         "spans": [span.__dict__ for span in spans],
@@ -138,6 +149,8 @@ def run_shots(args: argparse.Namespace) -> int:
     logger.info("[1/4] Detecting shots")
     detect_key = detection_cache_key(input_path, args)
     cached_detection = cache.read_cached("detection.json", detect_key)
+    if cached_detection is None:
+        cached_detection = cache.read_cached("detection.json", legacy_detection_cache_key(input_path, args))
     if cached_detection is not None:
         spans = spans_from_json(cached_detection["spans"])
         duration_s = float(cached_detection["duration_s"])
