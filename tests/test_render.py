@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -8,7 +8,7 @@ import pytest
 
 from common.schema import EdlPlacement, RenderMeta
 from render.cache import RenderCache
-from render.compose import concat_list_text
+from render.compose import concat_list_text, mux_voiceover
 from render.cut import RenderParams, build_video_filter, clamp_source, temp_cache_key
 from render.quantize import quantize_placements
 
@@ -96,3 +96,13 @@ def test_concat_list_text_preserves_order(tmp_path: Path) -> None:
     text = concat_list_text([first, second])
     assert text.splitlines()[0].endswith("a.mp4'")
     assert text.splitlines()[1].endswith("b.mp4'")
+
+
+def test_mux_voiceover_can_delay_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    commands = []
+    monkeypatch.setattr("render.compose.run_command", lambda command: commands.append(command))
+    mux_voiceover(tmp_path / "video.mp4", tmp_path / "voice.mp3", tmp_path / "out.mp4", audio_delay_s=0.25)
+    command = commands[0]
+    assert "-filter_complex" in command
+    assert "[1:a]adelay=250:all=1[a]" in command
+    assert "[a]" in command

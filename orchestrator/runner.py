@@ -220,7 +220,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--no-review-html")
     elif stage == "render":
         command += ["--edl", str(paths.edl), "--voiceover", str(paths.voiceover), "--film", str(film), "--output", str(paths.recap)]
-        for key in ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "log_level"):
+        for key in ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s", "log_level"):
             add_option(command, key, section.get(key))
     else:
         raise OrchestratorError(f"unknown stage: {stage}")

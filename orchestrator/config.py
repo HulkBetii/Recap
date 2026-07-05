@@ -157,6 +157,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "crf": 20,
         "preset": "medium",
         "concurrency": 4,
+        "audio_delay_s": 0.0,
         "log_level": "INFO",
     },
 }

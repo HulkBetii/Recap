@@ -527,6 +527,7 @@ class RenderMeta(BaseModel):
     codec: str
     video_duration_s: float = Field(ge=0)
     audio_duration_s: float = Field(ge=0)
+    audio_delay_s: float = Field(default=0.0, ge=0)
     duration_match: bool
     n_placements: int = Field(ge=0)
     n_temp_clips: int = Field(ge=0)

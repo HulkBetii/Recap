@@ -37,6 +37,7 @@ def make_args(tmp_path: Path, force: bool = False) -> argparse.Namespace:
         crf=20,
         preset="medium",
         concurrency=2,
+        audio_delay_s=0.0,
         work_dir=tmp_path / "work" / "render",
         force=force,
         log_level="ERROR",
@@ -65,7 +66,7 @@ def test_render_cli_outputs_meta_and_uses_cache(tmp_path: Path, monkeypatch: pyt
         output_path.write_bytes(b"video")
         return work_dir / "concat.txt"
 
-    def fake_mux(video_path, voiceover_path, output_path):  # type: ignore[no-untyped-def]
+    def fake_mux(video_path, voiceover_path, output_path, audio_delay_s=0.0):  # type: ignore[no-untyped-def]
         output_path.write_bytes(b"recap")
 
     monkeypatch.setattr("render.__main__.cut_temp_clip", fake_cut)
@@ -89,7 +90,7 @@ def test_render_cli_duration_warning(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("render.__main__.has_audio_stream", lambda path: True)
     monkeypatch.setattr("render.__main__.cut_temp_clip", lambda **kwargs: kwargs["output_path"].write_bytes(b"temp"))
     monkeypatch.setattr("render.__main__.concat_video", lambda temp_paths, output_path, work_dir: output_path.write_bytes(b"video"))
-    monkeypatch.setattr("render.__main__.mux_voiceover", lambda video_path, voiceover_path, output_path: output_path.write_bytes(b"recap"))
+    monkeypatch.setattr("render.__main__.mux_voiceover", lambda video_path, voiceover_path, output_path, audio_delay_s=0.0: output_path.write_bytes(b"recap"))
     assert run_render(args) == 0
     meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
     assert meta["duration_match"] is False

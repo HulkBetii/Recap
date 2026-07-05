@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -57,9 +57,9 @@ def pad_video_to_duration(video_path: Path, output_path: Path, duration_s: float
     ])
 
 
-def mux_voiceover(video_path: Path, voiceover_path: Path, output_path: Path) -> None:
+def mux_voiceover(video_path: Path, voiceover_path: Path, output_path: Path, audio_delay_s: float = 0.0) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    run_command([
+    command = [
         "ffmpeg",
         "-y",
         "-i",
@@ -68,8 +68,13 @@ def mux_voiceover(video_path: Path, voiceover_path: Path, output_path: Path) -> 
         str(voiceover_path),
         "-map",
         "0:v:0",
-        "-map",
-        "1:a:0",
+    ]
+    if audio_delay_s > 0:
+        delay_ms = max(0, round(audio_delay_s * 1000))
+        command += ["-filter_complex", f"[1:a]adelay={delay_ms}:all=1[a]", "-map", "[a]"]
+    else:
+        command += ["-map", "1:a:0"]
+    command += [
         "-c:v",
         "copy",
         "-c:a",
@@ -78,4 +83,5 @@ def mux_voiceover(video_path: Path, voiceover_path: Path, output_path: Path) -> 
         "-movflags",
         "+faststart",
         str(output_path),
-    ])
+    ]
+    run_command(command)

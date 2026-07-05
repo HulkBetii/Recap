@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--crf", type=int, default=20)
     parser.add_argument("--preset", default="medium")
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--audio-delay-s", type=float, default=0.0, help="Delay voiceover audio at mux time; use when audio subjectively leads video")
     parser.add_argument("--work-dir", type=Path, default=Path("work") / "render")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -87,12 +88,15 @@ def run_render(args: argparse.Namespace) -> int:
         raise RenderError("width, height and fps must be greater than zero")
     if args.concurrency <= 0:
         raise RenderError("concurrency must be greater than zero")
+    if args.audio_delay_s < 0:
+        raise RenderError("--audio-delay-s must be >= 0")
     placements = load_edl(args.edl)
     if not placements:
         raise RenderError("edl cannot be empty")
     film_info = probe_video_stream(args.film)
     film_duration = float(film_info["duration"])
     audio_duration = probe_duration(args.voiceover)
+    mux_audio_duration = audio_duration + args.audio_delay_s
     frames = quantize_placements(placements, args.fps)
     params = RenderParams(width=args.width, height=args.height, fps=args.fps, fit=args.fit, crf=args.crf, preset=args.preset)
     cache = RenderCache(args.work_dir, force=args.force)
@@ -107,27 +111,29 @@ def run_render(args: argparse.Namespace) -> int:
     )
     if len(temp_paths) != len(frames):
         raise RenderError("not all temp clips were rendered")
+    if args.audio_delay_s > 0:
+        warnings.append(f"voiceover audio delayed by {args.audio_delay_s:.3f}s at mux")
     video_only = args.work_dir / "video_only.mp4"
     logging.info("concat %s temp clips", len(temp_paths))
     concat_video(temp_paths, video_only, args.work_dir)
     video_for_mux = video_only
     video_only_duration = probe_duration(video_only)
-    if video_only_duration + max(0.1, 2.0 / args.fps) < audio_duration:
+    if video_only_duration + max(0.1, 2.0 / args.fps) < mux_audio_duration:
         padded_video = args.work_dir / "video_only_padded.mp4"
-        warnings.append(f"video-only concat was padded from {video_only_duration:.3f}s to audio duration {audio_duration:.3f}s")
+        warnings.append(f"video-only concat was padded from {video_only_duration:.3f}s to delayed audio duration {mux_audio_duration:.3f}s")
         logging.info("pad video-only concat to voiceover duration")
-        pad_video_to_duration(video_only, padded_video, audio_duration)
+        pad_video_to_duration(video_only, padded_video, mux_audio_duration)
         video_for_mux = padded_video
     logging.info("mux voiceover")
-    mux_voiceover(video_for_mux, args.voiceover, args.output)
+    mux_voiceover(video_for_mux, args.voiceover, args.output, audio_delay_s=args.audio_delay_s)
     output_info = probe_video_stream(args.output)
     video_duration = probe_duration(args.output)
     if not has_audio_stream(args.output):
         warnings.append("output has no audio stream")
     duration_tolerance = max(0.1, 2.0 / args.fps)
-    duration_match = abs(video_duration - audio_duration) <= duration_tolerance
+    duration_match = abs(video_duration - mux_audio_duration) <= duration_tolerance
     if not duration_match:
-        warnings.append(f"video/audio duration mismatch: video={video_duration:.3f}s audio={audio_duration:.3f}s")
+        warnings.append(f"video/audio duration mismatch: video={video_duration:.3f}s delayed_audio={mux_audio_duration:.3f}s")
     if int(output_info["width"]) != args.width or int(output_info["height"]) != args.height:
         warnings.append("output resolution does not match requested size")
     if abs(float(output_info["fps"]) - args.fps) > 0.05:
@@ -138,7 +144,8 @@ def run_render(args: argparse.Namespace) -> int:
         fps=args.fps,
         codec=str(output_info.get("codec") or "h264"),
         video_duration_s=round(video_duration, 3),
-        audio_duration_s=round(audio_duration, 3),
+        audio_duration_s=round(mux_audio_duration, 3),
+        audio_delay_s=round(args.audio_delay_s, 3),
         duration_match=duration_match,
         n_placements=len(placements),
         n_temp_clips=len(temp_paths),
