@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 from dataclasses import dataclass
@@ -80,24 +80,17 @@ def build_story_sections(
         sections = non_story_sections
         return reassign_sections(sections), StoryMapReport(warnings=warnings, qa=build_qa(reassign_sections(sections), warnings))
 
-    story_start = min(segment.tc_start for segment in story_segments)
-    story_end = max(segment.tc_end for segment in story_segments)
-    story_duration = max(story_end - story_start, 0.001)
     n_sections = max(1, min(target_story_sections, len(story_segments)))
     sections: list[StorySection] = []
     for index in range(n_sections):
-        start = story_start + story_duration * index / n_sections
-        end = story_start + story_duration * (index + 1) / n_sections
-        if index == 0:
-            start = story_start
-        if index == n_sections - 1:
-            end = story_end
-        bucket = [segment for segment in story_segments if segment.tc_start < end and segment.tc_end > start]
+        start_index = round(len(story_segments) * index / n_sections)
+        end_index = round(len(story_segments) * (index + 1) / n_sections)
+        bucket = story_segments[start_index:end_index]
         if not bucket:
             continue
         section_type = SECTION_ORDER[min(index, len(SECTION_ORDER) - 1)]
-        tc_start = min(segment.tc_start for segment in bucket)
-        tc_end = max(segment.tc_end for segment in bucket)
+        tc_start = bucket[0].tc_start
+        tc_end = bucket[-1].tc_end
         summary = summarize_segments(bucket, f"Movie {section_type.replace('_', ' ')} section")
         characters = extract_characters(bucket)
         section_warnings: list[str] = []
