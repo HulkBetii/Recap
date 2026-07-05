@@ -30,6 +30,11 @@ semantic-embed = [
     "torch>=2.8",
     "sentence-transformers>=3.0,<5",
 ]
+video-profile = [
+    "torch>=2.8",
+    "open-clip-torch>=2.24,<3",
+    "Pillow>=10,<12",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

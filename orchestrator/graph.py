@@ -3,16 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-STAGES = ("ingest", "review", "tts", "shots", "match", "render")
+STAGES = ("preflight", "ingest", "review", "tts", "shots", "match", "render")
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
-    "ingest": (),
+    "preflight": (),
+    "ingest": ("preflight",),
     "review": ("ingest",),
     "tts": ("review",),
-    "shots": (),
+    "shots": ("preflight",),
     "match": ("review", "tts", "shots"),
     "render": ("match", "tts"),
 }
 DOWNSTREAM: dict[str, tuple[str, ...]] = {
+    "preflight": ("ingest", "review", "tts", "shots", "match", "render"),
     "ingest": ("review", "tts", "match", "render"),
     "review": ("tts", "match", "render"),
     "tts": ("match", "render"),
@@ -24,6 +26,7 @@ DOWNSTREAM: dict[str, tuple[str, ...]] = {
 @dataclass(frozen=True)
 class RunPaths:
     run_dir: Path
+    video_profile: Path
     film_map: Path
     film_map_meta: Path
     review_script: Path
@@ -39,6 +42,8 @@ class RunPaths:
     edl: Path
     edl_meta: Path
     edl_qa: Path
+    edl_review_html: Path
+    edl_review_dir: Path
     recap: Path
     render_meta: Path
     work_dir: Path
@@ -49,6 +54,7 @@ class RunPaths:
 def build_paths(run_dir: Path) -> RunPaths:
     return RunPaths(
         run_dir=run_dir,
+        video_profile=run_dir / "video_profile.json",
         film_map=run_dir / "film_map.json",
         film_map_meta=run_dir / "film_map.meta.json",
         review_script=run_dir / "review_script.json",
@@ -64,6 +70,8 @@ def build_paths(run_dir: Path) -> RunPaths:
         edl=run_dir / "edl.json",
         edl_meta=run_dir / "edl.meta.json",
         edl_qa=run_dir / "edl.qa.json",
+        edl_review_html=run_dir / "edl.review.html",
+        edl_review_dir=run_dir / "edl.review",
         recap=run_dir / "recap.mp4",
         render_meta=run_dir / "render.meta.json",
         work_dir=run_dir / "work",

@@ -2,6 +2,15 @@ orchestrator:
   python: null
   log_level: INFO
 
+preflight:
+  enabled: true
+  max_intro_s: 240
+  sample_every_s: 5
+  classifier: heuristic
+  confidence_threshold: 0.75
+  uncertain_threshold: 0.55
+  log_level: INFO
+
 ingest:
   whisper_model: large-v3
   gap_threshold: 4.0
@@ -75,6 +84,7 @@ match:
   max_widen: 3
   allow_repeat: true
   allow_speedfit: false
+  exclude_non_story: true
   seed: 1234
   w_motion: 0.60
   w_face: 0.18
@@ -89,6 +99,10 @@ match:
   semantic_cache_dir: null
   film_map: auto
   output_qa: null
+  output_review_html: null
+  review_asset_dir: null
+  review_thumbs_per_beat: 8
+  review_html: true
   log_level: INFO
 
 render:

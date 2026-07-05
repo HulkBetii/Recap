@@ -197,14 +197,17 @@ repo/
 - Package thực tế:
   - `shots/`: detection, thumbnail extraction, feature computation, cache và CLI orchestration.
   - `common/schema.py`: có thêm `Shot`, `ShotsMeta`, `validate_shots`.
-- Cache GĐ4 nằm trong `--work-dir`: `detection.json`, `features.json`, `thumbs/`.
+- Cache GĐ4 nằm trong `--work-dir`: `detection.json`, `features.json`, `profile_marking.json`, `thumbs/`.
+- `detection.json` và `features.json` không phụ thuộc `video_profile.json`; khi chỉ đổi profile, GĐ4 chỉ re-apply `profile_marking.json` để set `is_story=false` / `exclude_reason`.
+- CLI có `--profile-only` để debug re-apply profile từ cache; thiếu cache features thì fail-fast.
 - Test tự động dùng mock/frame synthetic; real clip smoke test sẽ chạy khi có video mẫu.
 ## 14. GD5 IMPLEMENTATION HIEN TAI
 
 - GD5 la CLI local/offline, chay bang `python -m match`.
-- GD5 doc `review_script.json`, `beats_timing.json`, `shots.json` va optional `film_map.json`; sinh `edl.json` + `edl.meta.json` + `edl.qa.json`; khong decode video, khong dung API.
+- GD5 doc `review_script.json`, `beats_timing.json`, `shots.json` va optional `film_map.json`; sinh `edl.json` + `edl.meta.json` + `edl.qa.json` + `edl.review.html`; khong decode video, khong dung API.
 - Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding qua optional deps `semantic-embed`; `tfidf` van la fallback nhe. Semantic la soft bonus, khong hard filter.
 - `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse va warning `low semantic match` theo beat.
+- `edl.review.html` la QA artifact truc quan tu `match/review_html.py`, dung thumbnails san co trong `shots.json`, hien narration/source span/selected clip metrics/warnings de review nhanh bang browser.
 - Face la soft bonus, khong phai hard filter. Shot `face_count=0` van duoc chon neu motion/brightness/semantic tot.
 - Package thuc te:
   - `match/`: candidate filtering/widening, scoring, semantic adapters, greedy fill, timeline assignment, cache va CLI orchestration.
@@ -235,7 +238,7 @@ repo/
 - Config chính là YAML/JSON một chỗ; mẫu đầy đủ nằm ở `config.example.yaml`. Dependency mới: `PyYAML`.
 - Resume/idempotent: output hợp lệ thì skip; `--force` chạy lại selected stages; `--force-stage <stage>` chạy lại stage đó và downstream selected stages.
 - Hỗ trợ `--from`, `--to`, `--only`, `--dry-run`; dry-run chỉ in plan, không gọi subprocess.
-- Validate output sau mỗi stage bằng schema chung trước khi chuyển stage kế tiếp.
+- Validate output sau mỗi stage bằng schema chung trước khi chuyển stage kế tiếp. GĐ5 output hiện gồm cả `edl.review.html` khi `match.review_html=true`.
 - `runs/` là artifact output/cache và không commit vào git.
 ## 17. G?1 ASR/TIMECODE UPDATE HI?N T?I
 
@@ -302,10 +305,12 @@ repo/
 
 ## 25. EPISODE INTRO / OPENING EXCLUSION
 
-- Với tập có intro/opening không liên quan voice/story, phải dùng cùng cutoff cho GĐ1 và GĐ4.
-- GĐ1: `--drop-visual-before-s <seconds>` để không tạo visual segments từ intro trong `film_map`.
-- GĐ4: `--skip-intro <seconds>` để shot library/match không chọn footage intro.
-- Nếu chỉ dùng một trong hai option, GĐ2/GĐ5 vẫn có thể lấy nhầm footage intro.
+- Không dùng cutoff cứng làm cơ chế mặc định vì mỗi video có intro/opening dài ngắn khác nhau.
+- GĐ0 `preflight` phải sinh `video_profile.json` với `non_story_ranges` trước khi GĐ1/GĐ4/GĐ5 xử lý footage.
+- GĐ1 nhận `--video-profile` để bỏ visual-only gaps trong non-story ranges nhưng vẫn giữ speech thật.
+- GĐ4 nhận `--video-profile` để gắn shot overlap non-story thành `is_story=false` và `exclude_reason` tương ứng.
+- GĐ5 mặc định `--exclude-non-story`; shot intro/opening không được dùng cho candidate, repeat fallback hoặc pause filler.
+- `--drop-visual-before-s` và `--skip-intro` chỉ còn là debug/override khẩn cấp, không nằm trong default config.
 
 ## 26. GĐ2 STYLE PRESET / READABILITY QA HIỆN TẠI
 
@@ -335,3 +340,14 @@ repo/
 - `film_map` approximate timecode vẫn là rủi ro chính cho footage matching; phim dài nên ưu tiên alignment/QC tốt hơn khi cần sát hình.
 - GĐ4 hiện vẫn có thể mất face feature nếu OpenCV runtime thiếu `CascadeClassifier`; GĐ5 không được hard-filter theo face.
 - GĐ6 padding video-only giúp giữ `duration_match=true`, nhưng padding concat dài có thể tốn thời gian vì phải re-encode video-only concat.
+
+
+## 30. GĐ0 VIDEO PROFILE / INTRO DETECTION
+
+- Không hardcode intro duration trong default pipeline; `skip_intro` và `drop_visual_before_s` chỉ là debug override thủ công.
+- GĐ0 chạy bằng `python -m preflight`, sinh `video_profile.json` trước GĐ1/GĐ4.
+- `video_profile.json` chứa `intro` và `non_story_ranges`; chỉ hard-exclude khi confidence đủ cao.
+- Default classifier trong config là `heuristic` an toàn/không loại cứng; `openclip` là optional local classifier qua dependency group `video-profile`.
+- GĐ1 dùng `video_profile.json` để bỏ visual-only gaps trong non-story ranges nhưng vẫn giữ speech thật.
+- GĐ4 gắn shot overlap non-story thành `is_story=false`, `exclude_reason="intro_opening"`; thumbnails/features vẫn giữ để debug.
+- GĐ5 mặc định `exclude_non_story=true`, không chọn shot non-story cho candidate, repeat fallback hoặc pause filler.

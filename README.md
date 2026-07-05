@@ -49,7 +49,7 @@ python run.py --input path\to\film.mp4 --run-dir runs\ep01 --config config.yaml 
 
 Run directory chính:
 
-- `film_map.json`, `review_script.json`, `voiceover.mp3`, `beats_timing.json`, `shots.json`, `edl.json`, `recap.mp4`
+- `film_map.json`, `review_script.json`, `voiceover.mp3`, `beats_timing.json`, `shots.json`, `edl.json`, `edl.qa.json`, `edl.review.html`, `recap.mp4`
 - `*.meta.json`, `audio/`, `shots/`, `work/<stage>/`, `run.log`, `summary.json`
 
 `summary.json` gom duration từng stage, trạng thái run/skip, warnings và ba số calibrate: `real_ratio`, `n_beats_widened`, `duration_match`.
@@ -209,11 +209,12 @@ python -m shots --input path\to\film.mp4 --output out\shots.json --face-detectio
 
 Cache GĐ4:
 
-- `work/shots/detection.json`
-- `work/shots/features.json`
+- `work/shots/detection.json` — shot spans, không phụ thuộc `video_profile.json`.
+- `work/shots/features.json` — motion/brightness/face/thumb feature, không phụ thuộc `video_profile.json`.
+- `work/shots/profile_marking.json` — apply `video_profile.json` để set `is_story=false` / `exclude_reason`.
 - `work/shots/thumbs/`
 
-Thêm `--force` để detect/tính feature lại.
+Khi chỉ đổi `video_profile.json`, GĐ4 chỉ re-apply profile marking và không re-detect/recompute features. Thêm `--profile-only` để debug re-apply từ cache; thêm `--force` để detect/tính feature lại toàn bộ.
 ## Chạy GĐ5
 
 GD5 nhan `review_script.json`, `beats_timing.json`, `shots.json` va tao `edl.json` + `edl.meta.json` + `edl.qa.json`. Neu truyen them `--film-map`, GD5 co the dung semantic offline: `bge-m3` multilingual embedding la default orchestrator, con `tfidf` la fallback nhe. Stage nay chi xu ly JSON, khong decode video va khong dung API.
@@ -226,6 +227,9 @@ python -m match `
   --film-map out\film_map.json `
   --output out\edl.json `
   --output-qa out\edl.qa.json `
+  --output-review-html out\edl.review.html `
+  --review-asset-dir out\edl.review `
+  --review-thumbs-per-beat 8 `
   --semantic-mode bge-m3 `
   --semantic-model BAAI/bge-m3 `
   --semantic-device auto `
@@ -246,11 +250,12 @@ Nguyên tắc GĐ5:
 
 - Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding; `tfidf` van giu lam fallback khong can dependency nang.
 - Cai embedding deps khi dung `bge-m3`: `pip install -e ".[semantic-embed]"`.
-- `edl.qa.json` ghi provider/model/device/cache hits, tung beat chon shot nao, semantic rank/score va warning `low semantic match`.
+- `edl.qa.json` ghi provider/model/device/cache hits, từng beat chọn shot nào, semantic rank/score và warning `low semantic match`.
+- `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse và warnings theo beat.
 - Face l? ?i?m c?ng m?m, kh?ng l?c c?ng.
 - Placement m?c ??nh 1:1 speed `1.0`.
 - Thi?u footage th? n?i c?a s? ngu?n tr??c, sau ?? m?i repeat c? ki?m so?t.
-- Cache n?m ? `work/match/plan.json`; hash cache bao g?m `film_map.json` v? config semantic n?u b?t; th?m `--force` ?? recompute.
+- Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
 
 ## Chạy GĐ6
 
@@ -343,8 +348,9 @@ Các policy: `auto`, `new`, `resume`. Metadata được lưu ở `work/review/ch
 Nếu phim/tập có intro/opening chỉ có hình ảnh không liên quan narration, chạy GĐ1/GĐ4 với cutoff cùng giá trị. Ví dụ tập này dùng `120s`:
 
 ```powershell
-python -m ingest --input film.mp4 --output runs\ep01\film_map.json --drop-visual-before-s 120
-python -m shots --input film.mp4 --output runs\ep01\shots.json --thumb-dir runs\ep01\shots --skip-intro 120
+python -m preflight --input film.mp4 --output runs\ep01\video_profile.json --classifier openclip
+python -m ingest --input film.mp4 --output runs\ep01\film_map.json --video-profile runs\ep01\video_profile.json
+python -m shots --input film.mp4 --output runs\ep01\shots.json --thumb-dir runs\ep01\shots --video-profile runs\ep01\video_profile.json
 ```
 
 ## Runtime Notes From Real E2E
@@ -354,3 +360,19 @@ python -m shots --input film.mp4 --output runs\ep01\shots.json --thumb-dir runs\
 - GĐ2 supports `--reply-timeout-s`; long movie outline/narration/QA can require `900` seconds per response.
 - Local runtime artifacts are ignored: `.env`, `data/`, `runs/`, `work/`, and `out/` must not be committed.
 - Movie mode is independent per video. Series mode should later add shared glossary/entity bible and episode summaries rather than relying on one giant chat history.
+
+
+## GĐ0 Video Profile / Intro Detection
+
+Run preflight before ingest/shots to detect per-video intro/opening/title/logo ranges instead of hardcoding a cutoff:
+
+```powershell
+python -m preflight `
+  --input film.mp4 `
+  --output video_profile.json `
+  --max-intro-s 240 `
+  --sample-every-s 5 `
+  --classifier heuristic
+```
+
+`heuristic` is conservative and does not hard-exclude without enough evidence. For local visual classification, install `pip install -e ".[video-profile]"` and run `--classifier openclip`. Manual `--skip-intro` / `--drop-visual-before-s` remain debug overrides only.

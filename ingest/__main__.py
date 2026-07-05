@@ -185,6 +185,19 @@ def load_translations(
     return translated, warnings_count
 
 
+def load_video_profile(path: Path | None) -> VideoProfile | None:
+    if path is None:
+        return None
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise IngestError(f"video profile does not exist: {resolved}")
+    return VideoProfile.model_validate_json(resolved.read_text(encoding="utf-8"))
+
+def overlaps_non_story(start: float, end: float, profile: VideoProfile | None) -> bool:
+    if profile is None:
+        return False
+    return any(start < item.end_s and end > item.start_s for item in profile.non_story_ranges)
+
 def load_vision(
     *,
     cache: StageCache,
@@ -197,12 +210,15 @@ def load_vision(
     client: OpenAIIngestClient,
     logger: logging.Logger,
     drop_visual_before_s: float = 0.0,
+    video_profile: VideoProfile | None = None,
 ) -> tuple[list[VisionSegment], int]:
     if cache.has("vision.json"):
         logger.info("[5/6] Using cached vision.json")
         return [VisionSegment.model_validate(item) for item in cache.read_json("vision.json")], 0
     logger.info("[4/6] Detecting silent gaps")
     gaps = split_long_gaps(detect_silent_gaps(translated, duration, gap_threshold), max_visual_gap_s)
+    if video_profile is not None:
+        gaps = [gap for gap in gaps if not overlaps_non_story(gap.tc_start, gap.tc_end, video_profile)]
     if drop_visual_before_s > 0:
         gaps = [gap for gap in gaps if gap.tc_end > drop_visual_before_s]
         gaps = [gap.model_copy(update={"id": index, "tc_start": max(gap.tc_start, drop_visual_before_s)}) for index, gap in enumerate(gaps) if max(gap.tc_start, drop_visual_before_s) < gap.tc_end]
@@ -244,6 +260,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         "correction_model": "gpt-4.1-mini",
         "drop_non_korean_intro_s": 30.0,
         "drop_visual_before_s": 0.0,
+        "video_profile": None,
     }.items():
         if not hasattr(args, key):
             setattr(args, key, value)
@@ -286,6 +303,7 @@ def run_ingest(args: argparse.Namespace) -> int:
     transcript, transcript_quality = load_transcript(cache, audio_path, duration, args, logger)
     translated, translation_warnings = load_translations(cache, transcript, client, logger)
     warnings_count += translation_warnings
+    video_profile = load_video_profile(args.video_profile)
     vision_segments, vision_warnings = load_vision(
         cache=cache,
         input_path=input_path,
@@ -297,6 +315,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         client=client,
         logger=logger,
         drop_visual_before_s=args.drop_visual_before_s,
+        video_profile=video_profile,
     )
     warnings_count += vision_warnings
 

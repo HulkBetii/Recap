@@ -61,6 +61,9 @@ def build_edl_qa(
                     "face_area": shot.face_area,
                     "face_bonus": round(face_bonus(shot), 6),
                     "total_score_no_reuse": round(score_shot(shot, 0, weights, semantic_score), 6),
+                    "is_story": shot.is_story,
+                    "exclude_reason": shot.exclude_reason,
+                    "selected_from_non_story": not shot.is_story,
                 })
             selected.append(entry)
         avg_semantic = sum(beat_semantic_values) / len(beat_semantic_values) if beat_semantic_values else 0.0
@@ -75,13 +78,17 @@ def build_edl_qa(
             "selected": selected,
             "warnings": beat_warnings,
         })
+    excluded_intro = [shot.index for shot in shots if not shot.is_story]
     return {
-        "version": 2,
+        "version": 3,
         "semantic_enabled": bool(semantic_scores),
         "semantic_provider": semantic_result.provider if semantic_result else ("tfidf" if semantic_scores else "off"),
         "semantic_model": semantic_result.model if semantic_result else None,
         "semantic_device": semantic_result.device if semantic_result else None,
         "semantic_cache_hits": semantic_result.cache_hits if semantic_result else [],
         "min_semantic_score": min_semantic_score,
+        "n_intro_excluded": len(excluded_intro),
+        "excluded_intro_candidates": excluded_intro[:200],
+        "selected_from_non_story": any((not shots_by_index.get(item.shot_index, Shot(src="unknown", index=0, tc_start=0, tc_end=1, duration=1, thumb="unknown", motion_score=0, face_count=0, face_area=0, brightness=0, is_usable=False)).is_story) for item in placements),
         "beats": beat_reports,
     }

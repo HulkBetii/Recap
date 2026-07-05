@@ -208,6 +208,9 @@ class ReviewMeta(BaseModel):
     qa_report: list[dict[str, Any]] = Field(default_factory=list)
     n_qa_iterations: int = Field(ge=0)
     model_versions: dict[str, str] = Field(default_factory=dict)
+    video_profile_path: str | None = None
+    n_non_story: int = Field(default=0, ge=0)
+    intro_detection: dict[str, Any] | None = None
     created_at: datetime
     warnings: list[str] = Field(default_factory=list)
     cache_hits: list[str] = Field(default_factory=list)
@@ -264,6 +267,59 @@ class TtsMeta(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+
+class NonStoryRange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_s: float = Field(ge=0)
+    end_s: float = Field(gt=0)
+    label: str
+    confidence: float = Field(ge=0, le=1)
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("label cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "NonStoryRange":
+        if self.end_s <= self.start_s:
+            raise ValueError("end_s must be greater than start_s")
+        return self
+
+class IntroDetection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    detected: bool
+    start_s: float = Field(default=0.0, ge=0)
+    end_s: float | None = None
+    confidence: float = Field(ge=0, le=1)
+    reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_intro(self) -> "IntroDetection":
+        if self.detected:
+            if self.end_s is None:
+                raise ValueError("detected intro requires end_s")
+            if self.end_s <= self.start_s:
+                raise ValueError("intro end_s must be greater than start_s")
+        return self
+
+class VideoProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input_path: str
+    duration_s: float = Field(gt=0)
+    intro: IntroDetection
+    non_story_ranges: list[NonStoryRange] = Field(default_factory=list)
+    classifier: str
+    created_at: datetime
+    warnings: list[str] = Field(default_factory=list)
+    cache_hits: list[str] = Field(default_factory=list)
+
 class TtsManifestEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -293,6 +349,8 @@ class Shot(BaseModel):
     face_area: float = Field(ge=0, le=1)
     brightness: float = Field(ge=0, le=1)
     is_usable: bool
+    is_story: bool = True
+    exclude_reason: str | None = None
 
     @field_validator("src", "thumb")
     @classmethod
@@ -321,6 +379,10 @@ class ShotsMeta(BaseModel):
     detector: str
     feature_config: dict[str, Any] = Field(default_factory=dict)
     model_versions: dict[str, str] = Field(default_factory=dict)
+    video_profile_path: str | None = None
+    video_profile_hash: str | None = None
+    n_non_story: int = Field(default=0, ge=0)
+    intro_detection: dict[str, Any] | None = None
     created_at: datetime
     cache_hits: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -367,6 +429,7 @@ class EdlMeta(BaseModel):
     n_beats_widened: int = Field(ge=0)
     n_reused: int = Field(ge=0)
     n_speedfit: int = Field(ge=0)
+    n_intro_excluded: int = Field(default=0, ge=0)
     avg_clip_len: float = Field(ge=0)
     coverage_ok: bool
     warnings: list[str] = Field(default_factory=list)
@@ -488,5 +551,3 @@ def write_json(path: Path, data: object) -> None:
 
         text = json.dumps(data, ensure_ascii=False, indent=2)
     path.write_text(text + "\n", encoding="utf-8")
-
-

@@ -17,6 +17,7 @@ from common.schema import (
     FilmMapMeta,
     FilmMapSegment,
     RenderMeta,
+    VideoProfile,
     ReviewBeat,
     ReviewMeta,
     Shot,
@@ -42,11 +43,12 @@ class StageSpec:
     meta: str | None
 
 STAGE_SPECS: dict[str, StageSpec] = {
+    "preflight": StageSpec("preflight", ("video_profile",), "video_profile"),
     "ingest": StageSpec("ingest", ("film_map", "film_map_meta"), "film_map_meta"),
     "review": StageSpec("review", ("review_script", "review_meta"), "review_meta"),
     "tts": StageSpec("tts", ("voiceover", "beats_timing", "tts_meta"), "tts_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
-    "match": StageSpec("match", ("edl", "edl_meta", "edl_qa"), "edl_meta"),
+    "match": StageSpec("match", ("edl", "edl_meta", "edl_qa", "edl_review_html"), "edl_meta"),
     "render": StageSpec("render", ("recap", "render_meta"), "render_meta"),
 }
 
@@ -65,7 +67,9 @@ def all_outputs_exist(paths: RunPaths, stage: str) -> bool:
 
 def validate_stage(paths: RunPaths, stage: str) -> None:
     try:
-        if stage == "ingest":
+        if stage == "preflight":
+            VideoProfile.model_validate(load_json(paths.video_profile))
+        elif stage == "ingest":
             meta = FilmMapMeta.model_validate(load_json(paths.film_map_meta))
             validate_film_map([FilmMapSegment.model_validate(item) for item in load_json(paths.film_map)], duration=meta.duration)
         elif stage == "review":
@@ -116,10 +120,20 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
     py = python_exe or sys.executable
     section = config.get(stage, {})
     command = [py, "-m", stage]
-    if stage == "ingest":
+    if stage == "preflight":
+        command += ["--input", str(film), "--output", str(paths.video_profile)]
+        section = config.get("preflight", {})
+        if section.get("enabled", True):
+            for key in ("max_intro_s", "sample_every_s", "classifier", "confidence_threshold", "uncertain_threshold", "log_level"):
+                add_option(command, key, section.get(key))
+        else:
+            command += ["--classifier", "heuristic"]
+    elif stage == "ingest":
         command += ["--input", str(film), "--output", str(paths.film_map)]
         for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "vision_model", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
             add_option(command, key, section.get(key))
+        if paths.video_profile.exists():
+            command += ["--video-profile", str(paths.video_profile)]
         if not section.get("vad_filter", True):
             command.append("--no-vad-filter")
     elif stage == "review":
@@ -138,6 +152,8 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--no-normalize")
     elif stage == "shots":
         command += ["--input", str(film), "--output", str(paths.shots), "--thumb-dir", str(paths.shots_dir)]
+        if paths.video_profile.exists():
+            command += ["--video-profile", str(paths.video_profile)]
         for key in ("detector", "min_shot_len", "sample_frames", "face_detection", "min_brightness", "skip_intro", "skip_outro", "downscale", "log_level"):
             add_option(command, key, section.get(key))
     elif stage == "match":
@@ -149,10 +165,18 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--film-map", str(film_map_setting)]
         output_qa = section.get("output_qa")
         command += ["--output-qa", str(output_qa or paths.edl_qa)]
+        output_review_html = section.get("output_review_html")
+        review_asset_dir = section.get("review_asset_dir")
+        command += ["--output-review-html", str(output_review_html or paths.edl_review_html)]
+        command += ["--review-asset-dir", str(review_asset_dir or paths.edl_review_dir)]
+        add_option(command, "review_thumbs_per_beat", section.get("review_thumbs_per_beat"))
         for key in ("min_clip", "max_clip", "widen_margin", "max_widen", "seed", "w_motion", "w_face", "w_bright", "w_reuse", "w_semantic", "min_semantic_score", "semantic_mode", "semantic_model", "semantic_device", "semantic_batch_size", "semantic_cache_dir", "log_level"):
             add_option(command, key, section.get(key))
         command.append("--allow-repeat" if section.get("allow_repeat", True) else "--no-allow-repeat")
         command.append("--allow-speedfit" if section.get("allow_speedfit", False) else "--no-allow-speedfit")
+        command.append("--exclude-non-story" if section.get("exclude_non_story", True) else "--no-exclude-non-story")
+        if not section.get("review_html", True):
+            command.append("--no-review-html")
     elif stage == "render":
         command += ["--edl", str(paths.edl), "--voiceover", str(paths.voiceover), "--film", str(film), "--output", str(paths.recap)]
         for key in ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "log_level"):

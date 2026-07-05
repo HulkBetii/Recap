@@ -54,7 +54,10 @@ def stage_name(command: list[str]) -> str:
 
 def write_stage_outputs(command: list[str]) -> None:
     stage = stage_name(command)
-    if stage == "ingest":
+    if stage == "preflight":
+        output = flag(command, "--output")
+        output.write_text(json.dumps({"input_path":"film.mp4","duration_s":2,"intro":{"detected":False,"confidence":0,"reasons":[]},"non_story_ranges":[],"classifier":"heuristic","created_at":NOW,"warnings":[],"cache_hits":[]}), encoding="utf-8")
+    elif stage == "ingest":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"id":0,"type":"speech","tc_start":0,"tc_end":2,"ko":"ì•ˆë…•","en":"hello","scene_desc":None}]), encoding="utf-8")
         output.with_name("film_map.meta.json").write_text(json.dumps({"input_path":"film.mp4","duration":2,"created_at":NOW,"whisper_model":"large-v3","translate_model":"gpt-4.1-mini","vision_model":"gpt-4.1-mini","gap_threshold":4,"max_vision_frames":200,"speech_count":1,"visual_count":0,"cache_hits":[],"warnings_count":0}), encoding="utf-8")
@@ -77,6 +80,7 @@ def write_stage_outputs(command: list[str]) -> None:
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")
         output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[]}), encoding="utf-8")
         output.with_name("edl.qa.json").write_text(json.dumps({"version":1,"semantic_enabled":True,"min_semantic_score":0.12,"beats":[]}), encoding="utf-8")
+        flag(command, "--output-review-html").write_text("<html>review</html>", encoding="utf-8")
     elif stage == "render":
         output = flag(command, "--output")
         output.write_bytes(b"recap")
@@ -103,7 +107,7 @@ def test_full_pipeline_mock_writes_summary_and_runs_shots_parallel(tmp_path: Pat
         write_stage_outputs(command)
 
     assert run_pipeline(argset(tmp_path), executor=fake_executor) == 0
-    assert set(calls) == {"ingest", "review", "tts", "shots", "match", "render"}
+    assert set(calls) == {"preflight", "ingest", "review", "tts", "shots", "match", "render"}
     summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
     assert summary["calibrate"] == {"real_ratio": 1, "n_beats_widened": 0, "duration_match": True}
     assert (tmp_path / "run" / "review_meta.json").exists()

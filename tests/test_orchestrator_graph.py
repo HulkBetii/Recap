@@ -7,7 +7,7 @@ from orchestrator.graph import forced_stages, stage_range
 
 
 def test_stage_range_full_and_only() -> None:
-    assert stage_range() == {"ingest", "review", "tts", "shots", "match", "render"}
+    assert stage_range() == {"preflight", "ingest", "review", "tts", "shots", "match", "render"}
     assert stage_range(only="match") == {"match"}
 
 

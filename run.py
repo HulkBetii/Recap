@@ -68,6 +68,9 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
 
     paths.run_dir.mkdir(parents=True, exist_ok=True)
 
+    if "preflight" in selected:
+        summaries.append(execute("preflight"))
+
     if "shots" in selected:
         with ThreadPoolExecutor(max_workers=1) as pool:
             shots_future = pool.submit(execute, "shots")
@@ -88,6 +91,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
         path=paths.summary,
         stages=summaries,
         meta_paths={
+            "preflight": paths.video_profile,
             "ingest": paths.film_map_meta,
             "review": paths.review_meta,
             "tts": paths.tts_meta,

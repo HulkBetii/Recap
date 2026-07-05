@@ -12,6 +12,7 @@ from match.cache import MatchCache, file_hash, stable_hash
 from match.fill import assign_timeline, fill_beat, fill_timeline_gaps
 from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
 from match.qa import build_edl_qa
+from match.review_html import write_review_html
 from match.scoring import ScoringWeights
 from match.semantic import DEFAULT_EMBEDDING_MODEL, SemanticConfig, SemanticError, compute_semantic_result
 from match.timing import average_clip_len, validate_timeline
@@ -28,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shots", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--output-qa", default=None, type=Path)
+    parser.add_argument("--output-review-html", default=None, type=Path)
+    parser.add_argument("--review-asset-dir", default=None, type=Path)
+    parser.add_argument("--review-thumbs-per-beat", default=8, type=int)
+    parser.add_argument("--review-html", action="store_true", default=True)
+    parser.add_argument("--no-review-html", dest="review_html", action="store_false")
     parser.add_argument("--film-map", default=None, type=Path)
     parser.add_argument("--semantic-mode", default="off", choices=["off", "tfidf", "bge-m3"])
     parser.add_argument("--semantic-model", default=DEFAULT_EMBEDDING_MODEL)
@@ -51,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--w-reuse", default=0.35, type=float)
     parser.add_argument("--w-semantic", default=0.35, type=float)
     parser.add_argument("--min-semantic-score", default=0.12, type=float)
+    parser.add_argument("--exclude-non-story", action="store_true", default=True)
+    parser.add_argument("--no-exclude-non-story", dest="exclude_non_story", action="store_false")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
 
@@ -75,6 +83,9 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "semantic_batch_size": args.semantic_batch_size,
         "semantic_cache_dir": str(args.semantic_cache_dir) if args.semantic_cache_dir else None,
         "min_semantic_score": args.min_semantic_score,
+        "exclude_non_story": args.exclude_non_story,
+        "review_html": args.review_html,
+        "review_thumbs_per_beat": args.review_thumbs_per_beat,
     })
 
 
@@ -97,18 +108,55 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError("--min-semantic-score must be >= 0")
     if args.semantic_batch_size <= 0:
         raise MatchError("--semantic-batch-size must be > 0")
+    if args.review_thumbs_per_beat < 0:
+        raise MatchError("--review-thumbs-per-beat must be >= 0")
+
+
+def review_html_paths(args: argparse.Namespace, output_path: Path) -> tuple[Path, Path]:
+    html_path = args.output_review_html.expanduser().resolve() if args.output_review_html else output_path.with_name("edl.review.html")
+    asset_dir = args.review_asset_dir.expanduser().resolve() if args.review_asset_dir else output_path.with_name("edl.review")
+    return html_path, asset_dir
+
+
+def maybe_write_review_html(args: argparse.Namespace, output_path: Path, qa: dict) -> None:
+    if not args.review_html:
+        return
+    html_path, asset_dir = review_html_paths(args, output_path)
+    write_review_html(
+        output_path=html_path,
+        asset_dir=asset_dir,
+        shots_path=args.shots.expanduser().resolve(),
+        beats=load_review_script(args.review_script.expanduser().resolve()),
+        placements=[EdlPlacement.model_validate(item) for item in json.loads(output_path.read_text(encoding="utf-8"))] if output_path.is_file() else [],
+        shots=load_shots(args.shots.expanduser().resolve()),
+        qa=qa,
+        thumbs_per_beat=args.review_thumbs_per_beat,
+    )
 
 
 def run_match(args: argparse.Namespace) -> int:
     logger = logging.getLogger("match")
+    if not hasattr(args, "exclude_non_story"):
+        args.exclude_non_story = True
+    if not hasattr(args, "review_html"):
+        args.review_html = True
+    if not hasattr(args, "output_review_html"):
+        args.output_review_html = None
+    if not hasattr(args, "review_asset_dir"):
+        args.review_asset_dir = None
+    if not hasattr(args, "review_thumbs_per_beat"):
+        args.review_thumbs_per_beat = 8
     validate_args(args)
     random.seed(args.seed)
     output_path = args.output.expanduser().resolve()
     qa_path = args.output_qa.expanduser().resolve() if args.output_qa else output_path.with_name("edl.qa.json")
+    review_html_path, _review_asset_dir = review_html_paths(args, output_path)
     cache = MatchCache(args.work_dir.expanduser().resolve(), force=args.force)
     cache.prepare()
     cache_key = make_cache_key(args)
     cached = cache.read_plan(cache_key)
+    if cached is not None and "qa" not in cached:
+        cached = None
     if cached is not None:
         edl = [EdlPlacement.model_validate(item) for item in cached["edl"]]
         meta = EdlMeta.model_validate(cached["meta"])
@@ -117,11 +165,14 @@ def run_match(args: argparse.Namespace) -> int:
         write_json(output_path.with_name("edl.meta.json"), meta)
         if "qa" in cached:
             write_json(qa_path, cached["qa"])
+            maybe_write_review_html(args, output_path, cached["qa"])
         return 0
 
     review_beats = load_review_script(args.review_script.expanduser().resolve())
     timings = load_beats_timing(args.beats_timing.expanduser().resolve())
-    shots = load_shots(args.shots.expanduser().resolve())
+    all_shots = load_shots(args.shots.expanduser().resolve())
+    n_intro_excluded = sum(1 for shot in all_shots if not shot.is_story)
+    shots = [shot for shot in all_shots if shot.is_story] if args.exclude_non_story else all_shots
     beats_by_id = {beat.beat_id: beat for beat in review_beats}
     timings_by_id = {timing.beat_id: timing for timing in timings}
     missing = sorted(set(beats_by_id) ^ set(timings_by_id))
@@ -192,6 +243,7 @@ def run_match(args: argparse.Namespace) -> int:
         n_beats_widened=n_beats_widened,
         n_reused=n_reused,
         n_speedfit=n_speedfit,
+        n_intro_excluded=n_intro_excluded if args.exclude_non_story else 0,
         avg_clip_len=round(average_clip_len(placements), 3),
         coverage_ok=coverage_ok,
         warnings=warnings,
@@ -202,7 +254,7 @@ def run_match(args: argparse.Namespace) -> int:
     qa = build_edl_qa(
         beats=review_beats,
         placements=placements,
-        shots=shots,
+        shots=all_shots,
         semantic_scores=semantic_scores,
         weights=weights,
         semantic_result=semantic_result,
@@ -212,6 +264,7 @@ def run_match(args: argparse.Namespace) -> int:
     write_json(output_path, placements)
     write_json(output_path.with_name("edl.meta.json"), meta)
     write_json(qa_path, qa)
+    maybe_write_review_html(args, output_path, qa)
     cache.write_plan(cache_key, [item.model_dump(mode="json") for item in placements], meta.model_dump(mode="json"), qa)
     return 0
 

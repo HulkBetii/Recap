@@ -10,11 +10,20 @@ try:
 except ImportError:  # pragma: no cover - exercised only without optional dep
     yaml = None  # type: ignore[assignment]
 
-STAGE_NAMES = ("ingest", "review", "tts", "shots", "match", "render")
+STAGE_NAMES = ("preflight", "ingest", "review", "tts", "shots", "match", "render")
 TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "orchestrator": {"python": None, "log_level": "INFO"},
+    "preflight": {
+        "enabled": True,
+        "max_intro_s": 240.0,
+        "sample_every_s": 5.0,
+        "classifier": "heuristic",
+        "confidence_threshold": 0.75,
+        "uncertain_threshold": 0.55,
+        "log_level": "INFO",
+    },
     "ingest": {
         "whisper_model": "large-v3",
         "gap_threshold": 4.0,
@@ -90,6 +99,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_widen": 3,
         "allow_repeat": True,
         "allow_speedfit": False,
+        "exclude_non_story": True,
         "seed": 1234,
         "w_motion": 0.60,
         "w_face": 0.18,
@@ -104,6 +114,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "semantic_cache_dir": None,
         "film_map": "auto",
         "output_qa": None,
+        "output_review_html": None,
+        "review_asset_dir": None,
+        "review_thumbs_per_beat": 8,
+        "review_html": True,
         "log_level": "INFO",
     },
     "render": {

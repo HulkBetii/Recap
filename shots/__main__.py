@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.media import MediaError, require_ffmpeg
-from common.schema import Shot, ShotsMeta, validate_shots, write_json
+from common.schema import Shot, ShotsMeta, VideoProfile, validate_shots, write_json
 from shots.cache import ShotsCache, stable_hash
 from shots.detect import ShotSpan, detect_shots
 from shots.features import FeatureConfig, compute_features_from_frames, create_face_detector, sample_frames
+from shots.profile import apply_video_profile_to_shots, profile_cache_key, video_profile_hash
 from shots.thumbs import write_thumbnail
 
 DEFAULT_MIN_SHOT_LEN = 0.4
@@ -22,6 +23,15 @@ class ShotsError(RuntimeError):
     pass
 
 
+
+def load_video_profile(path: Path | None) -> VideoProfile | None:
+    if path is None:
+        return None
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise ShotsError(f"video profile does not exist: {resolved}")
+    return VideoProfile.model_validate_json(resolved.read_text(encoding="utf-8"))
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Stage 4 shots: film.mp4 -> shots.json + thumbnails")
     parser.add_argument("--input", required=True, type=Path)
@@ -32,11 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample-frames", default=DEFAULT_SAMPLE_FRAMES, type=int)
     parser.add_argument("--face-detection", default="on", choices=["on", "off"])
     parser.add_argument("--min-brightness", default=DEFAULT_MIN_BRIGHTNESS, type=float)
-    parser.add_argument("--skip-intro", default=0.0, type=float)
+    parser.add_argument("--skip-intro", default=0.0, type=float, help="Debug override only; default pipeline should use --video-profile")
+    parser.add_argument("--video-profile", default=None, type=Path)
     parser.add_argument("--skip-outro", default=0.0, type=float)
     parser.add_argument("--downscale", default="auto")
     parser.add_argument("--work-dir", default=Path("work/shots"), type=Path)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--profile-only", action="store_true", help="Debug: re-apply --video-profile from cached detection/features only")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
 
@@ -73,9 +85,38 @@ def spans_to_json(spans: list[ShotSpan]) -> list[dict[str, float | int]]:
 def spans_from_json(data: list[dict]) -> list[ShotSpan]:
     return [ShotSpan(index=int(item["index"]), tc_start=float(item["tc_start"]), tc_end=float(item["tc_end"])) for item in data]
 
+def features_to_shots(input_path: Path, output_path: Path, thumb_dir: Path, spans: list[ShotSpan], features_by_index: dict[int, dict]) -> list[Shot]:
+    shots: list[Shot] = []
+    for span in spans:
+        thumb_path = thumb_dir / f"{input_path.stem}-{span.index:03d}.jpg"
+        if not thumb_path.exists():
+            thumb_path = write_thumbnail(input_path, span, thumb_dir)
+        rel_thumb = thumb_path.relative_to(output_path.parent).as_posix() if thumb_path.is_relative_to(output_path.parent) else thumb_path.as_posix()
+        features = features_by_index[span.index]
+        shots.append(
+            Shot(
+                src=input_path.name,
+                index=span.index,
+                tc_start=span.tc_start,
+                tc_end=span.tc_end,
+                duration=round(span.duration, 3),
+                thumb=rel_thumb,
+                motion_score=float(features["motion_score"]),
+                face_count=int(features["face_count"]),
+                face_area=float(features["face_area"]),
+                brightness=float(features["brightness"]),
+                is_usable=bool(features["is_usable"]),
+            )
+        )
+    return shots
+
 
 def run_shots(args: argparse.Namespace) -> int:
     logger = logging.getLogger("shots")
+    if not hasattr(args, "video_profile"):
+        args.video_profile = None
+    if not hasattr(args, "profile_only"):
+        args.profile_only = False
     input_path = args.input.expanduser().resolve()
     output_path = args.output.expanduser().resolve()
     thumb_dir = args.thumb_dir.expanduser().resolve()
@@ -89,6 +130,8 @@ def run_shots(args: argparse.Namespace) -> int:
     if not 0 <= args.min_brightness <= 1:
         raise ShotsError("--min-brightness must be between 0 and 1")
     require_ffmpeg()
+    profile = load_video_profile(args.video_profile)
+    profile_hash = video_profile_hash(args.video_profile)
     cache = ShotsCache(work_dir, force=args.force)
     cache.prepare()
 
@@ -99,6 +142,8 @@ def run_shots(args: argparse.Namespace) -> int:
         spans = spans_from_json(cached_detection["spans"])
         duration_s = float(cached_detection["duration_s"])
     else:
+        if args.profile_only:
+            raise ShotsError("profile-only requires existing features cache")
         spans, duration_s = detect_shots(
             input_path,
             detector=args.detector,
@@ -124,6 +169,8 @@ def run_shots(args: argparse.Namespace) -> int:
     if cached_features is not None:
         features_by_index = {int(key): value for key, value in cached_features.items()}
     else:
+        if args.profile_only:
+            raise ShotsError("profile-only requires existing features cache")
         features_by_index = {}
         for span in spans:
             frames = sample_frames(input_path, span, args.sample_frames)
@@ -131,27 +178,16 @@ def run_shots(args: argparse.Namespace) -> int:
             features_by_index[span.index] = features.__dict__
         cache.write_cached("features.json", feature_key, {str(key): value for key, value in features_by_index.items()})
 
-    logger.info("[3/4] Writing thumbnails")
-    shots: list[Shot] = []
-    for span in spans:
-        thumb_path = write_thumbnail(input_path, span, thumb_dir)
-        rel_thumb = thumb_path.relative_to(output_path.parent).as_posix() if thumb_path.is_relative_to(output_path.parent) else thumb_path.as_posix()
-        features = features_by_index[span.index]
-        shots.append(
-            Shot(
-                src=input_path.name,
-                index=span.index,
-                tc_start=span.tc_start,
-                tc_end=span.tc_end,
-                duration=round(span.duration, 3),
-                thumb=rel_thumb,
-                motion_score=float(features["motion_score"]),
-                face_count=int(features["face_count"]),
-                face_area=float(features["face_area"]),
-                brightness=float(features["brightness"]),
-                is_usable=bool(features["is_usable"]),
-            )
-        )
+    logger.info("[3/4] Applying video profile")
+    profile_key = profile_cache_key(feature_key, profile_hash)
+    cached_profile = cache.read_cached("profile_marking.json", profile_key)
+    if cached_profile is not None:
+        shots = [Shot.model_validate(item) for item in cached_profile["shots"]]
+        n_non_story = int(cached_profile["n_non_story"])
+    else:
+        base_shots = features_to_shots(input_path, output_path, thumb_dir, spans, features_by_index)
+        shots, n_non_story = apply_video_profile_to_shots(base_shots, profile)
+        cache.write_cached("profile_marking.json", profile_key, {"n_non_story": n_non_story, "shots": [shot.model_dump(mode="json") for shot in shots]})
     shots = validate_shots(shots, duration_s)
 
     logger.info("[4/4] Writing shots output")
@@ -172,6 +208,10 @@ def run_shots(args: argparse.Namespace) -> int:
             "downscale": args.downscale,
         },
         model_versions={"face_detector": "opencv-haar-frontalface-default" if args.face_detection == "on" else "off"},
+        video_profile_path=str(args.video_profile.expanduser().resolve()) if args.video_profile else None,
+        video_profile_hash=profile_hash,
+        n_non_story=n_non_story,
+        intro_detection=profile.intro.model_dump(mode="json") if profile else None,
         created_at=datetime.now(timezone.utc),
         cache_hits=cache.cache_hits,
         warnings=warnings,

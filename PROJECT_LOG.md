@@ -490,3 +490,28 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
   - Phim lẻ nên có config/movie preset riêng (`target_ratio` khoảng `0.22–0.28` nếu muốn gọn).
   - Timecode approximate từ ASR chunked vẫn là rủi ro chính; cần alignment/QC tốt hơn nếu footage chưa sát narration.
   - Runtime profile/session ChatGPT cần logic rõ: profile lock, fresh session file, và message lỗi dễ hiểu.
+
+
+### 2026-07-05 — GĐ0 Video Profile / intro detection plan implemented
+
+- Thêm GĐ0 `python -m preflight` để sinh `video_profile.json` và detect `non_story_ranges` theo từng video.
+- Bỏ tư duy cutoff cứng `120s` khỏi default; manual cutoff chỉ còn debug override.
+- GĐ1/GĐ4/GĐ5 đọc `video_profile.json`: bỏ visual gap non-story, gắn `Shot.is_story=false`, và hard-exclude trong matching.
+- Default classifier là `heuristic` an toàn; `openclip` là optional local classifier qua group `video-profile`.
+
+### 2026-07-05 — Smoke test GĐ0 trên DemThanhDoiSanQuy
+
+- Cài/runtime optional `open-clip-torch` local để chạy `python -m preflight --classifier openclip`.
+- Preflight detect intro/opening tự động: `0.0–185.0s`, confidence `0.917`, reasons `opening credits`, `title card`, `intercut_opening_sequence`.
+- Cập nhật detector để nhận intro/opening xen kẽ cảnh phim thật: không chỉ dựa prefix liên tục, mà chấp nhận nhiều frame non-story confidence cao rồi kết thúc bằng story run ổn định.
+- Smoke artifact `runs/dem-thanh-doi-san-quy`: `shots.meta.json n_non_story=11`, `edl.meta.json n_intro_excluded=11`, `edl.qa.json selected_from_non_story=false`.
+- EDL mới có `min_src_in=186.353` và `intro placements=0`; render lại `recap.mp4`, `duration_match=true`.
+- Regression: `pytest -q` -> `126 passed`.
+
+### 2026-07-05 — GĐ5 QA Review HTML + GĐ4 profile cache re-apply
+
+- Thêm GĐ5 `edl.review.html` + `edl.review/` để review trực quan từng beat: narration, source window, selected thumbnails, semantic rank/score, motion/brightness/face/reuse, `is_story`, `exclude_reason`, warnings.
+- `python -m match` có thêm `--output-review-html`, `--review-asset-dir`, `--review-thumbs-per-beat`, `--no-review-html`; orchestrator mặc định ghi artifact này trong run-dir.
+- Tối ưu GĐ4 cache: `detection.json` và `features.json` không còn phụ thuộc `video_profile.json`; profile marking tách riêng vào `profile_marking.json`.
+- Thêm `shots/profile.py` và CLI `--profile-only` để debug re-apply `video_profile` từ cache, tránh re-detect/recompute phim dài khi chỉ đổi intro/non-story ranges.
+- Cập nhật `README.md`, `AGENTS.md`, `config.example.yaml`; thêm tests cho profile marking và review HTML.
