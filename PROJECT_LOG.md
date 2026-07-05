@@ -1,4 +1,4 @@
-﻿# PROJECT_LOG.md
+# PROJECT_LOG.md
 
 Log theo dõi tiến độ dự án `Recap`.
 
@@ -515,3 +515,17 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Tối ưu GĐ4 cache: `detection.json` và `features.json` không còn phụ thuộc `video_profile.json`; profile marking tách riêng vào `profile_marking.json`.
 - Thêm `shots/profile.py` và CLI `--profile-only` để debug re-apply `video_profile` từ cache, tránh re-detect/recompute phim dài khi chỉ đổi intro/non-story ranges.
 - Cập nhật `README.md`, `AGENTS.md`, `config.example.yaml`; thêm tests cho profile marking và review HTML.
+
+### 2026-07-05 - Movie intro/sync default correction
+
+- Disabled default `micro_beats` in G2/orchestrator/config after real smoke testing showed whole-film splitting can make audio run ahead of visuals.
+- Kept G0 preflight as the per-video intro check: hard-exclude only when `video_profile.non_story_ranges` exists with sufficient confidence; uncertain intro keeps footage.
+- Next fix direction for the 0:30-1:39 issue is localized G5 opening ordered/diversity fill, not a hard cutoff and not whole-film splitting.
+
+### 2026-07-05 - Movie-first story map and visual intent
+
+- Added G1.5 `storymap` CLI with `story_map.json`, meta, and QA artifacts built from `film_map.json` plus optional `video_profile.json`.
+- G2 now accepts `--story-map`, includes story context in movie prompts, and writes backward-compatible `review_script.intent.json` with story section, visual intent, and chronology mode per beat.
+- G5 now accepts `--review-intent`/`--story-map` and supports `--opening-ordered-fill` so opening matching prefers source chronology before score.
+- Orchestrator DAG now includes `storymap` between `ingest` and `review`; `shots` still runs in parallel with the ingest/story/review/TTS chain.
+- Regression suite: `pytest -q` -> 154 passed.

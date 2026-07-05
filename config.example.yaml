@@ -36,11 +36,26 @@ ingest:
   drop_visual_before_s: 0
   log_level: INFO
 
+storymap:
+  enabled: true
+  content_type: movie
+  target_story_sections: 7
+  log_level: INFO
+
 review:
-  target_ratio: 0.33
+  content_type: movie
+  hook_mode: setup
+  target_ratio: auto
   tts_cps: 15
   min_coverage: 0.85
   max_qa_iterations: 3
+  max_qa_rewrites_per_iteration: 6
+  opening_coherence_qa: true
+  micro_beats: false
+  target_beat_audio_s: 12
+  max_beat_audio_s: 18
+  story_map: auto
+  review_intent_output: null
   chatgpt_profile_dir: data/chrome_user_data/PROFILE_GPT_1
   chat_session_policy: auto
   chat_session_meta: null
@@ -51,6 +66,8 @@ review:
   style_qa: true
   target_sentence_chars: 160
   max_sentence_chars: 220
+  drop_non_story_beats: true
+  non_story_tail_s: 300
   headless: false
   log_level: INFO
 
@@ -85,6 +102,15 @@ match:
   allow_repeat: true
   allow_speedfit: false
   exclude_non_story: true
+  max_repeat_per_beat: 2
+  max_repeat_ratio_per_beat: 0.35
+  min_repeat_alternative_score_ratio: 0.75
+  adjacent_shot_repeat_penalty: 0.50
+  opening_guard_s: 120
+  opening_max_repeat_ratio: 0.20
+  opening_max_repeat_per_shot: 1
+  opening_min_unique_shots: 4
+  opening_allow_short_fill: true
   seed: 1234
   w_motion: 0.60
   w_face: 0.18
@@ -102,6 +128,9 @@ match:
   output_review_html: null
   review_asset_dir: null
   review_thumbs_per_beat: 8
+  review_intent: auto
+  story_map: auto
+  opening_ordered_fill: true
   review_html: true
   log_level: INFO
 
@@ -114,3 +143,4 @@ render:
   preset: medium
   concurrency: 4
   log_level: INFO
+

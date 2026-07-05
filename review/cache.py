@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import shutil
@@ -17,7 +17,7 @@ class ReviewCache:
 
     def prepare(self) -> None:
         if self.force and self.work_dir.exists():
-            for name in ("outline.json", "narration.json", "narration_consistent.json", "narration_style_checked.json", "qa.json", "style_qa.json", "style_config.json"):
+            for name in ("outline.json", "narration.json", "narration_consistent.json", "narration_style_checked.json", "qa.json", "style_qa.json", "style_config.json", "non_story_beats.json"):
                 target = self.work_dir / name
                 if target.exists():
                     target.unlink()

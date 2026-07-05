@@ -3,19 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-STAGES = ("preflight", "ingest", "review", "tts", "shots", "match", "render")
+STAGES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "match", "render")
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "preflight": (),
     "ingest": ("preflight",),
-    "review": ("ingest",),
+    "storymap": ("ingest",),
+    "review": ("storymap",),
     "tts": ("review",),
     "shots": ("preflight",),
     "match": ("review", "tts", "shots"),
     "render": ("match", "tts"),
 }
 DOWNSTREAM: dict[str, tuple[str, ...]] = {
-    "preflight": ("ingest", "review", "tts", "shots", "match", "render"),
-    "ingest": ("review", "tts", "match", "render"),
+    "preflight": ("ingest", "storymap", "review", "tts", "shots", "match", "render"),
+    "ingest": ("storymap", "review", "tts", "match", "render"),
+    "storymap": ("review", "tts", "match", "render"),
     "review": ("tts", "match", "render"),
     "tts": ("match", "render"),
     "shots": ("match", "render"),
@@ -29,9 +31,13 @@ class RunPaths:
     video_profile: Path
     film_map: Path
     film_map_meta: Path
+    story_map: Path
+    story_map_meta: Path
+    story_map_qa: Path
     review_script: Path
     review_meta: Path
     review_meta_alias: Path
+    review_intent: Path
     voiceover: Path
     beats_timing: Path
     tts_meta: Path
@@ -57,9 +63,13 @@ def build_paths(run_dir: Path) -> RunPaths:
         video_profile=run_dir / "video_profile.json",
         film_map=run_dir / "film_map.json",
         film_map_meta=run_dir / "film_map.meta.json",
+        story_map=run_dir / "story_map.json",
+        story_map_meta=run_dir / "story_map.meta.json",
+        story_map_qa=run_dir / "story_map.qa.json",
         review_script=run_dir / "review_script.json",
         review_meta=run_dir / "review_script.meta.json",
         review_meta_alias=run_dir / "review_meta.json",
+        review_intent=run_dir / "review_script.intent.json",
         voiceover=run_dir / "voiceover.mp3",
         beats_timing=run_dir / "beats_timing.json",
         tts_meta=run_dir / "tts_meta.json",

@@ -1,9 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections import defaultdict
 from typing import Any
 
-from common.schema import EdlPlacement, ReviewBeat, Shot
+from common.schema import EdlPlacement, ReviewBeat, ReviewIntent, Shot, StorySection
 from match.scoring import brightness_bonus, face_bonus, score_shot, ScoringWeights
 from match.semantic import SemanticResult
 
@@ -23,7 +23,15 @@ def build_edl_qa(
     semantic_result: SemanticResult | None = None,
     min_semantic_score: float,
     warnings: list[str],
+    max_repeat_ratio_per_beat: float = 0.35,
+    opening_guard_s: float = 0.0,
+    opening_max_repeat_ratio: float = 0.20,
+    opening_min_unique_shots: int = 4,
+    review_intents: dict[int, ReviewIntent] | None = None,
+    story_sections: dict[int, StorySection] | None = None,
 ) -> dict[str, Any]:
+    review_intents = review_intents or {}
+    story_sections = story_sections or {}
     shots_by_index = {shot.index: shot for shot in shots}
     placements_by_beat: dict[int, list[EdlPlacement]] = defaultdict(list)
     for placement in placements:
@@ -36,6 +44,8 @@ def build_edl_qa(
                 break
     beat_reports: list[dict[str, Any]] = []
     for beat in beats:
+        intent = review_intents.get(beat.beat_id)
+        section = story_sections.get(intent.story_section_id) if intent and intent.story_section_id is not None else None
         selected = []
         beat_semantic_values: list[float] = []
         for placement in placements_by_beat.get(beat.beat_id, []):
@@ -66,21 +76,57 @@ def build_edl_qa(
                     "selected_from_non_story": not shot.is_story,
                 })
             selected.append(entry)
+        beat_selected = placements_by_beat.get(beat.beat_id, [])
+        n_reused = sum(1 for placement in beat_selected if placement.reused)
+        repeat_ratio = n_reused / len(beat_selected) if beat_selected else 0.0
+        unique_shots = len({placement.shot_index for placement in beat_selected})
         avg_semantic = sum(beat_semantic_values) / len(beat_semantic_values) if beat_semantic_values else 0.0
         beat_warnings = list(warning_by_beat.get(beat.beat_id, []))
+        if not beat_selected:
+            beat_warnings.append("empty beat placements")
+        in_opening_guard = opening_guard_s > 0 and any(placement.tl_start < opening_guard_s for placement in beat_selected)
+        repeat_limit = opening_max_repeat_ratio if in_opening_guard else max_repeat_ratio_per_beat
+        if beat_selected and repeat_ratio > repeat_limit:
+            beat_warnings.append(f"high repeat ratio: {repeat_ratio:.3f} > {repeat_limit:.3f}")
+        if in_opening_guard and beat_selected and repeat_ratio > opening_max_repeat_ratio:
+            beat_warnings.append("opening_repeat_confusing")
+        if in_opening_guard and beat_selected and unique_shots < opening_min_unique_shots:
+            beat_warnings.append(f"opening_low_unique_shots: {unique_shots} < {opening_min_unique_shots}")
+        if in_opening_guard and any("opening_short_fill" in warning for warning in beat_warnings):
+            beat_warnings.append("opening_short_fill")
+        ordered_fill_used = in_opening_guard and any("opening_ordered_fill" in warning for warning in beat_warnings)
+        chronology_mismatch = False
+        if in_opening_guard and beat_selected:
+            src_order = [placement.src_in for placement in beat_selected]
+            chronology_mismatch = any(src_order[index] > src_order[index + 1] + 1e-3 for index in range(len(src_order) - 1))
+            if chronology_mismatch:
+                beat_warnings.append("chronology_mismatch")
         if beat_semantic_values and avg_semantic < min_semantic_score:
             beat_warnings.append(f"low semantic match: avg={avg_semantic:.3f} < {min_semantic_score:.3f}")
+        if beat_semantic_values and avg_semantic < min_semantic_score and repeat_ratio > repeat_limit:
+            beat_warnings.append("low semantic + high reuse")
         beat_reports.append({
             "beat_id": beat.beat_id,
             "narration_preview": narration_preview(beat.narration),
             "source_window": {"start": beat.src_tc_start, "end": beat.src_tc_end},
             "avg_semantic_score": round(avg_semantic, 6),
+            "repeat_ratio": round(repeat_ratio, 6),
+            "n_reused": n_reused,
+            "unique_shots": unique_shots,
+            "empty_placements": not bool(beat_selected),
+            "in_opening_guard": in_opening_guard,
+            "story_section": {"id": intent.story_section_id, "type": intent.story_section_type} if intent else None,
+            "visual_intent": intent.visual_intent if intent else None,
+            "chronology_mode": intent.chronology_mode if intent else None,
+            "ordered_fill_used": ordered_fill_used,
+            "chronology_mismatch": chronology_mismatch,
+            "intent_match_score": 1.0 if section is not None else 0.0,
             "selected": selected,
             "warnings": beat_warnings,
         })
     excluded_intro = [shot.index for shot in shots if not shot.is_story]
     return {
-        "version": 3,
+        "version": 4,
         "semantic_enabled": bool(semantic_scores),
         "semantic_provider": semantic_result.provider if semantic_result else ("tfidf" if semantic_scores else "off"),
         "semantic_model": semantic_result.model if semantic_result else None,

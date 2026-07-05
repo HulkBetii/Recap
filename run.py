@@ -74,12 +74,12 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     if "shots" in selected:
         with ThreadPoolExecutor(max_workers=1) as pool:
             shots_future = pool.submit(execute, "shots")
-            for stage in ("ingest", "review", "tts"):
+            for stage in ("ingest", "storymap", "review", "tts"):
                 if stage in selected:
                     summaries.append(execute(stage))
             summaries.append(shots_future.result())
     else:
-        for stage in ("ingest", "review", "tts"):
+        for stage in ("ingest", "storymap", "review", "tts"):
             if stage in selected:
                 summaries.append(execute(stage))
 
@@ -93,6 +93,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
         meta_paths={
             "preflight": paths.video_profile,
             "ingest": paths.film_map_meta,
+            "storymap": paths.story_map_meta,
             "review": paths.review_meta,
             "tts": paths.tts_meta,
             "shots": paths.shots_meta,

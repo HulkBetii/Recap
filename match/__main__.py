@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -7,7 +7,7 @@ import random
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.schema import BeatTiming, EdlMeta, EdlPlacement, ReviewBeat, Shot, validate_edl, write_json
+from common.schema import BeatTiming, EdlMeta, EdlPlacement, ReviewBeat, ReviewIntent, Shot, StorySection, validate_edl, validate_review_intents, validate_story_map, write_json
 from match.cache import MatchCache, file_hash, stable_hash
 from match.fill import assign_timeline, fill_beat, fill_timeline_gaps
 from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
@@ -35,6 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--review-html", action="store_true", default=True)
     parser.add_argument("--no-review-html", dest="review_html", action="store_false")
     parser.add_argument("--film-map", default=None, type=Path)
+    parser.add_argument("--review-intent", default=None, type=Path)
+    parser.add_argument("--story-map", default=None, type=Path)
     parser.add_argument("--semantic-mode", default="off", choices=["off", "tfidf", "bge-m3"])
     parser.add_argument("--semantic-model", default=DEFAULT_EMBEDDING_MODEL)
     parser.add_argument("--semantic-device", default="auto", choices=["auto", "cpu", "cuda"])
@@ -58,6 +60,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--w-semantic", default=0.35, type=float)
     parser.add_argument("--min-semantic-score", default=0.12, type=float)
     parser.add_argument("--exclude-non-story", action="store_true", default=True)
+    parser.add_argument("--max-repeat-per-beat", default=2, type=int)
+    parser.add_argument("--max-repeat-ratio-per-beat", default=0.35, type=float)
+    parser.add_argument("--min-repeat-alternative-score-ratio", default=0.75, type=float)
+    parser.add_argument("--adjacent-shot-repeat-penalty", default=0.50, type=float)
+    parser.add_argument("--opening-guard-s", default=0.0, type=float)
+    parser.add_argument("--opening-max-repeat-ratio", default=0.20, type=float)
+    parser.add_argument("--opening-max-repeat-per-shot", default=1, type=int)
+    parser.add_argument("--opening-min-unique-shots", default=4, type=int)
+    parser.add_argument("--opening-allow-short-fill", action="store_true", default=True)
+    parser.add_argument("--no-opening-allow-short-fill", dest="opening_allow_short_fill", action="store_false")
+    parser.add_argument("--opening-ordered-fill", action="store_true", default=True)
+    parser.add_argument("--no-opening-ordered-fill", dest="opening_ordered_fill", action="store_false")
     parser.add_argument("--no-exclude-non-story", dest="exclude_non_story", action="store_false")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
@@ -77,6 +91,8 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "seed": args.seed,
         "weights": [args.w_motion, args.w_face, args.w_bright, args.w_reuse, args.w_semantic],
         "film_map": file_hash(args.film_map.expanduser().resolve()) if args.film_map else None,
+        "review_intent": file_hash(args.review_intent.expanduser().resolve()) if args.review_intent else None,
+        "story_map": file_hash(args.story_map.expanduser().resolve()) if args.story_map else None,
         "semantic_mode": args.semantic_mode,
         "semantic_model": args.semantic_model,
         "semantic_device": args.semantic_device,
@@ -86,6 +102,8 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "exclude_non_story": args.exclude_non_story,
         "review_html": args.review_html,
         "review_thumbs_per_beat": args.review_thumbs_per_beat,
+        "repeat_guard": [args.max_repeat_per_beat, args.max_repeat_ratio_per_beat, args.min_repeat_alternative_score_ratio, args.adjacent_shot_repeat_penalty],
+        "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill],
     })
 
 
@@ -104,12 +122,32 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError("--film-map is required when --semantic-mode=tfidf")
     if args.film_map is not None and not args.film_map.expanduser().resolve().is_file():
         raise MatchError(f"input file does not exist: {args.film_map}")
+    if args.review_intent is not None and not args.review_intent.expanduser().resolve().is_file():
+        raise MatchError(f"input file does not exist: {args.review_intent}")
+    if args.story_map is not None and not args.story_map.expanduser().resolve().is_file():
+        raise MatchError(f"input file does not exist: {args.story_map}")
     if args.min_semantic_score < 0:
         raise MatchError("--min-semantic-score must be >= 0")
     if args.semantic_batch_size <= 0:
         raise MatchError("--semantic-batch-size must be > 0")
     if args.review_thumbs_per_beat < 0:
         raise MatchError("--review-thumbs-per-beat must be >= 0")
+    if args.max_repeat_per_beat < 0:
+        raise MatchError("--max-repeat-per-beat must be >= 0")
+    if args.max_repeat_ratio_per_beat < 0:
+        raise MatchError("--max-repeat-ratio-per-beat must be >= 0")
+    if args.min_repeat_alternative_score_ratio < 0:
+        raise MatchError("--min-repeat-alternative-score-ratio must be >= 0")
+    if args.adjacent_shot_repeat_penalty < 0:
+        raise MatchError("--adjacent-shot-repeat-penalty must be >= 0")
+    if args.opening_guard_s < 0:
+        raise MatchError("--opening-guard-s must be >= 0")
+    if args.opening_max_repeat_ratio < 0:
+        raise MatchError("--opening-max-repeat-ratio must be >= 0")
+    if args.opening_max_repeat_per_shot < 0:
+        raise MatchError("--opening-max-repeat-per-shot must be >= 0")
+    if args.opening_min_unique_shots < 0:
+        raise MatchError("--opening-min-unique-shots must be >= 0")
 
 
 def review_html_paths(args: argparse.Namespace, output_path: Path) -> tuple[Path, Path]:
@@ -134,10 +172,33 @@ def maybe_write_review_html(args: argparse.Namespace, output_path: Path, qa: dic
     )
 
 
+
+def load_review_intents(path: Path | None, beats: list[ReviewBeat]) -> dict[int, ReviewIntent]:
+    if path is None:
+        return {}
+    raw = json.loads(path.expanduser().resolve().read_text(encoding="utf-8"))
+    intents = [ReviewIntent.model_validate(item) for item in raw]
+    validate_review_intents(intents, beats)
+    return {intent.beat_id: intent for intent in intents}
+
+def load_story_sections(path: Path | None) -> dict[int, StorySection]:
+    if path is None:
+        return {}
+    raw = json.loads(path.expanduser().resolve().read_text(encoding="utf-8"))
+    sections = validate_story_map([StorySection.model_validate(item) for item in raw])
+    return {section.section_id: section for section in sections}
+
 def run_match(args: argparse.Namespace) -> int:
     logger = logging.getLogger("match")
     if not hasattr(args, "exclude_non_story"):
         args.exclude_non_story = True
+    for name, default in (("max_repeat_per_beat", 2), ("max_repeat_ratio_per_beat", 0.35), ("min_repeat_alternative_score_ratio", 0.75), ("adjacent_shot_repeat_penalty", 0.50), ("opening_guard_s", 0.0), ("opening_max_repeat_ratio", 0.20), ("opening_max_repeat_per_shot", 1), ("opening_min_unique_shots", 4)):
+        if not hasattr(args, name):
+            setattr(args, name, default)
+    if not hasattr(args, "opening_allow_short_fill"):
+        args.opening_allow_short_fill = True
+    if not hasattr(args, "opening_ordered_fill"):
+        args.opening_ordered_fill = True
     if not hasattr(args, "review_html"):
         args.review_html = True
     if not hasattr(args, "output_review_html"):
@@ -146,6 +207,10 @@ def run_match(args: argparse.Namespace) -> int:
         args.review_asset_dir = None
     if not hasattr(args, "review_thumbs_per_beat"):
         args.review_thumbs_per_beat = 8
+    if not hasattr(args, "review_intent"):
+        args.review_intent = None
+    if not hasattr(args, "story_map"):
+        args.story_map = None
     validate_args(args)
     random.seed(args.seed)
     output_path = args.output.expanduser().resolve()
@@ -169,6 +234,8 @@ def run_match(args: argparse.Namespace) -> int:
         return 0
 
     review_beats = load_review_script(args.review_script.expanduser().resolve())
+    review_intents = load_review_intents(args.review_intent, review_beats)
+    story_sections = load_story_sections(args.story_map)
     timings = load_beats_timing(args.beats_timing.expanduser().resolve())
     all_shots = load_shots(args.shots.expanduser().resolve())
     n_intro_excluded = sum(1 for shot in all_shots if not shot.is_story)
@@ -207,6 +274,7 @@ def run_match(args: argparse.Namespace) -> int:
     logger.info("Matching %d beats", len(timings))
     for timing in sorted(timings, key=lambda item: item.tl_start):
         beat = beats_by_id[timing.beat_id]
+        in_opening_guard = args.opening_guard_s > 0 and timing.tl_start < args.opening_guard_s
         result = fill_beat(
             beat=beat,
             timing=timing,
@@ -217,10 +285,24 @@ def run_match(args: argparse.Namespace) -> int:
             max_clip=args.max_clip,
             widen_margin=args.widen_margin,
             max_widen=args.max_widen,
-            allow_repeat=args.allow_repeat,
+            allow_repeat=args.allow_repeat and not (in_opening_guard and args.opening_allow_short_fill),
             allow_speedfit=args.allow_speedfit,
             semantic_scores=semantic_scores,
+            max_repeat_per_beat=args.opening_max_repeat_per_shot if in_opening_guard else args.max_repeat_per_beat,
+            max_repeat_ratio_per_beat=args.opening_max_repeat_ratio if in_opening_guard else args.max_repeat_ratio_per_beat,
+            min_repeat_alternative_score_ratio=args.min_repeat_alternative_score_ratio,
+            adjacent_shot_repeat_penalty=args.adjacent_shot_repeat_penalty,
+            ordered_fill=in_opening_guard and args.opening_ordered_fill,
         )
+        if in_opening_guard and args.opening_ordered_fill:
+            result.warnings.append(f"beat {beat.beat_id} opening_ordered_fill")
+        if in_opening_guard:
+            unique_count = len({fragment.shot_index for fragment in result.fragments})
+            if result.fragments and unique_count < args.opening_min_unique_shots:
+                result.warnings.append(f"beat {beat.beat_id} opening_low_unique_shots {unique_count} < {args.opening_min_unique_shots}")
+            filled_duration = sum(fragment.duration for fragment in result.fragments)
+            if args.opening_allow_short_fill and filled_duration + 0.02 < timing.duration:
+                result.warnings.append(f"beat {beat.beat_id} opening_short_fill {filled_duration:.3f}/{timing.duration:.3f}s")
         if result.widened:
             n_beats_widened += 1
         n_reused += result.reused_count
@@ -237,6 +319,20 @@ def run_match(args: argparse.Namespace) -> int:
         n_reused += pause_fillers
     placements = validate_timeline(placements, total_duration)
     coverage_ok = not any("pause filler" not in warning for warning in warnings)
+    beat_ids = sorted({timing.beat_id for timing in timings})
+    placements_by_beat = {beat_id: [placement for placement in placements if placement.beat_id == beat_id] for beat_id in beat_ids}
+    repeat_ratios = []
+    n_empty_beats = 0
+    n_high_repeat_beats = 0
+    for beat_id, beat_placements in placements_by_beat.items():
+        if not beat_placements:
+            n_empty_beats += 1
+            continue
+        ratio = sum(1 for placement in beat_placements if placement.reused) / len(beat_placements)
+        repeat_ratios.append(ratio)
+        if ratio > args.max_repeat_ratio_per_beat:
+            n_high_repeat_beats += 1
+
     meta = EdlMeta(
         total_duration_s=total_duration,
         n_placements=len(placements),
@@ -244,6 +340,9 @@ def run_match(args: argparse.Namespace) -> int:
         n_reused=n_reused,
         n_speedfit=n_speedfit,
         n_intro_excluded=n_intro_excluded if args.exclude_non_story else 0,
+        n_empty_beats=n_empty_beats,
+        n_high_repeat_beats=n_high_repeat_beats,
+        max_repeat_ratio=round(max(repeat_ratios), 6) if repeat_ratios else 0.0,
         avg_clip_len=round(average_clip_len(placements), 3),
         coverage_ok=coverage_ok,
         warnings=warnings,
@@ -260,6 +359,12 @@ def run_match(args: argparse.Namespace) -> int:
         semantic_result=semantic_result,
         min_semantic_score=args.min_semantic_score,
         warnings=warnings,
+        max_repeat_ratio_per_beat=args.max_repeat_ratio_per_beat,
+        opening_guard_s=args.opening_guard_s,
+        opening_max_repeat_ratio=args.opening_max_repeat_ratio,
+        opening_min_unique_shots=args.opening_min_unique_shots,
+        review_intents=review_intents,
+        story_sections=story_sections,
     )
     write_json(output_path, placements)
     write_json(output_path.with_name("edl.meta.json"), meta)

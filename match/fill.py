@@ -1,10 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
 from match.candidates import candidates_for_window, widen_until_enough
-from match.scoring import ScoringWeights, rank_shots
+from match.scoring import ScoringWeights, rank_shots, score_shot
 
 
 @dataclass
@@ -45,6 +45,11 @@ def fill_beat(
     allow_repeat: bool,
     allow_speedfit: bool,
     semantic_scores: dict[tuple[int, int], float] | None = None,
+    max_repeat_per_beat: int = 2,
+    max_repeat_ratio_per_beat: float = 0.35,
+    min_repeat_alternative_score_ratio: float = 0.75,
+    adjacent_shot_repeat_penalty: float = 0.50,
+    ordered_fill: bool = False,
 ) -> FillResult:
     warnings: list[str] = []
     window_start, window_end, candidates, widen_count = widen_until_enough(
@@ -62,6 +67,8 @@ def fill_beat(
     used_in_beat: set[int] = set()
     reuse_count = 0
     speedfit_count = 0
+    repeat_by_shot: dict[int, int] = {}
+    previous_shot_index: int | None = None
 
     while remaining > 1e-6:
         available = [shot for shot in candidates if shot.index not in used_in_beat]
@@ -74,7 +81,18 @@ def fill_beat(
         if not available:
             break
         ranked = rank_shots(available, reuse_counts, weights, semantic_scores, beat.beat_id)
-        shot = ranked[0]
+        if ordered_fill:
+            ranked = rank_for_ordered_fill(ranked, reuse_counts, weights, semantic_scores or {}, beat.beat_id)
+        shot = choose_diverse_shot(
+            ranked,
+            reuse_counts,
+            weights,
+            semantic_scores or {},
+            beat.beat_id,
+            previous_shot_index,
+            min_repeat_alternative_score_ratio,
+            adjacent_shot_repeat_penalty,
+        )
         src_start = max(window_start, shot.tc_start)
         src_end = min(window_end, shot.tc_end)
         usable_len = max(0.0, src_end - src_start)
@@ -98,7 +116,9 @@ def fill_beat(
         )
         if repeated or reuse_counts.get(shot.index, 0) > 0:
             reuse_count += 1
+            repeat_by_shot[shot.index] = repeat_by_shot.get(shot.index, 0) + 1
         reuse_counts[shot.index] = reuse_counts.get(shot.index, 0) + 1
+        previous_shot_index = shot.index
         used_in_beat.add(shot.index)
         remaining = round(remaining - clip_len, 6)
 
@@ -106,7 +126,24 @@ def fill_beat(
         if allow_repeat and candidates:
             warnings.append(f"beat {beat.beat_id} required controlled repeat fallback")
             while remaining > 1e-6:
-                shot = rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id)[0]
+                ranked_repeat = [shot for shot in rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id) if repeat_by_shot.get(shot.index, 0) < max_repeat_per_beat]
+                if ordered_fill:
+                    ranked_repeat = rank_for_ordered_fill(ranked_repeat, reuse_counts, weights, semantic_scores or {}, beat.beat_id)
+                if not ranked_repeat:
+                    ranked_repeat = rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id)
+                    if ordered_fill:
+                        ranked_repeat = rank_for_ordered_fill(ranked_repeat, reuse_counts, weights, semantic_scores or {}, beat.beat_id)
+                    warnings.append(f"beat {beat.beat_id} exceeded repeat cap during fallback")
+                shot = choose_diverse_shot(
+                    ranked_repeat,
+                    reuse_counts,
+                    weights,
+                    semantic_scores or {},
+                    beat.beat_id,
+                    previous_shot_index,
+                    min_repeat_alternative_score_ratio,
+                    adjacent_shot_repeat_penalty,
+                )
                 clip_len = min(max_clip, max(0.05, remaining), shot.duration)
                 src_start = shot.tc_start
                 fragments.append(
@@ -120,13 +157,22 @@ def fill_beat(
                     )
                 )
                 reuse_count += 1
+                repeat_by_shot[shot.index] = repeat_by_shot.get(shot.index, 0) + 1
                 reuse_counts[shot.index] = reuse_counts.get(shot.index, 0) + 1
+                previous_shot_index = shot.index
                 remaining = round(remaining - clip_len, 6)
         elif allow_speedfit and fragments:
             warnings.append(f"beat {beat.beat_id} would require speedfit; not applied to existing fragments")
             speedfit_count += 1
         else:
             warnings.append(f"beat {beat.beat_id} could not fill {remaining:.3f}s")
+
+    total_fragments = len(fragments)
+    repeat_ratio = (reuse_count / total_fragments) if total_fragments else 0.0
+    if total_fragments == 0:
+        warnings.append(f"beat {beat.beat_id} empty beat placements")
+    if total_fragments and repeat_ratio > max_repeat_ratio_per_beat:
+        warnings.append(f"beat {beat.beat_id} high repeat ratio {repeat_ratio:.3f} > {max_repeat_ratio_per_beat:.3f}")
 
     fragments = trim_fragments_to_duration(sorted(fragments, key=lambda item: (item.src_in, item.src_out)), timing.duration)
     return FillResult(
@@ -137,6 +183,51 @@ def fill_beat(
         warnings=warnings,
     )
 
+
+
+def rank_for_ordered_fill(
+    ranked: list[Shot],
+    reuse_counts: dict[int, int],
+    weights: ScoringWeights,
+    semantic_scores: dict[tuple[int, int], float],
+    beat_id: int,
+) -> list[Shot]:
+    return sorted(
+        ranked,
+        key=lambda shot: (
+            shot.tc_start,
+            -score_shot(shot, reuse_counts.get(shot.index, 0), weights, semantic_scores.get((beat_id, shot.index), 0.0)),
+            shot.index,
+        ),
+    )
+
+def choose_diverse_shot(
+    ranked: list[Shot],
+    reuse_counts: dict[int, int],
+    weights: ScoringWeights,
+    semantic_scores: dict[tuple[int, int], float],
+    beat_id: int,
+    previous_shot_index: int | None,
+    min_alternative_ratio: float,
+    adjacent_penalty: float,
+) -> Shot:
+    if not ranked:
+        raise ValueError("cannot choose from empty candidates")
+    top = ranked[0]
+    top_score = score_shot(top, reuse_counts.get(top.index, 0), weights, semantic_scores.get((beat_id, top.index), 0.0))
+    if previous_shot_index is None or top.index != previous_shot_index:
+        return top
+    threshold = max(top_score * min_alternative_ratio, top_score - adjacent_penalty)
+    for candidate in ranked[1:]:
+        candidate_score = score_shot(
+            candidate,
+            reuse_counts.get(candidate.index, 0),
+            weights,
+            semantic_scores.get((beat_id, candidate.index), 0.0),
+        )
+        if candidate.index != previous_shot_index and candidate_score >= threshold:
+            return candidate
+    return top
 
 def trim_fragments_to_duration(fragments: list[Fragment], target_duration: float) -> list[Fragment]:
     output: list[Fragment] = []

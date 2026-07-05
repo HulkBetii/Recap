@@ -21,8 +21,20 @@ def build_outline_prompt(
     char_budget: int,
     min_coverage: float,
     style_sample: str = "",
+    content_type: str = "episode",
+    hook_mode: str = "cold_open",
+    story_start_s: float = 0.0,
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
+    if content_type == "movie" and hook_mode == "setup":
+        hook_rule = f"- hook: use the first story/setup beat at or after story_start_s={story_start_s:.1f}s; do NOT use excluded intro/opening footage or jump to a later twist/ending."
+        pacing_rule = "- Movie mode: prioritize clear premise, characters, cause/effect, and story comprehension over viral shock."
+    elif hook_mode == "off":
+        hook_rule = "- hook: use the first chronological story beat as a minimal setup hook to satisfy schema; do NOT create cold-open hype."
+        pacing_rule = "- Keep the opening chronological and clear."
+    else:
+        hook_rule = "- hook: list of exciting segment ids for a cold-open, usually from later in the story, without spoiling the ending."
+        pacing_rule = "- Episode mode: fast recap pacing is allowed, but keep plot logic clear."
     return f"""
 You are planning a Vietnamese movie recap script.
 Return ONLY valid JSON with keys: glossary, outline, hook.
@@ -30,9 +42,12 @@ Return ONLY valid JSON with keys: glossary, outline, hook.
 Rules:
 - Do NOT output timecodes.
 - Use only segment ids from the FILM_MAP.
+- If story_start_s is given, do not choose setup/opening source spans before story_start_s.
 - glossary: list of characters with Vietnamese canonical name and short role.
 - outline: ordered beats covering the full plot with recap pacing. Each beat has from_seg_id, to_seg_id, summary.
-- hook: list of exciting segment ids for a cold-open, usually from later in the story, without spoiling the ending.
+- Do NOT create standalone beats for credits, production info, black screen, title cards, or non-story outro; keep the real plot ending, but ignore post-plot credits.
+{hook_rule}
+{pacing_rule}
 - Non-hook outline beats must be chronological and cover at least {min_coverage:.0%} of segment ids.
 - Target recap length: about {target_video_s:.1f}s, char budget about {char_budget} Vietnamese characters.
 {style_block}
@@ -47,8 +62,13 @@ def build_narration_prompt(
     glossary: list[dict],
     char_targets: list[int],
     style_sample: str = "",
+    content_type: str = "episode",
+    hook_mode: str = "cold_open",
+    story_start_s: float = 0.0,
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
+    movie_rule = "- Movie mode: write cleaner, more explanatory Vietnamese; reduce jokes/clickbait; make cause/effect and character relations easy to follow." if content_type == "movie" else "- Dramatic fast-paced Vietnamese recap style."
+    hook_rule = "- Setup hook must explain the initial premise from the start of the film, not a later twist." if hook_mode == "setup" else "- Hook beat must be gripping and placed first."
     payload = [
         {
             "beat_id": index,
@@ -86,8 +106,12 @@ def build_qa_prompt(
     glossary: list[dict],
     char_budget: int,
     coverage_pct: float,
+    content_type: str = "episode",
+    hook_mode: str = "cold_open",
+    story_start_s: float = 0.0,
 ) -> str:
     payload = [beat.model_dump() for beat in beats]
+    opening_rule = f"- Movie opening: beat 0 must clearly establish who/where/problem/why it matters and its source span must start at or after story_start_s={story_start_s:.1f}s; flag confusing cold-open twist, excluded intro footage, or hype without context." if content_type == "movie" else "- Opening should be engaging and accurate."
     return f"""
 Review this Vietnamese recap script against the film map.
 Return ONLY valid JSON: {{"pass": boolean, "issues": [{{"beat_id": number, "type": string, "suggestion": string}}], "notes": string}}.
@@ -97,6 +121,8 @@ Check:
 - Coverage: important plot branches are not skipped. Current coverage={coverage_pct:.3f}.
 - Names: use glossary consistently.
 - Length: total characters should be near {char_budget}; current={estimate_total_chars(beats)}.
+- Non-story credits/outro/production-info beats should be removed, not rewritten longer.
+{opening_rule}
 
 GLOSSARY:
 {json.dumps(glossary, ensure_ascii=False)}
@@ -146,6 +172,9 @@ async def request_outline(
     char_budget: int,
     min_coverage: float,
     style_sample: str = "",
+    content_type: str = "episode",
+    hook_mode: str = "cold_open",
+    story_start_s: float = 0.0,
 ) -> OutlineResult:
     response = await client.ask(
         build_outline_prompt(
@@ -154,9 +183,11 @@ async def request_outline(
             char_budget=char_budget,
             min_coverage=min_coverage,
             style_sample=style_sample,
+            content_type=content_type,
+            hook_mode=hook_mode,
         )
     )
-    return normalize_outline(OutlineResult.model_validate(extract_json(response)))
+    return normalize_outline(OutlineResult.model_validate(normalize_outline_payload(extract_json(response))))
 
 
 async def request_narration(
@@ -166,6 +197,8 @@ async def request_narration(
     glossary: list[dict],
     char_targets: list[int],
     style_sample: str = "",
+    content_type: str = "episode",
+    hook_mode: str = "cold_open",
 ) -> list[NarrationBeat]:
     response = await client.ask(
         build_narration_prompt(
@@ -173,6 +206,8 @@ async def request_narration(
             glossary=glossary,
             char_targets=char_targets,
             style_sample=style_sample,
+            content_type=content_type,
+            hook_mode=hook_mode,
         )
     )
     data = extract_json(response)
@@ -187,6 +222,9 @@ async def request_qa(
     glossary: list[dict],
     char_budget: int,
     coverage_pct: float,
+    content_type: str = "episode",
+    hook_mode: str = "cold_open",
+    story_start_s: float = 0.0,
 ) -> QaResult:
     response = await client.ask(
         build_qa_prompt(
@@ -195,6 +233,8 @@ async def request_qa(
             glossary=glossary,
             char_budget=char_budget,
             coverage_pct=coverage_pct,
+            content_type=content_type,
+            hook_mode=hook_mode,
         )
     )
     data = extract_json(response)
@@ -223,6 +263,26 @@ async def regenerate_beat(
         build_regenerate_prompt(beat=beat, issue=issue, glossary=glossary, char_target=char_target, style_sample=style_sample)
     )
     return NarrationBeat.model_validate(extract_json(response))
+
+
+def normalize_outline_payload(data: object) -> object:
+    if not isinstance(data, dict):
+        return data
+    hook = data.get("hook")
+    if isinstance(hook, dict):
+        hook_ids = []
+        for key in ("segment_ids", "ids"):
+            value = hook.get(key)
+            if isinstance(value, list):
+                hook_ids.extend(item for item in value if isinstance(item, int))
+        for key in ("from_seg_id", "to_seg_id", "seg_id", "id"):
+            value = hook.get(key)
+            if isinstance(value, int):
+                hook_ids.append(value)
+        data = {**data, "hook": sorted(set(hook_ids))}
+    elif hook is None:
+        data = {**data, "hook": []}
+    return data
 
 
 def normalize_outline(outline_result: OutlineResult) -> OutlineResult:

@@ -1,4 +1,4 @@
-﻿# AGENTS.md — Recap Project Source of Truth
+# AGENTS.md — Recap Project Source of Truth
 
 > This is the source of truth for coding agents working on `Recap`.
 > Read this file before implementing anything. General coding behavior lives in `CODING_GUIDELINES.md`.
@@ -351,3 +351,19 @@ repo/
 - GĐ1 dùng `video_profile.json` để bỏ visual-only gaps trong non-story ranges nhưng vẫn giữ speech thật.
 - GĐ4 gắn shot overlap non-story thành `is_story=false`, `exclude_reason="intro_opening"`; thumbnails/features vẫn giữ để debug.
 - GĐ5 mặc định `exclude_non_story=true`, không chọn shot non-story cho candidate, repeat fallback hoặc pause filler.
+
+## Current Movie Intro/Synchronization Rule
+
+- Not every movie has an intro; the pipeline may exclude intro/non-story footage only when G0 `video_profile.json` contains confident `non_story_ranges`.
+- If the classifier is `heuristic` or confidence is below threshold, `video_profile.json` must record `uncertain_intro` and downstream stages must keep opening footage.
+- `skip_intro` and `drop_visual_before_s` are manual debug overrides only, not default pipeline behavior.
+- Movie micro-beats are experimental opt-in (`micro_beats=false` by default) because real smoke testing showed whole-film splitting can make audio run ahead of visuals.
+- For localized opening image/voice ordering issues, prefer a G5 ordered/diversity fill inside `opening_guard_s`; do not hardcode a cutoff and do not split the whole film.
+
+## Movie-First Story Structure / Visual Intent
+
+- Stage G1.5 `storymap` runs with `python -m storymap` and writes `story_map.json`, `story_map.meta.json`, and `story_map.qa.json` from `film_map.json` plus optional `video_profile.json`.
+- `story_map.json` is optional/backward-compatible and splits movie story into coarse sections such as setup, inciting incident, conflict, reveal, climax, ending, and non_story.
+- G2 `review` accepts `--story-map` and writes optional `review_script.intent.json`; the required `review_script.json` contract is unchanged.
+- G5 `match` accepts `--review-intent` and `--story-map`; in `opening_guard_s`, `--opening-ordered-fill` prefers source chronology before score to reduce opening voice/image ordering issues.
+- Storymap and review-intent are movie-first defaults in orchestrator; episode behavior remains compatible and can opt out by config.

@@ -1,4 +1,4 @@
-﻿# Recap
+# Recap
 
 `Recap` là pipeline tạo video recap review từ một tập phim. Hiện project đang xây **Giai đoạn 1 — Ingest & Hiểu phim**.
 
@@ -376,3 +376,21 @@ python -m preflight `
 ```
 
 `heuristic` is conservative and does not hard-exclude without enough evidence. For local visual classification, install `pip install -e ".[video-profile]"` and run `--classifier openclip`. Manual `--skip-intro` / `--drop-visual-before-s` remain debug overrides only.
+
+### Current intro/opening policy
+
+The pipeline does not assume every movie has an intro. Run G?0 `python -m preflight` per video and only exclude opening/non-story footage when `video_profile.json` contains confident `non_story_ranges`. If detection is uncertain, the profile records `uncertain_intro` and downstream stages keep the opening footage. `skip_intro` / `drop_visual_before_s` remain debug overrides only, not default behavior. Movie micro-beats are experimental opt-in (`micro_beats: false` by default); use opening match QA/ordered fill for localized sync issues instead of splitting the whole film.
+
+### Movie story map and visual intent
+
+Movie runs now include an optional G1.5 story structure stage:
+
+```powershell
+python -m storymap `
+  --film-map runs\movieilm_map.json `
+  --video-profile runs\movieideo_profile.json `
+  --output runs\movie\story_map.json `
+  --output-qa runs\movie\story_map.qa.json
+```
+
+`python -m review` can consume `--story-map` and writes `review_script.intent.json` without changing `review_script.json`. `python -m match` can consume `--review-intent` and `--story-map`; opening ordered fill is enabled by default to keep early footage chronological when the voiceover is setting up the film.

@@ -18,8 +18,11 @@ from common.schema import (
     FilmMapSegment,
     RenderMeta,
     VideoProfile,
+    StoryMapMeta,
+    StorySection,
     ReviewBeat,
     ReviewMeta,
+    ReviewIntent,
     Shot,
     ShotsMeta,
     TtsMeta,
@@ -27,7 +30,9 @@ from common.schema import (
     validate_edl,
     validate_film_map,
     validate_review_script,
+    validate_review_intents,
     validate_shots,
+    validate_story_map,
 )
 from orchestrator.config import add_option
 from orchestrator.graph import RunPaths, STAGES
@@ -45,6 +50,7 @@ class StageSpec:
 STAGE_SPECS: dict[str, StageSpec] = {
     "preflight": StageSpec("preflight", ("video_profile",), "video_profile"),
     "ingest": StageSpec("ingest", ("film_map", "film_map_meta"), "film_map_meta"),
+    "storymap": StageSpec("storymap", ("story_map", "story_map_meta", "story_map_qa"), "story_map_meta"),
     "review": StageSpec("review", ("review_script", "review_meta"), "review_meta"),
     "tts": StageSpec("tts", ("voiceover", "beats_timing", "tts_meta"), "tts_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
@@ -72,11 +78,16 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
         elif stage == "ingest":
             meta = FilmMapMeta.model_validate(load_json(paths.film_map_meta))
             validate_film_map([FilmMapSegment.model_validate(item) for item in load_json(paths.film_map)], duration=meta.duration)
+        elif stage == "storymap":
+            meta = StoryMapMeta.model_validate(load_json(paths.story_map_meta))
+            validate_story_map([StorySection.model_validate(item) for item in load_json(paths.story_map)], duration=meta.duration_s)
         elif stage == "review":
             film_map = [FilmMapSegment.model_validate(item) for item in load_json(paths.film_map)]
             beats = [ReviewBeat.model_validate(item) for item in load_json(paths.review_script)]
             validate_review_script(beats, film_map)
             ReviewMeta.model_validate(load_json(paths.review_meta))
+            if paths.review_intent.is_file():
+                validate_review_intents([ReviewIntent.model_validate(item) for item in load_json(paths.review_intent)], beats)
         elif stage == "tts":
             tts_meta = TtsMeta.model_validate(load_json(paths.tts_meta))
             validate_beats_timing([BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)], pause_s=tts_meta.inter_beat_pause_s)
@@ -136,11 +147,29 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--video-profile", str(paths.video_profile)]
         if not section.get("vad_filter", True):
             command.append("--no-vad-filter")
+    elif stage == "storymap":
+        command += ["--film-map", str(paths.film_map), "--output", str(paths.story_map), "--output-qa", str(paths.story_map_qa)]
+        if paths.video_profile.is_file():
+            command += ["--video-profile", str(paths.video_profile)]
+        for key in ("content_type", "target_story_sections", "log_level"):
+            add_option(command, key, section.get(key))
     elif stage == "review":
         command += ["--film-map", str(paths.film_map), "--output", str(paths.review_script)]
-        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "log_level"):
+        story_map_setting = section.get("story_map", "auto")
+        if story_map_setting == "auto" and paths.story_map.is_file():
+            command += ["--story-map", str(paths.story_map)]
+        elif story_map_setting not in {None, "auto"}:
+            command += ["--story-map", str(story_map_setting)]
+        review_intent_output = section.get("review_intent_output")
+        command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
+        if paths.video_profile.exists():
+            command += ["--video-profile", str(paths.video_profile)]
+        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "log_level"):
             add_option(command, key, section.get(key))
         command.append("--style-qa" if section.get("style_qa", True) else "--no-style-qa")
+        command.append("--opening-coherence-qa" if section.get("opening_coherence_qa", section.get("content_type") == "movie") else "--no-opening-coherence-qa")
+        command.append("--micro-beats" if section.get("micro_beats", False) else "--no-micro-beats")
+        command.append("--drop-non-story-beats" if section.get("drop_non_story_beats", True) else "--no-drop-non-story-beats")
         if section.get("headless"):
             command.append("--headless")
     elif stage == "tts":
@@ -158,6 +187,16 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             add_option(command, key, section.get(key))
     elif stage == "match":
         command += ["--review-script", str(paths.review_script), "--beats-timing", str(paths.beats_timing), "--shots", str(paths.shots), "--output", str(paths.edl)]
+        review_intent_setting = section.get("review_intent", "auto")
+        if review_intent_setting == "auto" and paths.review_intent.is_file():
+            command += ["--review-intent", str(paths.review_intent)]
+        elif review_intent_setting not in {None, "auto"}:
+            command += ["--review-intent", str(review_intent_setting)]
+        story_map_setting = section.get("story_map", "auto")
+        if story_map_setting == "auto" and paths.story_map.is_file():
+            command += ["--story-map", str(paths.story_map)]
+        elif story_map_setting not in {None, "auto"}:
+            command += ["--story-map", str(story_map_setting)]
         film_map_setting = section.get("film_map", "auto")
         if film_map_setting == "auto":
             command += ["--film-map", str(paths.film_map)]
@@ -170,11 +209,13 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--output-review-html", str(output_review_html or paths.edl_review_html)]
         command += ["--review-asset-dir", str(review_asset_dir or paths.edl_review_dir)]
         add_option(command, "review_thumbs_per_beat", section.get("review_thumbs_per_beat"))
-        for key in ("min_clip", "max_clip", "widen_margin", "max_widen", "seed", "w_motion", "w_face", "w_bright", "w_reuse", "w_semantic", "min_semantic_score", "semantic_mode", "semantic_model", "semantic_device", "semantic_batch_size", "semantic_cache_dir", "log_level"):
+        for key in ("min_clip", "max_clip", "widen_margin", "max_widen", "seed", "max_repeat_per_beat", "max_repeat_ratio_per_beat", "min_repeat_alternative_score_ratio", "adjacent_shot_repeat_penalty", "opening_guard_s", "opening_max_repeat_ratio", "opening_max_repeat_per_shot", "opening_min_unique_shots", "w_motion", "w_face", "w_bright", "w_reuse", "w_semantic", "min_semantic_score", "semantic_mode", "semantic_model", "semantic_device", "semantic_batch_size", "semantic_cache_dir", "log_level"):
             add_option(command, key, section.get(key))
         command.append("--allow-repeat" if section.get("allow_repeat", True) else "--no-allow-repeat")
         command.append("--allow-speedfit" if section.get("allow_speedfit", False) else "--no-allow-speedfit")
         command.append("--exclude-non-story" if section.get("exclude_non_story", True) else "--no-exclude-non-story")
+        command.append("--opening-allow-short-fill" if section.get("opening_allow_short_fill", True) else "--no-opening-allow-short-fill")
+        command.append("--opening-ordered-fill" if section.get("opening_ordered_fill", True) else "--no-opening-ordered-fill")
         if not section.get("review_html", True):
             command.append("--no-review-html")
     elif stage == "render":
@@ -250,3 +291,4 @@ def run_stage(
 
 def ordered_selected(selected: set[str]) -> list[str]:
     return [stage for stage in STAGES if stage in selected]
+

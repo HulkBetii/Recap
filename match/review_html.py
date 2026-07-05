@@ -82,7 +82,10 @@ def write_review_html(
         parts.append(f"<section class=\"beat\" id=\"beat-{beat.beat_id}\">")
         parts.append(f"<h2>Beat {beat.beat_id}</h2>")
         parts.append(f"<p class=\"narration\">{escape(beat.narration)}</p>")
-        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}</div>")
+        repeat_info = ""
+        if isinstance(qa_beat, dict):
+            repeat_info = f" | Repeat: {escape(_fmt(qa_beat.get('repeat_ratio')))} | Reused: {escape(_fmt(qa_beat.get('n_reused')))} | Unique shots: {escape(_fmt(qa_beat.get('unique_shots')))}"
+        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}</div>")
         if beat_warnings:
             parts.append("<ul class=\"warn\">" + "".join(f"<li>{escape(str(warning))}</li>" for warning in beat_warnings) + "</ul>")
         parts.append("<div class=\"grid\">")

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +12,10 @@ AsrProvider = Literal["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "
 AlignerProvider = Literal["none", "whisperx", "qwen3"]
 TimecodeQuality = Literal["strict", "approximate"]
 TranscriptCorrectionMode = Literal["off", "glossary", "openai"]
+
+StorySectionType = Literal["setup", "inciting_incident", "conflict", "investigation", "reveal", "climax", "ending", "non_story"]
+VisualIntent = Literal["character_intro", "dialogue", "location", "action", "reaction", "reveal", "transition", "ending"]
+ChronologyMode = Literal["ordered", "flexible"]
 
 
 class FilmMapSegment(BaseModel):
@@ -211,6 +215,7 @@ class ReviewMeta(BaseModel):
     video_profile_path: str | None = None
     n_non_story: int = Field(default=0, ge=0)
     intro_detection: dict[str, Any] | None = None
+    story_start_s: float = Field(default=0.0, ge=0)
     created_at: datetime
     warnings: list[str] = Field(default_factory=list)
     cache_hits: list[str] = Field(default_factory=list)
@@ -221,6 +226,25 @@ class ReviewMeta(BaseModel):
     style_qa_report: list[dict[str, Any]] = Field(default_factory=list)
     n_style_rewrites: int = Field(ge=0, default=0)
     readability_warnings: list[str] = Field(default_factory=list)
+    n_non_story_beats_dropped: int = Field(default=0, ge=0)
+    dropped_beat_ids: list[int] = Field(default_factory=list)
+    non_story_filter_warnings: list[str] = Field(default_factory=list)
+    content_type: str = "episode"
+    hook_mode: str = "cold_open"
+    target_ratio_mode: str = "fixed"
+    auto_target_ratio: float | None = None
+    complexity_score: float = Field(default=0.0, ge=0, le=1)
+    opening_coherence_report: dict[str, Any] = Field(default_factory=dict)
+    n_opening_rewrites: int = Field(default=0, ge=0)
+    opening_warnings: list[str] = Field(default_factory=list)
+    pre_story_dropped_beat_ids: list[int] = Field(default_factory=list)
+    micro_beats_enabled: bool = False
+    target_beat_audio_s: float | None = None
+    max_beat_audio_s: float | None = None
+    n_micro_beats_split: int = Field(default=0, ge=0)
+    micro_beat_split_ids: list[int] = Field(default_factory=list)
+    micro_beat_warnings: list[str] = Field(default_factory=list)
+    qa_rewrite_limited: bool = False
 
 
 class BeatTiming(BaseModel):
@@ -320,6 +344,59 @@ class VideoProfile(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     cache_hits: list[str] = Field(default_factory=list)
 
+
+class StorySection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    section_id: int = Field(ge=0)
+    type: StorySectionType
+    tc_start: float = Field(ge=0)
+    tc_end: float = Field(gt=0)
+    segment_ids: list[int] = Field(default_factory=list)
+    summary: str
+    characters: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    events: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("summary")
+    @classmethod
+    def validate_summary(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("summary cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_section(self) -> "StorySection":
+        if self.tc_end <= self.tc_start:
+            raise ValueError("tc_end must be greater than tc_start")
+        return self
+
+class StoryMapMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    film_map_path: str
+    video_profile_path: str | None = None
+    content_type: str = "movie"
+    duration_s: float = Field(gt=0)
+    n_sections: int = Field(ge=0)
+    n_non_story: int = Field(ge=0)
+    created_at: datetime
+    cache_hits: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+class ReviewIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: int = Field(ge=0)
+    story_section_id: int | None = Field(default=None, ge=0)
+    story_section_type: StorySectionType | None = None
+    visual_intent: VisualIntent = "dialogue"
+    chronology_mode: ChronologyMode = "flexible"
+    warnings: list[str] = Field(default_factory=list)
+
 class TtsManifestEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -383,6 +460,7 @@ class ShotsMeta(BaseModel):
     video_profile_hash: str | None = None
     n_non_story: int = Field(default=0, ge=0)
     intro_detection: dict[str, Any] | None = None
+    story_start_s: float = Field(default=0.0, ge=0)
     created_at: datetime
     cache_hits: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -430,6 +508,9 @@ class EdlMeta(BaseModel):
     n_reused: int = Field(ge=0)
     n_speedfit: int = Field(ge=0)
     n_intro_excluded: int = Field(default=0, ge=0)
+    n_empty_beats: int = Field(default=0, ge=0)
+    n_high_repeat_beats: int = Field(default=0, ge=0)
+    max_repeat_ratio: float = Field(default=0.0, ge=0)
     avg_clip_len: float = Field(ge=0)
     coverage_ok: bool
     warnings: list[str] = Field(default_factory=list)
@@ -473,6 +554,27 @@ def validate_film_map(segments: list[FilmMapSegment], duration: float | None = N
                 raise ValueError(f"segment #{segment.id} overlaps segment #{previous.id}")
     return ordered
 
+
+
+def validate_story_map(sections: list[StorySection], duration: float | None = None) -> list[StorySection]:
+    ordered = sorted(sections, key=lambda item: (item.tc_start, item.tc_end, item.section_id))
+    previous_end = -1.0
+    for expected_id, section in enumerate(ordered):
+        if section.section_id != expected_id:
+            raise ValueError(f"section_id must be continuous: expected {expected_id}, got {section.section_id}")
+        if section.tc_start < previous_end - 1e-3:
+            raise ValueError(f"story section #{section.section_id} overlaps previous section")
+        if duration is not None and section.tc_end > duration + 1e-6:
+            raise ValueError(f"story section #{section.section_id} exceeds duration")
+        previous_end = section.tc_end
+    return ordered
+
+def validate_review_intents(intents: list[ReviewIntent], beats: list[ReviewBeat]) -> list[ReviewIntent]:
+    ordered = sorted(intents, key=lambda item: item.beat_id)
+    beat_ids = {beat.beat_id for beat in beats}
+    if {item.beat_id for item in ordered} != beat_ids:
+        raise ValueError("review intent beat ids must match review_script beat ids")
+    return ordered
 
 def validate_review_script(beats: list[ReviewBeat], film_map: list[FilmMapSegment]) -> list[ReviewBeat]:
     ordered = sorted(beats, key=lambda item: item.beat_id)

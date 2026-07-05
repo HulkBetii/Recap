@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -61,10 +61,17 @@ def write_stage_outputs(command: list[str]) -> None:
         output = flag(command, "--output")
         output.write_text(json.dumps([{"id":0,"type":"speech","tc_start":0,"tc_end":2,"ko":"ì•ˆë…•","en":"hello","scene_desc":None}]), encoding="utf-8")
         output.with_name("film_map.meta.json").write_text(json.dumps({"input_path":"film.mp4","duration":2,"created_at":NOW,"whisper_model":"large-v3","translate_model":"gpt-4.1-mini","vision_model":"gpt-4.1-mini","gap_threshold":4,"max_vision_frames":200,"speech_count":1,"visual_count":0,"cache_hits":[],"warnings_count":0}), encoding="utf-8")
+    elif stage == "storymap":
+        output = flag(command, "--output")
+        output.write_text(json.dumps([{"section_id":0,"type":"setup","tc_start":0,"tc_end":2,"segment_ids":[0],"summary":"setup","characters":[],"locations":[],"events":["setup"],"confidence":0.8,"warnings":[]}]), encoding="utf-8")
+        output.with_name("story_map.meta.json").write_text(json.dumps({"film_map_path":"film_map.json","video_profile_path":None,"content_type":"movie","duration_s":2,"n_sections":1,"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
+        flag(command, "--output-qa").write_text(json.dumps({"n_sections":1,"n_non_story":0,"warnings":[],"section_warnings":[]}), encoding="utf-8")
     elif stage == "review":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"beat_id":0,"narration":"Má»Ÿ Ä‘áº§u","from_seg_id":0,"to_seg_id":0,"src_tc_start":0,"src_tc_end":2,"is_hook":True}]), encoding="utf-8")
         output.with_name("review_script.meta.json").write_text(json.dumps({"glossary":[],"target_video_s":2,"char_budget":30,"est_total_chars":6,"coverage_pct":1,"qa_report":[],"n_qa_iterations":0,"model_versions":{},"created_at":NOW,"warnings":[],"cache_hits":[]}), encoding="utf-8")
+        if "--review-intent-output" in command:
+            flag(command, "--review-intent-output").write_text(json.dumps([{"beat_id":0,"story_section_id":0,"story_section_type":"setup","visual_intent":"character_intro","chronology_mode":"ordered","warnings":[]}]), encoding="utf-8")
     elif stage == "tts":
         audio = flag(command, "--output-audio")
         timing = flag(command, "--output-timing")
@@ -107,7 +114,7 @@ def test_full_pipeline_mock_writes_summary_and_runs_shots_parallel(tmp_path: Pat
         write_stage_outputs(command)
 
     assert run_pipeline(argset(tmp_path), executor=fake_executor) == 0
-    assert set(calls) == {"preflight", "ingest", "review", "tts", "shots", "match", "render"}
+    assert set(calls) == {"preflight", "ingest", "storymap", "review", "tts", "shots", "match", "render"}
     summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
     assert summary["calibrate"] == {"real_ratio": 1, "n_beats_widened": 0, "duration_match": True}
     assert (tmp_path / "run" / "review_meta.json").exists()
@@ -151,3 +158,14 @@ def test_missing_env_fails_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
     with pytest.raises(Exception, match="OPENAI_API_KEY"):
         run_pipeline(argset(tmp_path, only="ingest"), executor=lambda command, log_path: None)
+
+def test_review_command_disables_micro_beats_by_default(tmp_path: Path) -> None:
+    from orchestrator.graph import build_paths
+    from orchestrator.runner import build_command
+
+    paths = build_paths(tmp_path / "run")
+    config = load_config(write_config(tmp_path))
+    command = build_command("review", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+    assert "--no-micro-beats" in command
+    assert "--micro-beats" not in command
+

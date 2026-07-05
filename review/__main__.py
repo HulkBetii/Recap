@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import asyncio
@@ -7,15 +7,27 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.schema import ReviewBeat, ReviewMeta, validate_review_script, write_json
+from common.schema import ReviewBeat, ReviewMeta, StorySection, VideoProfile, validate_review_intents, validate_review_script, validate_story_map, write_json
 from review.budget import allocate_char_targets, compute_budget, estimate_total_chars
 from review.cache import ReviewCache
 from review.coverage import coverage_ratio
 from review.consistency import apply_narration_consistency
 from review.inputs import ReviewInputError, load_duration, load_film_map
+from review.intent import build_review_intents, story_map_prompt_context
 from review.llm_flow import regenerate_beat, request_narration, request_outline, request_qa
+from review.micro_beats import split_long_beats
+from review.movie_mode import (
+    apply_hook_mode,
+    check_opening_coherence,
+    opening_rewrite_issue,
+    replace_narration,
+    resolve_content_defaults,
+    resolve_target_ratio,
+    story_start_from_profile,
+)
 from review.models import NarrationBeat, OutlineResult, QaResult
 from review.playwright_chat import PlaywrightChatClient, PlaywrightChatError
+from review.non_story import drop_non_story_beats
 from review.session import build_chat_session_meta, resolve_initial_chat_url, save_chat_session
 from review.style import (
     DEFAULT_MAX_SENTENCE_CHARS,
@@ -48,10 +60,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Stage 2 review: film_map.json -> review_script.json")
     parser.add_argument("--film-map", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--target-ratio", default=DEFAULT_TARGET_RATIO, type=float)
+    parser.add_argument("--target-ratio", default=str(DEFAULT_TARGET_RATIO), help="Float ratio or auto")
     parser.add_argument("--tts-cps", default=DEFAULT_TTS_CPS, type=float)
     parser.add_argument("--min-coverage", default=DEFAULT_MIN_COVERAGE, type=float)
     parser.add_argument("--max-qa-iterations", default=DEFAULT_MAX_QA_ITERATIONS, type=int)
+    parser.add_argument("--max-qa-rewrites-per-iteration", default=6, type=int)
+    parser.add_argument("--content-type", default="episode", choices=["episode", "movie"])
+    parser.add_argument("--hook-mode", default=None, choices=["cold_open", "setup", "off"])
+    parser.add_argument("--opening-coherence-qa", dest="opening_coherence_qa", action="store_true", default=None)
+    parser.add_argument("--no-opening-coherence-qa", dest="opening_coherence_qa", action="store_false")
+    parser.add_argument("--micro-beats", dest="micro_beats", action="store_true", default=None)
+    parser.add_argument("--no-micro-beats", dest="micro_beats", action="store_false")
+    parser.add_argument("--target-beat-audio-s", default=12.0, type=float)
+    parser.add_argument("--max-beat-audio-s", default=18.0, type=float)
     parser.add_argument("--style-sample", default=None)
     parser.add_argument("--style-preset", default=DEFAULT_STYLE_PRESET)
     parser.add_argument("--style-strength", default=DEFAULT_STYLE_STRENGTH, choices=["medium", "strong"])
@@ -59,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-style-qa", dest="style_qa", action="store_false")
     parser.add_argument("--target-sentence-chars", default=DEFAULT_TARGET_SENTENCE_CHARS, type=int)
     parser.add_argument("--max-sentence-chars", default=DEFAULT_MAX_SENTENCE_CHARS, type=int)
+    parser.add_argument("--drop-non-story-beats", action="store_true", default=True)
+    parser.add_argument("--no-drop-non-story-beats", dest="drop_non_story_beats", action="store_false")
+    parser.add_argument("--non-story-tail-s", default=300.0, type=float)
+    parser.add_argument("--video-profile", default=None, type=Path)
+    parser.add_argument("--story-map", default=None, type=Path)
+    parser.add_argument("--review-intent-output", default=None, type=Path)
     parser.add_argument("--work-dir", default=Path("work/review"), type=Path)
     parser.add_argument("--chatgpt-profile-dir", default=DEFAULT_PROFILE_DIR, type=Path)
     parser.add_argument("--chat-session-policy", default="auto", choices=["auto", "new", "resume"], help="ChatGPT conversation policy for this video/run")
@@ -74,11 +101,40 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def build_review_with_client(args: argparse.Namespace, client) -> tuple[list[ReviewBeat], ReviewMeta]:  # type: ignore[no-untyped-def]
     logger = logging.getLogger("review")
+    if not hasattr(args, "drop_non_story_beats"):
+        args.drop_non_story_beats = True
+    if not hasattr(args, "non_story_tail_s"):
+        args.non_story_tail_s = 300.0
+    if not hasattr(args, "content_type"):
+        args.content_type = "episode"
+    if not hasattr(args, "hook_mode"):
+        args.hook_mode = None
+    if not hasattr(args, "opening_coherence_qa"):
+        args.opening_coherence_qa = None
+    if not hasattr(args, "max_qa_rewrites_per_iteration"):
+        args.max_qa_rewrites_per_iteration = 6
+    if not hasattr(args, "video_profile"):
+        args.video_profile = None
+    if not hasattr(args, "story_map"):
+        args.story_map = None
+    if not hasattr(args, "review_intent_output"):
+        args.review_intent_output = None
+    if not hasattr(args, "micro_beats") or args.micro_beats is None:
+        args.micro_beats = False
+    if not hasattr(args, "target_beat_audio_s"):
+        args.target_beat_audio_s = 12.0
+    if not hasattr(args, "max_beat_audio_s"):
+        args.max_beat_audio_s = 18.0
+    args.hook_mode, args.opening_coherence_qa = resolve_content_defaults(args.content_type, args.hook_mode, args.opening_coherence_qa)
     film_map_path = args.film_map.expanduser().resolve()
     output_path = args.output.expanduser().resolve()
     work_dir = args.work_dir.expanduser().resolve()
 
-    if args.target_ratio <= 0:
+    try:
+        target_ratio_probe = None if str(args.target_ratio).lower() == "auto" else float(args.target_ratio)
+    except ValueError as exc:
+        raise ReviewError("--target-ratio must be a positive float or auto") from exc
+    if target_ratio_probe is not None and target_ratio_probe <= 0:
         raise ReviewError("--target-ratio must be > 0")
     if args.tts_cps <= 0:
         raise ReviewError("--tts-cps must be > 0")
@@ -86,13 +142,24 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         raise ReviewError("--min-coverage must be between 0 and 1")
     if args.max_qa_iterations < 0:
         raise ReviewError("--max-qa-iterations must be >= 0")
+    if args.max_qa_rewrites_per_iteration < 0:
+        raise ReviewError("--max-qa-rewrites-per-iteration must be >= 0")
     if args.target_sentence_chars <= 0 or args.max_sentence_chars <= 0:
         raise ReviewError("sentence char limits must be > 0")
     if args.max_sentence_chars < args.target_sentence_chars:
         raise ReviewError("--max-sentence-chars must be >= --target-sentence-chars")
+    if args.non_story_tail_s < 0:
+        raise ReviewError("--non-story-tail-s must be >= 0")
+    if args.target_beat_audio_s <= 0 or args.max_beat_audio_s <= 0:
+        raise ReviewError("beat audio limits must be > 0")
+    if args.max_beat_audio_s < args.target_beat_audio_s:
+        raise ReviewError("--max-beat-audio-s must be >= --target-beat-audio-s")
 
     film_map = load_film_map(film_map_path)
     duration_s, warnings = load_duration(film_map_path, film_map)
+    video_profile = load_video_profile(args.video_profile)
+    story_sections = load_story_map(args.story_map, duration_s=duration_s)
+    story_start_s = story_start_from_profile(video_profile)
     film_map_view = build_film_map_view(film_map)
     style_sample_path = Path(args.style_sample).expanduser().resolve() if args.style_sample else DEFAULT_STYLE_SAMPLE
     cleaned_style_sample = read_clean_style_sample(style_sample_path)
@@ -105,15 +172,34 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         max_sentence_chars=args.max_sentence_chars,
     )
     style_guide = build_style_guide(style_config, cleaned_style_sample)
-    target_video_s, char_budget = compute_budget(duration_s, args.target_ratio, args.tts_cps)
+    if story_sections and args.content_type == "movie":
+        style_guide = style_guide + "\n" + story_map_prompt_context(story_sections)
+    auto_duration = resolve_target_ratio(args.target_ratio, content_type=args.content_type, film_map=film_map, duration_s=duration_s)
+    target_video_s, char_budget = compute_budget(duration_s, auto_duration.target_ratio, args.tts_cps)
 
     cache = ReviewCache(work_dir, force=args.force)
     cache.prepare()
-    refresh_style_cache(cache, style_config_key(style_config, cleaned_style_sample))
+    review_config_key = style_config_key(style_config, cleaned_style_sample)
+    review_config_key.update({
+        "content_type": args.content_type,
+        "hook_mode": args.hook_mode,
+        "target_ratio": str(args.target_ratio),
+        "resolved_target_ratio": auto_duration.target_ratio,
+        "opening_coherence_qa": args.opening_coherence_qa,
+        "max_qa_rewrites_per_iteration": args.max_qa_rewrites_per_iteration,
+        "video_profile": str(args.video_profile) if args.video_profile else None,
+        "story_map": str(args.story_map) if args.story_map else None,
+        "story_start_s": story_start_s,
+        "micro_beats": args.micro_beats,
+        "target_beat_audio_s": args.target_beat_audio_s,
+        "max_beat_audio_s": args.max_beat_audio_s,
+    })
+    refresh_style_cache(cache, review_config_key)
 
     if cache.has("outline.json"):
         logger.info("[1/4] Using cached outline.json")
         outline_result = OutlineResult.model_validate(cache.read_json("outline.json"))
+        outline_result = apply_hook_mode(outline_result, content_type=args.content_type, hook_mode=args.hook_mode, film_map=film_map, story_start_s=story_start_s)
     else:
         logger.info("[1/4] Requesting outline + glossary")
         outline_result = await request_outline(
@@ -123,7 +209,11 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             char_budget=char_budget,
             min_coverage=args.min_coverage,
             style_sample=style_guide,
+            content_type=args.content_type,
+            hook_mode=args.hook_mode,
+            story_start_s=story_start_s,
         )
+        outline_result = apply_hook_mode(outline_result, content_type=args.content_type, hook_mode=args.hook_mode, film_map=film_map, story_start_s=story_start_s)
         cache.write_json("outline.json", outline_result)
 
     char_targets = allocate_char_targets(outline_result.outline, char_budget)
@@ -138,6 +228,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             glossary=outline_result.glossary,
             char_targets=char_targets,
             style_sample=style_guide,
+            content_type=args.content_type,
+            hook_mode=args.hook_mode,
         )
         cache.write_json("narration.json", narration)
 
@@ -180,6 +272,9 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                 glossary=outline_result.glossary,
                 char_budget=char_budget,
                 coverage_pct=current_coverage,
+                content_type=args.content_type,
+                hook_mode=args.hook_mode,
+                story_start_s=story_start_s,
             )
             if iteration == 0:
                 cache.write_json("qa.json", qa)
@@ -190,7 +285,10 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             n_qa_iterations = iteration
             break
         narration_by_id = {item.beat_id: item for item in narration}
-        for issue in qa.issues:
+        limited_issues = qa.issues[:args.max_qa_rewrites_per_iteration] if args.max_qa_rewrites_per_iteration else []
+        if len(qa.issues) > len(limited_issues):
+            warnings.append(f"qa rewrite limited to {len(limited_issues)} of {len(qa.issues)} issue(s) in iteration {iteration}")
+        for issue in limited_issues:
             if issue.beat_id >= len(beats):
                 continue
             revised = await regenerate_beat(
@@ -208,10 +306,85 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         cache.write_json(f"revisions/narration-{iteration + 1}.json", narration)
         beats = derive_review_beats(outline=outline_result.outline, narration=narration, film_map=film_map)
 
+    opening_coherence_report = {"passed": True, "issues": [], "warnings": []}
+    n_opening_rewrites = 0
+    opening_warnings: list[str] = []
+    if args.opening_coherence_qa:
+        opening_check = check_opening_coherence(beats, content_type=args.content_type, hook_mode=args.hook_mode, story_start_s=story_start_s)
+        opening_coherence_report = {"passed": opening_check.passed, "issues": opening_check.issues, "warnings": opening_check.warnings}
+        if not opening_check.passed and beats and args.max_qa_iterations > 0:
+            revised = await regenerate_beat(
+                client,
+                beat=beats[0],
+                issue=opening_rewrite_issue(opening_check),
+                glossary=outline_result.glossary,
+                char_target=char_targets[0] if char_targets else 400,
+                style_sample=style_guide,
+            )
+            narration = replace_narration(narration, revised)
+            cache.write_json("opening_coherence_revision.json", revised)
+            beats = derive_review_beats(outline=outline_result.outline, narration=narration, film_map=film_map)
+            n_opening_rewrites = 1
+            opening_check = check_opening_coherence(beats, content_type=args.content_type, hook_mode=args.hook_mode, story_start_s=story_start_s)
+            opening_coherence_report = {"passed": opening_check.passed, "issues": opening_check.issues, "warnings": opening_check.warnings}
+        opening_warnings = opening_coherence_report["warnings"]
+        warnings.extend(opening_warnings)
+        cache.write_json("opening_coherence.json", opening_coherence_report)
+
+    pre_story_dropped: list[int] = []
+    if args.content_type == "movie" and story_start_s > 0:
+        kept_beats = []
+        for beat in beats:
+            if not beat.is_hook and beat.src_tc_end <= story_start_s + 1e-6:
+                pre_story_dropped.append(beat.beat_id)
+            else:
+                kept_beats.append(beat)
+        if pre_story_dropped:
+            beats = [beat.model_copy(update={"beat_id": index}) for index, beat in enumerate(kept_beats)]
+            warnings.append(f"dropped {len(pre_story_dropped)} pre-story beat(s) before story_start_s={story_start_s:.1f}: {pre_story_dropped}")
+            cache.write_json("pre_story_beats.json", {"dropped_beat_ids": pre_story_dropped, "story_start_s": story_start_s})
+
+    micro_report = None
+    if args.micro_beats:
+        beats, micro_report = split_long_beats(
+            beats,
+            film_map,
+            max_audio_s=args.max_beat_audio_s,
+            target_audio_s=args.target_beat_audio_s,
+            tts_cps=args.tts_cps,
+            enabled=True,
+        )
+        if micro_report.warnings:
+            warnings.extend(micro_report.warnings)
+            cache.write_json("micro_beats.json", {
+                "n_split_beats": micro_report.n_split_beats,
+                "split_beat_ids": micro_report.split_beat_ids,
+                "warnings": micro_report.warnings,
+                "target_beat_audio_s": args.target_beat_audio_s,
+                "max_beat_audio_s": args.max_beat_audio_s,
+            })
+
+    non_story_report = None
+    if args.drop_non_story_beats:
+        beats, non_story_report = drop_non_story_beats(beats, film_map, duration_s=duration_s, tail_s=args.non_story_tail_s)
+        cache.write_json("non_story_beats.json", {
+            "dropped_beat_ids": non_story_report.dropped_beat_ids,
+            "warnings": non_story_report.warnings,
+            "decisions": [decision.__dict__ for decision in non_story_report.decisions],
+            "tail_s": args.non_story_tail_s,
+        })
+        warnings.extend(non_story_report.warnings)
+
     coverage_pct = coverage_ratio(beats, len(film_map))
     if coverage_pct < args.min_coverage:
         warnings.append(f"Coverage {coverage_pct:.3f} is below min_coverage {args.min_coverage:.3f}")
     validate_review_script(beats, film_map)
+    if story_sections:
+        review_intents = build_review_intents(beats, story_sections)
+    else:
+        review_intents = build_review_intents(beats, [])
+    validate_review_intents(review_intents, beats)
+    intent_output = args.review_intent_output.expanduser().resolve() if args.review_intent_output else output_path.with_name("review_script.intent.json")
 
     meta = ReviewMeta(
         glossary=outline_result.glossary,
@@ -232,10 +405,51 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         style_qa_report=style_qa_report,
         n_style_rewrites=n_style_rewrites,
         readability_warnings=readability_warnings,
+        n_non_story_beats_dropped=len(non_story_report.dropped_beat_ids) if non_story_report else 0,
+        dropped_beat_ids=non_story_report.dropped_beat_ids if non_story_report else [],
+        non_story_filter_warnings=non_story_report.warnings if non_story_report else [],
+        content_type=args.content_type,
+        hook_mode=args.hook_mode,
+        target_ratio_mode=auto_duration.target_ratio_mode,
+        auto_target_ratio=auto_duration.target_ratio if auto_duration.target_ratio_mode == "auto" else None,
+        complexity_score=auto_duration.complexity_score,
+        opening_coherence_report=opening_coherence_report,
+        n_opening_rewrites=n_opening_rewrites,
+        opening_warnings=opening_warnings,
+        qa_rewrite_limited=any("qa rewrite limited" in warning for warning in warnings),
+        video_profile_path=str(args.video_profile) if args.video_profile else None,
+        story_start_s=story_start_s,
+        pre_story_dropped_beat_ids=pre_story_dropped,
+        micro_beats_enabled=args.micro_beats,
+        target_beat_audio_s=args.target_beat_audio_s,
+        max_beat_audio_s=args.max_beat_audio_s,
+        n_micro_beats_split=micro_report.n_split_beats if micro_report else 0,
+        micro_beat_split_ids=micro_report.split_beat_ids if micro_report else [],
+        micro_beat_warnings=micro_report.warnings if micro_report else [],
     )
     write_json(output_path, beats)
+    write_json(intent_output, review_intents)
     write_json(output_path.with_name(f"{output_path.stem}.meta.json"), meta)
     return beats, meta
+
+
+
+def load_story_map(path: Path | None, *, duration_s: float) -> list[StorySection]:
+    if path is None:
+        return []
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise ReviewError(f"story map does not exist: {resolved}")
+    sections = [StorySection.model_validate(item) for item in __import__("json").loads(resolved.read_text(encoding="utf-8"))]
+    return validate_story_map(sections, duration=duration_s)
+
+def load_video_profile(path: Path | None) -> VideoProfile | None:
+    if path is None:
+        return None
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise ReviewError(f"video profile does not exist: {resolved}")
+    return VideoProfile.model_validate_json(resolved.read_text(encoding="utf-8"))
 
 
 def refresh_style_cache(cache: ReviewCache, config_key: dict) -> None:
@@ -246,7 +460,7 @@ def refresh_style_cache(cache: ReviewCache, config_key: dict) -> None:
         except Exception:  # noqa: BLE001 - bad cache should be rebuilt
             previous = None
         if previous != config_key:
-            for name in ("outline.json", "narration.json", "narration_consistent.json", "narration_style_checked.json", "qa.json", "style_qa.json"):
+            for name in ("outline.json", "narration.json", "narration_consistent.json", "narration_style_checked.json", "qa.json", "style_qa.json", "opening_coherence.json", "opening_coherence_revision.json"):
                 target = cache.path(name)
                 if target.exists():
                     target.unlink()

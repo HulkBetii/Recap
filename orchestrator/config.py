@@ -10,7 +10,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only without optional dep
     yaml = None  # type: ignore[assignment]
 
-STAGE_NAMES = ("preflight", "ingest", "review", "tts", "shots", "match", "render")
+STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "match", "render")
 TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -49,8 +49,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "drop_visual_before_s": 0.0,
         "log_level": "INFO",
     },
+    "storymap": {
+        "enabled": True,
+        "content_type": "movie",
+        "target_story_sections": 7,
+        "log_level": "INFO",
+    },
     "review": {
-        "target_ratio": 0.33,
+        "target_ratio": "auto",
+        "content_type": "movie",
+        "hook_mode": "setup",
+        "opening_coherence_qa": True,
+        "max_qa_rewrites_per_iteration": 6,
+        "micro_beats": False,
+        "target_beat_audio_s": 12.0,
+        "max_beat_audio_s": 18.0,
+        "story_map": "auto",
+        "review_intent_output": None,
         "tts_cps": 15,
         "min_coverage": 0.85,
         "max_qa_iterations": 3,
@@ -66,6 +81,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "style_qa": True,
         "target_sentence_chars": 160,
         "max_sentence_chars": 220,
+        "drop_non_story_beats": True,
+        "non_story_tail_s": 300.0,
         "headless": False,
         "log_level": "INFO",
     },
@@ -100,6 +117,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "allow_repeat": True,
         "allow_speedfit": False,
         "exclude_non_story": True,
+        "max_repeat_per_beat": 2,
+        "max_repeat_ratio_per_beat": 0.35,
+        "min_repeat_alternative_score_ratio": 0.75,
+        "adjacent_shot_repeat_penalty": 0.50,
+        "opening_guard_s": 120.0,
+        "opening_max_repeat_ratio": 0.20,
+        "opening_max_repeat_per_shot": 1,
+        "opening_min_unique_shots": 4,
+        "opening_allow_short_fill": True,
         "seed": 1234,
         "w_motion": 0.60,
         "w_face": 0.18,
@@ -117,6 +143,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "output_review_html": None,
         "review_asset_dir": None,
         "review_thumbs_per_beat": 8,
+        "review_intent": "auto",
+        "story_map": "auto",
+        "opening_ordered_fill": True,
         "review_html": True,
         "log_level": "INFO",
     },
@@ -186,3 +215,4 @@ def add_option(args: list[str], key: str, value: Any) -> None:
             args.append(flag_name(key))
         return
     args.extend([flag_name(key), str(value)])
+
