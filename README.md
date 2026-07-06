@@ -38,6 +38,16 @@ python run.py `
   --config config.example.yaml
 ```
 
+Preset phim lẻ ổn định hiện tại dùng trực tiếp:
+
+```powershell
+python run.py --input path\to\film.mp4 --run-dir runs\movie01 --config config.movie.stable.yaml
+```
+
+- `movie` preset ưu tiên kể mạch dễ hiểu từ đầu phim: `storymap`, `hook_mode=setup`, `target_ratio=auto`.
+- GĐ5 dùng `match_strategy=chronological`, `w_semantic=0.15`, `audio_delay_s=0.0`; semantic/story/intent chỉ làm tie-breaker, không kéo footage lệch nhịp nguồn.
+- Không dùng cutoff intro cố định; GĐ0 `preflight` detect non-story/intro theo từng video.
+
 Tùy chọn resume/debug:
 
 ```powershell

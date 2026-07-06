@@ -542,3 +542,9 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Lowered movie default `w_semantic` to `0.15` and added `chronology_weight`, `max_source_drift_s`, and `ordered_fill_by_audio_progress` config wiring.
 - Extended `edl.qa.json` and `edl.review.html` with `expected_src_position`, `source_drift_s`, `chronology_score`, plus `high source drift` / `semantic overrode chronology` warnings.
 - Rationale: fix perceived audio/visual mismatch caused by selecting semantically related footage from before/after the narration's expected source position, without using global audio delay or hardcoded intro cutoffs.
+
+### 2026-07-06 - Stable movie preset locked
+
+- Added `config.movie.stable.yaml` as the current known-good movie preset after real-video validation.
+- Preset locks movie behavior to `storymap`, `hook_mode=setup`, `target_ratio=auto`, G5 `match_strategy=chronological`, `w_semantic=0.15`, and G6 `audio_delay_s=0.0`.
+- Guidance: use this preset as the baseline for the next movie smoke test before tuning new per-video parameters.

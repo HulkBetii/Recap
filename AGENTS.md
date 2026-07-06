@@ -234,6 +234,8 @@ repo/
 ## 16. ORCHESTRATOR IMPLEMENTATION HIỆN TẠI
 
 - Orchestrator chạy bằng `python run.py --input film.mp4 --run-dir runs/<name> --config config.yaml`.
+- Preset phim lẻ ổn định hiện tại nằm ở `config.movie.stable.yaml`: `content_type=movie`, `hook_mode=setup`, `target_ratio=auto`, GĐ5 `match_strategy=chronological`, `w_semantic=0.15`, render `audio_delay_s=0.0`.
+- Khi chạy phim lẻ mới, ưu tiên dùng preset này trước khi tinh chỉnh; không hardcode cutoff intro và không chỉnh global audio delay nếu lỗi thực chất là matching.
 - Không sửa logic stage con; gọi từng stage qua subprocess `python -m ingest/review/tts/shots/match/render`.
 - DAG hiện tại: `shots` chạy song song với chuỗi `ingest → review → tts`; `match` chờ `review + tts + shots`; `render` chạy cuối.
 - Config chính là YAML/JSON một chỗ; mẫu đầy đủ nằm ở `config.example.yaml`. Dependency mới: `PyYAML`.
