@@ -120,7 +120,8 @@ def run_render(args: argparse.Namespace) -> int:
     video_only_duration = probe_duration(video_only)
     if video_only_duration + max(0.1, 2.0 / args.fps) < mux_audio_duration:
         padded_video = args.work_dir / "video_only_padded.mp4"
-        warnings.append(f"video-only concat was padded from {video_only_duration:.3f}s to delayed audio duration {mux_audio_duration:.3f}s")
+        target_label = "delayed audio duration" if args.audio_delay_s > 0 else "audio duration"
+        warnings.append(f"video-only concat was padded from {video_only_duration:.3f}s to {target_label} {mux_audio_duration:.3f}s")
         logging.info("pad video-only concat to voiceover duration")
         pad_video_to_duration(video_only, padded_video, mux_audio_duration)
         video_for_mux = padded_video

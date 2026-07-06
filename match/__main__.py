@@ -15,6 +15,7 @@ from match.qa import build_edl_qa
 from match.review_html import write_review_html
 from match.scoring import ScoringWeights
 from match.semantic import DEFAULT_EMBEDDING_MODEL, SemanticConfig, SemanticError, compute_semantic_result
+from match.sync_qa import build_sync_qa
 from match.timing import average_clip_len, validate_timeline
 
 
@@ -29,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shots", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--output-qa", default=None, type=Path)
+    parser.add_argument("--output-sync-qa", default=None, type=Path)
     parser.add_argument("--output-review-html", default=None, type=Path)
     parser.add_argument("--review-asset-dir", default=None, type=Path)
     parser.add_argument("--review-thumbs-per-beat", default=8, type=int)
@@ -101,6 +103,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "min_semantic_score": args.min_semantic_score,
         "exclude_non_story": args.exclude_non_story,
         "review_html": args.review_html,
+        "sync_qa": True,
         "review_thumbs_per_beat": args.review_thumbs_per_beat,
         "repeat_guard": [args.max_repeat_per_beat, args.max_repeat_ratio_per_beat, args.min_repeat_alternative_score_ratio, args.adjacent_shot_repeat_penalty],
         "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill],
@@ -207,6 +210,8 @@ def run_match(args: argparse.Namespace) -> int:
         args.review_asset_dir = None
     if not hasattr(args, "review_thumbs_per_beat"):
         args.review_thumbs_per_beat = 8
+    if not hasattr(args, "output_sync_qa"):
+        args.output_sync_qa = None
     if not hasattr(args, "review_intent"):
         args.review_intent = None
     if not hasattr(args, "story_map"):
@@ -215,6 +220,7 @@ def run_match(args: argparse.Namespace) -> int:
     random.seed(args.seed)
     output_path = args.output.expanduser().resolve()
     qa_path = args.output_qa.expanduser().resolve() if args.output_qa else output_path.with_name("edl.qa.json")
+    sync_qa_path = args.output_sync_qa.expanduser().resolve() if args.output_sync_qa else output_path.with_name("edl.sync.qa.json")
     review_html_path, _review_asset_dir = review_html_paths(args, output_path)
     cache = MatchCache(args.work_dir.expanduser().resolve(), force=args.force)
     cache.prepare()
@@ -231,6 +237,8 @@ def run_match(args: argparse.Namespace) -> int:
         if "qa" in cached:
             write_json(qa_path, cached["qa"])
             maybe_write_review_html(args, output_path, cached["qa"])
+        if "sync_qa" in cached:
+            write_json(sync_qa_path, cached["sync_qa"])
         return 0
 
     review_beats = load_review_script(args.review_script.expanduser().resolve())
@@ -366,11 +374,13 @@ def run_match(args: argparse.Namespace) -> int:
         review_intents=review_intents,
         story_sections=story_sections,
     )
+    sync_qa = build_sync_qa(beats=review_beats, timings=timings, placements=placements, fps=None)
     write_json(output_path, placements)
     write_json(output_path.with_name("edl.meta.json"), meta)
     write_json(qa_path, qa)
+    write_json(sync_qa_path, sync_qa)
     maybe_write_review_html(args, output_path, qa)
-    cache.write_plan(cache_key, [item.model_dump(mode="json") for item in placements], meta.model_dump(mode="json"), qa)
+    cache.write_plan(cache_key, [item.model_dump(mode="json") for item in placements], meta.model_dump(mode="json"), qa, sync_qa=sync_qa)
     return 0
 
 

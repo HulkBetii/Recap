@@ -529,3 +529,9 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - G5 now accepts `--review-intent`/`--story-map` and supports `--opening-ordered-fill` so opening matching prefers source chronology before score.
 - Orchestrator DAG now includes `storymap` between `ingest` and `review`; `shots` still runs in parallel with the ingest/story/review/TTS chain.
 - Regression suite: `pytest -q` -> 154 passed.
+
+### 2026-07-06 - G5/G6 sync QA report
+
+- Added `edl.sync.qa.json` generation in G5 to inspect beat-level sync without rerendering or changing the required EDL contract.
+- Report includes per-beat timing deltas, timeline gaps/overlaps, source-order mismatch, reuse ratio, and placement-outside-timing warnings.
+- Orchestrator now treats `edl.sync.qa.json` as a match output so reruns recreate it automatically.

@@ -54,7 +54,7 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "review": StageSpec("review", ("review_script", "review_meta"), "review_meta"),
     "tts": StageSpec("tts", ("voiceover", "beats_timing", "tts_meta"), "tts_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
-    "match": StageSpec("match", ("edl", "edl_meta", "edl_qa", "edl_review_html"), "edl_meta"),
+    "match": StageSpec("match", ("edl", "edl_meta", "edl_qa", "edl_sync_qa", "edl_review_html"), "edl_meta"),
     "render": StageSpec("render", ("recap", "render_meta"), "render_meta"),
 }
 
@@ -204,6 +204,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--film-map", str(film_map_setting)]
         output_qa = section.get("output_qa")
         command += ["--output-qa", str(output_qa or paths.edl_qa)]
+        command += ["--output-sync-qa", str(paths.edl_sync_qa)]
         output_review_html = section.get("output_review_html")
         review_asset_dir = section.get("review_asset_dir")
         command += ["--output-review-html", str(output_review_html or paths.edl_review_html)]

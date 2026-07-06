@@ -48,6 +48,7 @@ class RunPaths:
     edl: Path
     edl_meta: Path
     edl_qa: Path
+    edl_sync_qa: Path
     edl_review_html: Path
     edl_review_dir: Path
     recap: Path
@@ -80,6 +81,7 @@ def build_paths(run_dir: Path) -> RunPaths:
         edl=run_dir / "edl.json",
         edl_meta=run_dir / "edl.meta.json",
         edl_qa=run_dir / "edl.qa.json",
+        edl_sync_qa=run_dir / "edl.sync.qa.json",
         edl_review_html=run_dir / "edl.review.html",
         edl_review_dir=run_dir / "edl.review",
         recap=run_dir / "recap.mp4",

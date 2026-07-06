@@ -394,3 +394,7 @@ python -m storymap `
 ```
 
 `python -m review` can consume `--story-map` and writes `review_script.intent.json` without changing `review_script.json`. `python -m match` can consume `--review-intent` and `--story-map`; opening ordered fill is enabled by default to keep early footage chronological when the voiceover is setting up the film.
+
+### Sync QA report
+
+G?5 writes `edl.sync.qa.json` for debugging perceived audio/video sync. The report compares `beats_timing.json` with actual EDL placements per beat and flags source-order mismatch, beat timing deltas, reuse-heavy beats, long clips, and placements outside the beat timing window. Check this before applying a global render audio delay.

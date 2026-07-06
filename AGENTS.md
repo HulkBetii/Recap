@@ -367,3 +367,9 @@ repo/
 - G2 `review` accepts `--story-map` and writes optional `review_script.intent.json`; the required `review_script.json` contract is unchanged.
 - G5 `match` accepts `--review-intent` and `--story-map`; in `opening_guard_s`, `--opening-ordered-fill` prefers source chronology before score to reduce opening voice/image ordering issues.
 - Storymap and review-intent are movie-first defaults in orchestrator; episode behavior remains compatible and can opt out by config.
+
+## G5/G6 Sync QA Report
+
+- G5 writes optional `edl.sync.qa.json` next to `edl.json`; it compares `beats_timing.json` against EDL placements per beat.
+- Sync QA flags beat start/end/duration deltas, placements outside the beat timing window, source-order mismatch, high reuse, long clips, and timeline gaps/overlaps.
+- Use this report before changing global audio offset; if only a few beats are flagged, fix matching/timing locally instead of delaying the whole voiceover.
