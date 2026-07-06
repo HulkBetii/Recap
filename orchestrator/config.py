@@ -131,8 +131,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "w_face": 0.18,
         "w_bright": 0.12,
         "w_reuse": 0.35,
-        "w_semantic": 0.45,
+        "w_semantic": 0.15,
         "min_semantic_score": 0.22,
+        "match_strategy": "chronological",
+        "chronology_weight": 0.70,
+        "max_source_drift_s": 12.0,
         "semantic_mode": "bge-m3",
         "semantic_model": "BAAI/bge-m3",
         "semantic_device": "auto",
@@ -146,6 +149,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "review_intent": "auto",
         "story_map": "auto",
         "opening_ordered_fill": True,
+        "ordered_fill_by_audio_progress": True,
         "review_html": True,
         "log_level": "INFO",
     },
@@ -201,7 +205,20 @@ def load_config(path: Path | None) -> dict[str, Any]:
     unknown = set(data) - TOP_LEVEL_KEYS
     if unknown:
         raise ConfigError(f"unknown config section(s): {', '.join(sorted(unknown))}")
-    return deep_merge(DEFAULT_CONFIG, data)
+    merged = deep_merge(DEFAULT_CONFIG, data)
+    apply_content_type_match_defaults(merged, data)
+    return merged
+
+def apply_content_type_match_defaults(config: dict[str, Any], raw_overrides: dict[str, Any]) -> None:
+    review = config.get("review", {})
+    match = config.get("match", {})
+    raw_match = raw_overrides.get("match", {}) if isinstance(raw_overrides.get("match", {}), dict) else {}
+    if review.get("content_type") != "episode":
+        return
+    if "match_strategy" not in raw_match:
+        match["match_strategy"] = "hybrid"
+    if "w_semantic" not in raw_match:
+        match["w_semantic"] = 0.45
 
 
 def flag_name(key: str) -> str:

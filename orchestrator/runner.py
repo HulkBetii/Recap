@@ -210,13 +210,14 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--output-review-html", str(output_review_html or paths.edl_review_html)]
         command += ["--review-asset-dir", str(review_asset_dir or paths.edl_review_dir)]
         add_option(command, "review_thumbs_per_beat", section.get("review_thumbs_per_beat"))
-        for key in ("min_clip", "max_clip", "widen_margin", "max_widen", "seed", "max_repeat_per_beat", "max_repeat_ratio_per_beat", "min_repeat_alternative_score_ratio", "adjacent_shot_repeat_penalty", "opening_guard_s", "opening_max_repeat_ratio", "opening_max_repeat_per_shot", "opening_min_unique_shots", "w_motion", "w_face", "w_bright", "w_reuse", "w_semantic", "min_semantic_score", "semantic_mode", "semantic_model", "semantic_device", "semantic_batch_size", "semantic_cache_dir", "log_level"):
+        for key in ("min_clip", "max_clip", "widen_margin", "max_widen", "seed", "max_repeat_per_beat", "max_repeat_ratio_per_beat", "min_repeat_alternative_score_ratio", "adjacent_shot_repeat_penalty", "opening_guard_s", "opening_max_repeat_ratio", "opening_max_repeat_per_shot", "opening_min_unique_shots", "w_motion", "w_face", "w_bright", "w_reuse", "w_semantic", "min_semantic_score", "match_strategy", "chronology_weight", "max_source_drift_s", "semantic_mode", "semantic_model", "semantic_device", "semantic_batch_size", "semantic_cache_dir", "log_level"):
             add_option(command, key, section.get(key))
         command.append("--allow-repeat" if section.get("allow_repeat", True) else "--no-allow-repeat")
         command.append("--allow-speedfit" if section.get("allow_speedfit", False) else "--no-allow-speedfit")
         command.append("--exclude-non-story" if section.get("exclude_non_story", True) else "--no-exclude-non-story")
         command.append("--opening-allow-short-fill" if section.get("opening_allow_short_fill", True) else "--no-opening-allow-short-fill")
         command.append("--opening-ordered-fill" if section.get("opening_ordered_fill", True) else "--no-opening-ordered-fill")
+        command.append("--ordered-fill-by-audio-progress" if section.get("ordered_fill_by_audio_progress", True) else "--no-ordered-fill-by-audio-progress")
         if not section.get("review_html", True):
             command.append("--no-review-html")
     elif stage == "render":

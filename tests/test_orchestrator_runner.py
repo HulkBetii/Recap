@@ -170,3 +170,24 @@ def test_review_command_disables_micro_beats_by_default(tmp_path: Path) -> None:
     assert "--no-micro-beats" in command
     assert "--micro-beats" not in command
 
+def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None:
+    from orchestrator.graph import build_paths
+    from orchestrator.runner import build_command
+
+    paths = build_paths(tmp_path / "run")
+    config = load_config(write_config(tmp_path))
+    command = build_command("match", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+    assert command[command.index("--match-strategy") + 1] == "chronological"
+    assert command[command.index("--w-semantic") + 1] == "0.15"
+    assert command[command.index("--max-source-drift-s") + 1] == "12.0"
+    assert "--ordered-fill-by-audio-progress" in command
+
+def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:
+    path = write_config(tmp_path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["review"]["content_type"] = "episode"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    config = load_config(path)
+    assert config["match"]["match_strategy"] == "hybrid"
+    assert config["match"]["w_semantic"] == 0.45
+

@@ -49,3 +49,46 @@ def test_ordered_fill_spreads_across_long_source_window() -> None:
         ordered_fill=True,
     )
     assert [fragment.shot_index for fragment in result.fragments] == [0, 1, 2, 3]
+
+def test_chronological_strategy_prefers_expected_position_over_semantic() -> None:
+    beat = ReviewBeat(beat_id=0, narration="opening", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=100, is_hook=True)
+    timing = BeatTiming(beat_id=0, audio_path="audio/0.mp3", tl_start=0, tl_end=4, duration=4)
+    shots = [make_shot(0, 0, 0.2), make_shot(1, 80, 0.9)]
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=shots,
+        reuse_counts={},
+        weights=ScoringWeights(0.0, 0.0, 0.0, 0.0, 1.0),
+        min_clip=3,
+        max_clip=4,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=False,
+        allow_speedfit=False,
+        semantic_scores={(0, 1): 1.0},
+        match_strategy="chronological",
+        max_source_drift_s=12,
+    )
+    assert result.fragments[0].shot_index == 0
+
+def test_semantic_strategy_can_choose_distant_semantic_shot() -> None:
+    beat = ReviewBeat(beat_id=0, narration="opening", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=100, is_hook=True)
+    timing = BeatTiming(beat_id=0, audio_path="audio/0.mp3", tl_start=0, tl_end=4, duration=4)
+    shots = [make_shot(0, 0, 0.2), make_shot(1, 80, 0.9)]
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=shots,
+        reuse_counts={},
+        weights=ScoringWeights(0.0, 0.0, 0.0, 0.0, 1.0),
+        min_clip=3,
+        max_clip=4,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=False,
+        allow_speedfit=False,
+        semantic_scores={(0, 1): 1.0},
+        match_strategy="semantic",
+    )
+    assert result.fragments[0].shot_index == 1

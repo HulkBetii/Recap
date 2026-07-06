@@ -235,7 +235,10 @@ python -m match `
   --semantic-device auto `
   --semantic-batch-size 16 `
   --semantic-cache-dir work\match\semantic `
-  --w-semantic 0.45 `
+  --match-strategy chronological `
+  --chronology-weight 0.70 `
+  --max-source-drift-s 12 `
+  --w-semantic 0.15 `
   --min-semantic-score 0.22 `
   --min-clip 3.0 `
   --max-clip 5.0 `
@@ -249,9 +252,10 @@ python -m match `
 Nguyên tắc GĐ5:
 
 - Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding; `tfidf` van giu lam fallback khong can dependency nang.
+- Movie matching mac dinh la `chronological`: bam timecode/source chronology truoc, semantic/story/intent chi lam soft tie-breaker de tranh audio mot noi hinh mot noi.
 - Cai embedding deps khi dung `bge-m3`: `pip install -e ".[semantic-embed]"`.
-- `edl.qa.json` ghi provider/model/device/cache hits, từng beat chọn shot nào, semantic rank/score và warning `low semantic match`.
-- `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse và warnings theo beat.
+- `edl.qa.json` ghi provider/model/device/cache hits, từng beat chọn shot nào, semantic rank/score, `expected_src_position`, `source_drift_s`, `chronology_score` và warning `low semantic match`/`high source drift`.
+- `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse/drift và warnings theo beat.
 - Face l? ?i?m c?ng m?m, kh?ng l?c c?ng.
 - Placement m?c ??nh 1:1 speed `1.0`.
 - Thi?u footage th? n?i c?a s? ngu?n tr??c, sau ?? m?i repeat c? ki?m so?t.

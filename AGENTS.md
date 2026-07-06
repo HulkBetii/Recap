@@ -206,8 +206,9 @@ repo/
 - GD5 la CLI local/offline, chay bang `python -m match`.
 - GD5 doc `review_script.json`, `beats_timing.json`, `shots.json` va optional `film_map.json`; sinh `edl.json` + `edl.meta.json` + `edl.qa.json` + `edl.review.html`; khong decode video, khong dung API.
 - Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding qua optional deps `semantic-embed`; `tfidf` van la fallback nhe. Semantic la soft bonus, khong hard filter.
-- `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse va warning `low semantic match` theo beat.
-- `edl.review.html` la QA artifact truc quan tu `match/review_html.py`, dung thumbnails san co trong `shots.json`, hien narration/source span/selected clip metrics/warnings de review nhanh bang browser.
+- Movie matching mac dinh dung `match_strategy=chronological`: bam source timecode/chronology truoc; semantic/story/intent chi la soft tie-breaker de tranh audio mot noi hinh mot noi. `semantic` strategy chi dung cho debug/experiment.
+- `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse, `expected_src_position`, `source_drift_s`, `chronology_score` va warnings `low semantic match`/`high source drift` theo beat.
+- `edl.review.html` la QA artifact truc quan tu `match/review_html.py`, dung thumbnails san co trong `shots.json`, hien narration/source span/selected clip metrics/drift/warnings de review nhanh bang browser.
 - Face la soft bonus, khong phai hard filter. Shot `face_count=0` van duoc chon neu motion/brightness/semantic tot.
 - Package thuc te:
   - `match/`: candidate filtering/widening, scoring, semantic adapters, greedy fill, timeline assignment, cache va CLI orchestration.

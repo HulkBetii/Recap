@@ -29,6 +29,8 @@ def build_edl_qa(
     opening_min_unique_shots: int = 4,
     review_intents: dict[int, ReviewIntent] | None = None,
     story_sections: dict[int, StorySection] | None = None,
+    match_strategy: str = "hybrid",
+    max_source_drift_s: float = 12.0,
 ) -> dict[str, Any]:
     review_intents = review_intents or {}
     story_sections = story_sections or {}
@@ -48,15 +50,32 @@ def build_edl_qa(
         section = story_sections.get(intent.story_section_id) if intent and intent.story_section_id is not None else None
         selected = []
         beat_semantic_values: list[float] = []
-        for placement in placements_by_beat.get(beat.beat_id, []):
+        beat_selected = placements_by_beat.get(beat.beat_id, [])
+        beat_tl_start = min((placement.tl_start for placement in beat_selected), default=0.0)
+        beat_tl_end = max((placement.tl_end for placement in beat_selected), default=0.0)
+        beat_tl_span = max(0.001, beat_tl_end - beat_tl_start)
+        beat_src_span = max(0.001, beat.src_tc_end - beat.src_tc_start)
+        beat_drifts: list[float] = []
+        semantic_override = False
+        for placement in beat_selected:
             shot = shots_by_index.get(placement.shot_index)
             semantic_score = semantic_scores.get((beat.beat_id, placement.shot_index), 0.0)
             beat_semantic_values.append(semantic_score)
+            tl_progress = min(1.0, max(0.0, (placement.tl_start - beat_tl_start) / beat_tl_span))
+            expected_src_position = beat.src_tc_start + beat_src_span * tl_progress
+            source_drift_s = source_drift(placement, expected_src_position)
+            beat_drifts.append(source_drift_s)
+            chronology_score = max(0.0, 1.0 - source_drift_s / max(max_source_drift_s, 0.001))
+            if source_drift_s > max_source_drift_s and semantic_score >= 0.5:
+                semantic_override = True
             entry: dict[str, Any] = {
                 "tl_start": placement.tl_start,
                 "tl_end": placement.tl_end,
                 "src_in": placement.src_in,
                 "src_out": placement.src_out,
+                "expected_src_position": round(expected_src_position, 3),
+                "source_drift_s": round(source_drift_s, 3),
+                "chronology_score": round(chronology_score, 6),
                 "shot_index": placement.shot_index,
                 "reused": placement.reused,
                 "semantic_score": round(semantic_score, 6),
@@ -76,7 +95,6 @@ def build_edl_qa(
                     "selected_from_non_story": not shot.is_story,
                 })
             selected.append(entry)
-        beat_selected = placements_by_beat.get(beat.beat_id, [])
         n_reused = sum(1 for placement in beat_selected if placement.reused)
         repeat_ratio = n_reused / len(beat_selected) if beat_selected else 0.0
         unique_shots = len({placement.shot_index for placement in beat_selected})
@@ -105,11 +123,19 @@ def build_edl_qa(
             beat_warnings.append(f"low semantic match: avg={avg_semantic:.3f} < {min_semantic_score:.3f}")
         if beat_semantic_values and avg_semantic < min_semantic_score and repeat_ratio > repeat_limit:
             beat_warnings.append("low semantic + high reuse")
+        max_source_drift = max(beat_drifts) if beat_drifts else 0.0
+        avg_source_drift = sum(beat_drifts) / len(beat_drifts) if beat_drifts else 0.0
+        if beat_drifts and max_source_drift > max_source_drift_s:
+            beat_warnings.append(f"high source drift: max={max_source_drift:.3f}s > {max_source_drift_s:.3f}s")
+        if semantic_override and match_strategy != "chronological":
+            beat_warnings.append("semantic overrode chronology")
         beat_reports.append({
             "beat_id": beat.beat_id,
             "narration_preview": narration_preview(beat.narration),
             "source_window": {"start": beat.src_tc_start, "end": beat.src_tc_end},
             "avg_semantic_score": round(avg_semantic, 6),
+            "avg_source_drift_s": round(avg_source_drift, 3),
+            "max_source_drift_s": round(max_source_drift, 3),
             "repeat_ratio": round(repeat_ratio, 6),
             "n_reused": n_reused,
             "unique_shots": unique_shots,
@@ -126,7 +152,9 @@ def build_edl_qa(
         })
     excluded_intro = [shot.index for shot in shots if not shot.is_story]
     return {
-        "version": 4,
+        "version": 5,
+        "match_strategy": match_strategy,
+        "max_source_drift_s": max_source_drift_s,
         "semantic_enabled": bool(semantic_scores),
         "semantic_provider": semantic_result.provider if semantic_result else ("tfidf" if semantic_scores else "off"),
         "semantic_model": semantic_result.model if semantic_result else None,
@@ -138,3 +166,8 @@ def build_edl_qa(
         "selected_from_non_story": any((not shots_by_index.get(item.shot_index, Shot(src="unknown", index=0, tc_start=0, tc_end=1, duration=1, thumb="unknown", motion_score=0, face_count=0, face_area=0, brightness=0, is_usable=False)).is_story) for item in placements),
         "beats": beat_reports,
     }
+
+def source_drift(placement: EdlPlacement, expected_src_position: float) -> float:
+    if placement.src_in <= expected_src_position <= placement.src_out:
+        return 0.0
+    return min(abs(placement.src_in - expected_src_position), abs(placement.src_out - expected_src_position))

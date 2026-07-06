@@ -50,6 +50,10 @@ def fill_beat(
     min_repeat_alternative_score_ratio: float = 0.75,
     adjacent_shot_repeat_penalty: float = 0.50,
     ordered_fill: bool = False,
+    ordered_fill_by_audio_progress: bool = True,
+    match_strategy: str = "hybrid",
+    chronology_weight: float = 0.70,
+    max_source_drift_s: float = 12.0,
 ) -> FillResult:
     warnings: list[str] = []
     window_start, window_end, candidates, widen_count = widen_until_enough(
@@ -83,8 +87,18 @@ def fill_beat(
         if not available:
             break
         ranked = rank_shots(available, reuse_counts, weights, semantic_scores, beat.beat_id)
-        if ordered_fill:
-            ranked = rank_for_ordered_fill(ranked, reuse_counts, weights, semantic_scores or {}, beat.beat_id, source_cursor)
+        if ordered_fill or match_strategy in {"chronological", "hybrid"}:
+            ranked = rank_for_ordered_fill(
+                ranked,
+                reuse_counts,
+                weights,
+                semantic_scores or {},
+                beat.beat_id,
+                source_cursor,
+                match_strategy=match_strategy,
+                chronology_weight=chronology_weight,
+                max_source_drift_s=max_source_drift_s,
+            )
         shot = choose_diverse_shot(
             ranked,
             reuse_counts,
@@ -96,6 +110,8 @@ def fill_beat(
             adjacent_shot_repeat_penalty,
         )
         src_start = max(window_start, shot.tc_start)
+        if match_strategy == "chronological" and shot.tc_start < source_cursor < shot.tc_end:
+            src_start = max(src_start, source_cursor)
         src_end = min(window_end, shot.tc_end)
         usable_len = max(0.0, src_end - src_start)
         if usable_len <= 0:
@@ -123,7 +139,7 @@ def fill_beat(
         previous_shot_index = shot.index
         used_in_beat.add(shot.index)
         remaining = round(remaining - clip_len, 6)
-        if ordered_fill and timing.duration > 0:
+        if ordered_fill_by_audio_progress and timing.duration > 0:
             progress = min(1.0, max(0.0, (timing.duration - remaining) / timing.duration))
             source_cursor = min(window_end, window_start + source_span * progress)
 
@@ -132,12 +148,32 @@ def fill_beat(
             warnings.append(f"beat {beat.beat_id} required controlled repeat fallback")
             while remaining > 1e-6:
                 ranked_repeat = [shot for shot in rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id) if repeat_by_shot.get(shot.index, 0) < max_repeat_per_beat]
-                if ordered_fill:
-                    ranked_repeat = rank_for_ordered_fill(ranked_repeat, reuse_counts, weights, semantic_scores or {}, beat.beat_id, source_cursor)
+                if ordered_fill or match_strategy in {"chronological", "hybrid"}:
+                    ranked_repeat = rank_for_ordered_fill(
+                        ranked_repeat,
+                        reuse_counts,
+                        weights,
+                        semantic_scores or {},
+                        beat.beat_id,
+                        source_cursor,
+                        match_strategy=match_strategy,
+                        chronology_weight=chronology_weight,
+                        max_source_drift_s=max_source_drift_s,
+                    )
                 if not ranked_repeat:
                     ranked_repeat = rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id)
-                    if ordered_fill:
-                        ranked_repeat = rank_for_ordered_fill(ranked_repeat, reuse_counts, weights, semantic_scores or {}, beat.beat_id, source_cursor)
+                    if ordered_fill or match_strategy in {"chronological", "hybrid"}:
+                        ranked_repeat = rank_for_ordered_fill(
+                            ranked_repeat,
+                            reuse_counts,
+                            weights,
+                            semantic_scores or {},
+                            beat.beat_id,
+                            source_cursor,
+                            match_strategy=match_strategy,
+                            chronology_weight=chronology_weight,
+                            max_source_drift_s=max_source_drift_s,
+                        )
                     warnings.append(f"beat {beat.beat_id} exceeded repeat cap during fallback")
                 shot = choose_diverse_shot(
                     ranked_repeat,
@@ -197,12 +233,26 @@ def rank_for_ordered_fill(
     semantic_scores: dict[tuple[int, int], float],
     beat_id: int,
     source_cursor: float,
+    match_strategy: str = "hybrid",
+    chronology_weight: float = 0.70,
+    max_source_drift_s: float = 12.0,
 ) -> list[Shot]:
-    def sort_key(shot: Shot) -> tuple[int, float, float, int]:
+    def drift(shot: Shot) -> float:
+        if shot.tc_start <= source_cursor <= shot.tc_end:
+            return 0.0
+        return min(abs(shot.tc_start - source_cursor), abs(shot.tc_end - source_cursor))
+
+    def sort_key(shot: Shot) -> tuple[float, float, float, int]:
         is_before_cursor = shot.tc_end < source_cursor
-        distance = abs(shot.tc_start - source_cursor)
+        distance = drift(shot)
         score = score_shot(shot, reuse_counts.get(shot.index, 0), weights, semantic_scores.get((beat_id, shot.index), 0.0))
-        return (1 if is_before_cursor else 0, distance, -score, shot.index)
+        if match_strategy == "chronological":
+            beyond_drift = distance > max_source_drift_s
+            return (1.0 if beyond_drift else 0.0, distance, -score, shot.index)
+        if match_strategy == "hybrid":
+            drift_penalty = chronology_weight * min(1.0, distance / max(max_source_drift_s, 0.001))
+            return (1 if is_before_cursor else 0, -(score - drift_penalty), distance, shot.index)
+        return (0.0, -score, distance, shot.index)
 
     return sorted(ranked, key=sort_key)
 

@@ -85,7 +85,10 @@ def write_review_html(
         repeat_info = ""
         if isinstance(qa_beat, dict):
             repeat_info = f" | Repeat: {escape(_fmt(qa_beat.get('repeat_ratio')))} | Reused: {escape(_fmt(qa_beat.get('n_reused')))} | Unique shots: {escape(_fmt(qa_beat.get('unique_shots')))}"
-        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}</div>")
+        drift_info = ""
+        if isinstance(qa_beat, dict):
+            drift_info = f" | Avg drift: {escape(_fmt(qa_beat.get('avg_source_drift_s')))}s | Max drift: {escape(_fmt(qa_beat.get('max_source_drift_s')))}s"
+        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}</div>")
         if beat_warnings:
             parts.append("<ul class=\"warn\">" + "".join(f"<li>{escape(str(warning))}</li>" for warning in beat_warnings) + "</ul>")
         parts.append("<div class=\"grid\">")
@@ -114,6 +117,7 @@ def write_review_html(
                 f"SRC {placement.src_in:.3f}–{placement.src_out:.3f}<br>"
                 f"shot {placement.shot_index} | reused={placement.reused}<br>"
                 f"semantic={escape(_fmt(qa_selected.get('semantic_score') if qa_selected else None))} rank={escape(_fmt(qa_selected.get('semantic_rank') if qa_selected else None))}<br>"
+                f"expected={escape(_fmt(qa_selected.get('expected_src_position') if qa_selected else None))} drift={escape(_fmt(qa_selected.get('source_drift_s') if qa_selected else None))} chrono={escape(_fmt(qa_selected.get('chronology_score') if qa_selected else None))}<br>"
                 f"motion={escape(_fmt(shot.motion_score if shot else None))} bright={escape(_fmt(shot.brightness if shot else None))} face={escape(_fmt(shot.face_count if shot else None))}<br>"
                 f"is_story={escape(_fmt(shot.is_story if shot else None))} reason={escape(_fmt(shot.exclude_reason if shot else None))}"
                 "</div></article>"

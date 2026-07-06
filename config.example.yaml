@@ -116,8 +116,11 @@ match:
   w_face: 0.18
   w_bright: 0.12
   w_reuse: 0.35
-  w_semantic: 0.45
+  w_semantic: 0.15
   min_semantic_score: 0.22
+  match_strategy: chronological
+  chronology_weight: 0.70
+  max_source_drift_s: 12
   semantic_mode: bge-m3
   semantic_model: BAAI/bge-m3
   semantic_device: auto
@@ -131,6 +134,7 @@ match:
   review_intent: auto
   story_map: auto
   opening_ordered_fill: true
+  ordered_fill_by_audio_progress: true
   review_html: true
   log_level: INFO
 

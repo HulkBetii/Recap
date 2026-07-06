@@ -535,3 +535,10 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Added `edl.sync.qa.json` generation in G5 to inspect beat-level sync without rerendering or changing the required EDL contract.
 - Report includes per-beat timing deltas, timeline gaps/overlaps, source-order mismatch, reuse ratio, and placement-outside-timing warnings.
 - Orchestrator now treats `edl.sync.qa.json` as a match output so reruns recreate it automatically.
+
+### 2026-07-06 - G5 movie chronological-first mapping
+
+- Added G5 `match_strategy=chronological|hybrid|semantic`; movie defaults now use `chronological` to prioritize source timecode/chronology over semantic/story/intent score.
+- Lowered movie default `w_semantic` to `0.15` and added `chronology_weight`, `max_source_drift_s`, and `ordered_fill_by_audio_progress` config wiring.
+- Extended `edl.qa.json` and `edl.review.html` with `expected_src_position`, `source_drift_s`, `chronology_score`, plus `high source drift` / `semantic overrode chronology` warnings.
+- Rationale: fix perceived audio/visual mismatch caused by selecting semantically related footage from before/after the narration's expected source position, without using global audio delay or hardcoded intro cutoffs.

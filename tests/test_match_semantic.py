@@ -53,6 +53,26 @@ def test_edl_qa_warns_on_low_semantic() -> None:
     assert qa["beats"][0]["selected"][0]["semantic_score"] == 0.01
     assert "low semantic match" in qa["beats"][0]["warnings"][0]
 
+def test_edl_qa_reports_source_drift() -> None:
+    placement = EdlPlacement(tl_start=5, tl_end=7, src="film.mp4", src_in=80, src_out=82, beat_id=0, shot_index=1, reused=False, speed=1.0)
+    qa = build_edl_qa(
+        beats=[ReviewBeat(beat_id=0, narration="opening", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=100, is_hook=True)],
+        placements=[placement],
+        shots=[shot(1, 80, 84)],
+        semantic_scores={(0, 1): 0.9},
+        weights=ScoringWeights(0.6, 0.18, 0.12, 0.35, 0.35),
+        min_semantic_score=0.12,
+        warnings=[],
+        match_strategy="hybrid",
+        max_source_drift_s=12,
+    )
+    selected = qa["beats"][0]["selected"][0]
+    assert selected["expected_src_position"] == 0
+    assert selected["source_drift_s"] == 80
+    assert selected["chronology_score"] == 0
+    assert any("high source drift" in warning for warning in qa["beats"][0]["warnings"])
+    assert "semantic overrode chronology" in qa["beats"][0]["warnings"]
+
 
 from pathlib import Path
 

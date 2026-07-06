@@ -61,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--w-reuse", default=0.35, type=float)
     parser.add_argument("--w-semantic", default=0.35, type=float)
     parser.add_argument("--min-semantic-score", default=0.12, type=float)
+    parser.add_argument("--match-strategy", default="hybrid", choices=["chronological", "hybrid", "semantic"])
+    parser.add_argument("--chronology-weight", default=0.70, type=float)
+    parser.add_argument("--max-source-drift-s", default=12.0, type=float)
     parser.add_argument("--exclude-non-story", action="store_true", default=True)
     parser.add_argument("--max-repeat-per-beat", default=2, type=int)
     parser.add_argument("--max-repeat-ratio-per-beat", default=0.35, type=float)
@@ -74,6 +77,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-opening-allow-short-fill", dest="opening_allow_short_fill", action="store_false")
     parser.add_argument("--opening-ordered-fill", action="store_true", default=True)
     parser.add_argument("--no-opening-ordered-fill", dest="opening_ordered_fill", action="store_false")
+    parser.add_argument("--ordered-fill-by-audio-progress", action="store_true", default=True)
+    parser.add_argument("--no-ordered-fill-by-audio-progress", dest="ordered_fill_by_audio_progress", action="store_false")
     parser.add_argument("--no-exclude-non-story", dest="exclude_non_story", action="store_false")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
@@ -101,12 +106,15 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "semantic_batch_size": args.semantic_batch_size,
         "semantic_cache_dir": str(args.semantic_cache_dir) if args.semantic_cache_dir else None,
         "min_semantic_score": args.min_semantic_score,
+        "match_strategy": args.match_strategy,
+        "chronology_weight": args.chronology_weight,
+        "max_source_drift_s": args.max_source_drift_s,
         "exclude_non_story": args.exclude_non_story,
         "review_html": args.review_html,
         "sync_qa": True,
         "review_thumbs_per_beat": args.review_thumbs_per_beat,
         "repeat_guard": [args.max_repeat_per_beat, args.max_repeat_ratio_per_beat, args.min_repeat_alternative_score_ratio, args.adjacent_shot_repeat_penalty],
-        "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill],
+        "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill, args.ordered_fill_by_audio_progress],
     })
 
 
@@ -131,6 +139,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError(f"input file does not exist: {args.story_map}")
     if args.min_semantic_score < 0:
         raise MatchError("--min-semantic-score must be >= 0")
+    if args.chronology_weight < 0:
+        raise MatchError("--chronology-weight must be >= 0")
+    if args.max_source_drift_s <= 0:
+        raise MatchError("--max-source-drift-s must be > 0")
     if args.semantic_batch_size <= 0:
         raise MatchError("--semantic-batch-size must be > 0")
     if args.review_thumbs_per_beat < 0:
@@ -195,13 +207,17 @@ def run_match(args: argparse.Namespace) -> int:
     logger = logging.getLogger("match")
     if not hasattr(args, "exclude_non_story"):
         args.exclude_non_story = True
-    for name, default in (("max_repeat_per_beat", 2), ("max_repeat_ratio_per_beat", 0.35), ("min_repeat_alternative_score_ratio", 0.75), ("adjacent_shot_repeat_penalty", 0.50), ("opening_guard_s", 0.0), ("opening_max_repeat_ratio", 0.20), ("opening_max_repeat_per_shot", 1), ("opening_min_unique_shots", 4)):
+    for name, default in (("max_repeat_per_beat", 2), ("max_repeat_ratio_per_beat", 0.35), ("min_repeat_alternative_score_ratio", 0.75), ("adjacent_shot_repeat_penalty", 0.50), ("opening_guard_s", 0.0), ("opening_max_repeat_ratio", 0.20), ("opening_max_repeat_per_shot", 1), ("opening_min_unique_shots", 4), ("chronology_weight", 0.70), ("max_source_drift_s", 12.0)):
         if not hasattr(args, name):
             setattr(args, name, default)
     if not hasattr(args, "opening_allow_short_fill"):
         args.opening_allow_short_fill = True
     if not hasattr(args, "opening_ordered_fill"):
         args.opening_ordered_fill = True
+    if not hasattr(args, "ordered_fill_by_audio_progress"):
+        args.ordered_fill_by_audio_progress = True
+    if not hasattr(args, "match_strategy"):
+        args.match_strategy = "hybrid"
     if not hasattr(args, "review_html"):
         args.review_html = True
     if not hasattr(args, "output_review_html"):
@@ -300,7 +316,11 @@ def run_match(args: argparse.Namespace) -> int:
             max_repeat_ratio_per_beat=args.opening_max_repeat_ratio if in_opening_guard else args.max_repeat_ratio_per_beat,
             min_repeat_alternative_score_ratio=args.min_repeat_alternative_score_ratio,
             adjacent_shot_repeat_penalty=args.adjacent_shot_repeat_penalty,
-            ordered_fill=in_opening_guard and args.opening_ordered_fill,
+            ordered_fill=(in_opening_guard and args.opening_ordered_fill) or args.match_strategy == "chronological",
+            ordered_fill_by_audio_progress=args.ordered_fill_by_audio_progress or args.match_strategy == "chronological",
+            match_strategy=args.match_strategy,
+            chronology_weight=args.chronology_weight,
+            max_source_drift_s=args.max_source_drift_s,
         )
         if in_opening_guard and args.opening_ordered_fill:
             result.warnings.append(f"beat {beat.beat_id} opening_ordered_fill")
@@ -373,6 +393,8 @@ def run_match(args: argparse.Namespace) -> int:
         opening_min_unique_shots=args.opening_min_unique_shots,
         review_intents=review_intents,
         story_sections=story_sections,
+        match_strategy=args.match_strategy,
+        max_source_drift_s=args.max_source_drift_s,
     )
     sync_qa = build_sync_qa(beats=review_beats, timings=timings, placements=placements, fps=None)
     write_json(output_path, placements)
