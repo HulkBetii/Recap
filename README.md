@@ -69,7 +69,7 @@ Run directory chính:
 - `film_map.json`, `review_script.json`, `voiceover.mp3`, `beats_timing.json`, `shots.json`, `edl.json`, `edl.qa.json`, `edl.review.html`, `recap.mp4`
 - `*.meta.json`, `audio/`, `shots/`, `work/<stage>/`, `run.log`, `summary.json`
 
-`summary.json` gom duration từng stage, trạng thái run/skip, warnings và ba số calibrate: `real_ratio`, `n_beats_widened`, `duration_match`.
+`summary.json` gom duration từng stage, trạng thái run/skip, warnings, `timecode_qa` và ba số calibrate: `real_ratio`, `n_beats_widened`, `duration_match`. Nếu `timecode_qa.approximate_timecodes=true`, ưu tiên kiểm tra `edl.review.html`/alignment trước khi chỉnh audio delay global.
 
 ## Chạy GĐ1
 

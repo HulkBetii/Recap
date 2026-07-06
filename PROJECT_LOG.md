@@ -1,5 +1,11 @@
 # PROJECT_LOG.md
 
+## 2026-07-06 — Timecode QA in run summary
+
+- Added `summary.json.timecode_qa` from `film_map.meta.json` so runs clearly show strict vs approximate timecodes.
+- Orchestrator warnings now explicitly flag `approximate_timecodes=true` because footage matching can feel less precise until forced alignment is enabled.
+
+
 Log theo dõi tiến độ dự án `Recap`.
 
 ## Mục tiêu dự án

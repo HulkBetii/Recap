@@ -378,3 +378,4 @@ repo/
 - G5 writes optional `edl.sync.qa.json` next to `edl.json`; it compares `beats_timing.json` against EDL placements per beat.
 - Sync QA flags beat start/end/duration deltas, placements outside the beat timing window, source-order mismatch, high reuse, long clips, and timeline gaps/overlaps.
 - Use this report before changing global audio offset; if only a few beats are flagged, fix matching/timing locally instead of delaying the whole voiceover.
+- `summary.json` includes `timecode_qa` from `film_map.meta.json`; if `approximate_timecodes=true`, treat footage/narration mismatch as an ASR/alignment risk first, not a render audio-delay problem.
