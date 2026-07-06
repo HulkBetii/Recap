@@ -548,3 +548,9 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Added `config.movie.stable.yaml` as the current known-good movie preset after real-video validation.
 - Preset locks movie behavior to `storymap`, `hook_mode=setup`, `target_ratio=auto`, G5 `match_strategy=chronological`, `w_semantic=0.15`, and G6 `audio_delay_s=0.0`.
 - Guidance: use this preset as the baseline for the next movie smoke test before tuning new per-video parameters.
+
+### 2026-07-06 - Vietnamese source video preset
+
+- Added G1 `source_language=vi` and `translate_mode=none` so Vietnamese source videos skip KO→EN translation and keep transcript text directly in `film_map.json`.
+- Added `config.vi.stable.yaml` for Vietnamese movie/video smoke tests, based on the stable movie preset with OpenAI chunked ASR and no translation.
+- Fixed G1 force cache cleanup to remove transcript/alignment/chunk artifacts when rerunning with a different language mode.

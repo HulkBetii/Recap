@@ -44,9 +44,16 @@ Preset phim lẻ ổn định hiện tại dùng trực tiếp:
 python run.py --input path\to\film.mp4 --run-dir runs\movie01 --config config.movie.stable.yaml
 ```
 
+Preset video/phim nguồn tiếng Việt, không dịch KO→EN:
+
+```powershell
+python run.py --input path\to\video-vi.mp4 --run-dir runs\movie-vi01 --config config.vi.stable.yaml
+```
+
 - `movie` preset ưu tiên kể mạch dễ hiểu từ đầu phim: `storymap`, `hook_mode=setup`, `target_ratio=auto`.
 - GĐ5 dùng `match_strategy=chronological`, `w_semantic=0.15`, `audio_delay_s=0.0`; semantic/story/intent chỉ làm tie-breaker, không kéo footage lệch nhịp nguồn.
 - Không dùng cutoff intro cố định; GĐ0 `preflight` detect non-story/intro theo từng video.
+- Với nguồn tiếng Việt, `config.vi.stable.yaml` dùng `source_language=vi` và `translate_mode=none`; GĐ1 giữ transcript Việt trực tiếp trong `film_map.json` để GĐ2 xử lý.
 
 Tùy chọn resume/debug:
 

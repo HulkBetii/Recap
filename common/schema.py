@@ -12,6 +12,8 @@ AsrProvider = Literal["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "
 AlignerProvider = Literal["none", "whisperx", "qwen3"]
 TimecodeQuality = Literal["strict", "approximate"]
 TranscriptCorrectionMode = Literal["off", "glossary", "openai"]
+SourceLanguage = Literal["ko", "vi"]
+TranslateMode = Literal["ko-en", "none"]
 
 StorySectionType = Literal["setup", "inciting_incident", "conflict", "investigation", "reveal", "climax", "ending", "non_story"]
 VisualIntent = Literal["character_intro", "dialogue", "location", "action", "reaction", "reveal", "transition", "ending"]
@@ -80,6 +82,8 @@ class FilmMapMeta(BaseModel):
     transcript_correction_mode: TranscriptCorrectionMode = "off"
     transcript_correction_model: str | None = None
     transcript_correction_warnings: list[str] = Field(default_factory=list)
+    source_language: SourceLanguage = "ko"
+    translate_mode: TranslateMode = "ko-en"
 
 class TranscriptQuality(BaseModel):
     model_config = ConfigDict(extra="forbid")

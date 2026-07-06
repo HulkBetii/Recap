@@ -12,6 +12,7 @@ from common.schema import (
     TranslatedSegment,
     TranscriptQuality,
     TranscriptSegment,
+    VideoProfile,
     VisionSegment,
     validate_film_map,
     write_json,
@@ -46,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-vision-frames", default=DEFAULT_MAX_VISION_FRAMES, type=int)
     parser.add_argument("--max-visual-gap-s", default=DEFAULT_MAX_VISUAL_GAP_S, type=float)
     parser.add_argument("--translate-model", default=DEFAULT_TRANSLATE_MODEL)
+    parser.add_argument("--source-language", default="ko", choices=["ko", "vi"], help="Source speech language in the input video")
+    parser.add_argument("--translate-mode", default="ko-en", choices=["ko-en", "none"], help="Translate transcript or keep source text as-is")
     parser.add_argument("--vision-model", default=DEFAULT_VISION_MODEL)
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
     parser.add_argument("--asr-provider", default="faster-whisper", choices=["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"])
@@ -92,7 +95,7 @@ def load_transcript(
             raise IngestError("--transcript-input is required when --asr-provider manual")
         transcript, quality = parse_manual_transcript(args.transcript_input.expanduser().resolve(), duration)
     elif args.asr_provider == "openai-gpt4o":
-        transcript, approximate = transcribe_openai_gpt4o(audio_path, duration, model=args.openai_transcribe_model)
+        transcript, approximate = transcribe_openai_gpt4o(audio_path, duration, model=args.openai_transcribe_model, language=args.source_language)
         quality = TranscriptQuality(
             asr_provider="openai-gpt4o",
             aligner_provider="none",
@@ -107,6 +110,7 @@ def load_transcript(
             cache.path("openai_chunks"),
             model=args.openai_transcribe_model,
             chunk_s=args.openai_chunk_s,
+            language=args.source_language,
         )
         quality = TranscriptQuality(
             asr_provider="openai-gpt4o-hybrid",
@@ -175,10 +179,19 @@ def load_translations(
     transcript: list[TranscriptSegment],
     client: OpenAIIngestClient,
     logger: logging.Logger,
+    translate_mode: str = "ko-en",
 ) -> tuple[list[TranslatedSegment], int]:
     if cache.has("translated.json"):
         logger.info("[3/6] Using cached translated.json")
         return [TranslatedSegment.model_validate(item) for item in cache.read_json("translated.json")], 0
+    if translate_mode == "none":
+        logger.info("[3/6] Keeping source transcript text without translation")
+        translated = [
+            TranslatedSegment(id=segment.id, tc_start=segment.tc_start, tc_end=segment.tc_end, ko=segment.ko, en=segment.ko)
+            for segment in transcript
+        ]
+        cache.write_json("translated.json", translated)
+        return translated, 0
     logger.info("[3/6] Translating KO -> EN with stable segment ids")
     translated, warnings_count = client.translate_segments(transcript, logger=logger)
     cache.write_json("translated.json", translated)
@@ -261,6 +274,8 @@ def run_ingest(args: argparse.Namespace) -> int:
         "drop_non_korean_intro_s": 30.0,
         "drop_visual_before_s": 0.0,
         "video_profile": None,
+        "source_language": "ko",
+        "translate_mode": "ko-en",
     }.items():
         if not hasattr(args, key):
             setattr(args, key, value)
@@ -279,6 +294,9 @@ def run_ingest(args: argparse.Namespace) -> int:
         raise IngestError("--drop-non-korean-intro-s must be >= 0")
     if args.drop_visual_before_s < 0:
         raise IngestError("--drop-visual-before-s must be >= 0")
+    if args.source_language == "vi" and args.translate_mode != "none":
+        logger.warning("source_language=vi should use translate_mode=none; overriding translate_mode")
+        args.translate_mode = "none"
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise IngestError("OPENAI_API_KEY is required for translation and vision")
@@ -301,7 +319,7 @@ def run_ingest(args: argparse.Namespace) -> int:
 
     warnings_count = 0
     transcript, transcript_quality = load_transcript(cache, audio_path, duration, args, logger)
-    translated, translation_warnings = load_translations(cache, transcript, client, logger)
+    translated, translation_warnings = load_translations(cache, transcript, client, logger, translate_mode=args.translate_mode)
     warnings_count += translation_warnings
     video_profile = load_video_profile(args.video_profile)
     vision_segments, vision_warnings = load_vision(
@@ -329,7 +347,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         duration=duration,
         created_at=datetime.now(timezone.utc),
         whisper_model=args.whisper_model,
-        translate_model=args.translate_model,
+        translate_model=args.translate_model if args.translate_mode != "none" else "none",
         vision_model=args.vision_model,
         gap_threshold=args.gap_threshold,
         max_vision_frames=args.max_vision_frames,
@@ -346,6 +364,8 @@ def run_ingest(args: argparse.Namespace) -> int:
         transcript_correction_mode=transcript_quality.correction_mode,
         transcript_correction_model=transcript_quality.correction_model,
         transcript_correction_warnings=transcript_quality.correction_warnings,
+        source_language=args.source_language,
+        translate_mode=args.translate_mode,
     )
     write_json(output_path.with_name(f"{output_path.stem}.meta.json"), meta)
     logger.info("Done: %s", output_path)

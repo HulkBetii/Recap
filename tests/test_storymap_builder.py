@@ -29,3 +29,8 @@ def test_story_map_sections_are_sorted_and_continuous_ids() -> None:
     sections, _report = build_story_sections(film_map, duration_s=70, video_profile=None)
     assert [section.section_id for section in sections] == list(range(len(sections)))
     assert sections == sorted(sections, key=lambda section: section.tc_start)
+
+def test_story_map_clamps_section_end_to_duration() -> None:
+    film_map = [make_segment(0, 0, 5, "Alice starts"), make_segment(1, 8, 10.2, "Alice ends")]
+    sections, _report = build_story_sections(film_map, duration_s=10, video_profile=None, target_story_sections=2)
+    assert max(section.tc_end for section in sections) <= 10

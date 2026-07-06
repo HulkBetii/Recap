@@ -141,15 +141,15 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--classifier", "heuristic"]
     elif stage == "ingest":
         command += ["--input", str(film), "--output", str(paths.film_map)]
-        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "vision_model", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
+        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "source_language", "translate_mode", "vision_model", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
             add_option(command, key, section.get(key))
-        if paths.video_profile.exists():
-            command += ["--video-profile", str(paths.video_profile)]
+        # GĐ1 CLI does not currently accept video_profile directly; downstream
+        # visual stages consume it when preflight is enabled.
         if not section.get("vad_filter", True):
             command.append("--no-vad-filter")
     elif stage == "storymap":
         command += ["--film-map", str(paths.film_map), "--output", str(paths.story_map), "--output-qa", str(paths.story_map_qa)]
-        if paths.video_profile.is_file():
+        if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file():
             command += ["--video-profile", str(paths.video_profile)]
         for key in ("content_type", "target_story_sections", "log_level"):
             add_option(command, key, section.get(key))
@@ -162,7 +162,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--story-map", str(story_map_setting)]
         review_intent_output = section.get("review_intent_output")
         command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
-        if paths.video_profile.exists():
+        if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
         for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "log_level"):
             add_option(command, key, section.get(key))
@@ -181,7 +181,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--no-normalize")
     elif stage == "shots":
         command += ["--input", str(film), "--output", str(paths.shots), "--thumb-dir", str(paths.shots_dir)]
-        if paths.video_profile.exists():
+        if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
         for key in ("detector", "min_shot_len", "sample_frames", "face_detection", "min_brightness", "skip_intro", "skip_outro", "downscale", "log_level"):
             add_option(command, key, section.get(key))

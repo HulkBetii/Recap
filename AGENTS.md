@@ -246,6 +246,8 @@ repo/
 ## 17. G?1 ASR/TIMECODE UPDATE HI?N T?I
 
 - G?1 gi? contract `film_map.json` nh?ng meta c? th?m `asr_provider`, `aligner_provider`, `timecode_quality`, `approximate_timecodes`, `asr_warnings`.
+- GĐ1 hỗ trợ nguồn tiếng Việt bằng `--source-language vi --translate-mode none`; transcript Việt được giữ nguyên vào cả `ko` và `en` để không phá contract cũ, và không gọi KO→EN translation.
+- Preset tiếng Việt ổn định nằm ở `config.vi.stable.yaml`; dùng cho video đã là recap/phim tiếng Việt trước khi cân nhắc pipeline Korean drama mặc định.
 - ASR provider hi?n c?: `faster-whisper` default, `openai-gpt4o`, `openai-gpt4o-hybrid`, v? `manual` ?? import transcript Markdown/JSON.
 - Cache transcript m?i trong `--work-dir`: `transcript_text.json`, `transcript_aligned.json`, `transcript_quality.json`.
 - Manual transcript d?ng `[MM:SS] text` ch? c? timestamp start; end-time ???c suy lu?n n?n lu?n ??nh d?u approximate n?u ch?a align.

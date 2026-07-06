@@ -89,8 +89,10 @@ def build_story_sections(
         if not bucket:
             continue
         section_type = SECTION_ORDER[min(index, len(SECTION_ORDER) - 1)]
-        tc_start = bucket[0].tc_start
-        tc_end = bucket[-1].tc_end
+        tc_start = max(0.0, min(bucket[0].tc_start, duration_s))
+        tc_end = max(0.0, min(bucket[-1].tc_end, duration_s))
+        if tc_end <= tc_start:
+            continue
         summary = summarize_segments(bucket, f"Movie {section_type.replace('_', ' ')} section")
         characters = extract_characters(bucket)
         section_warnings: list[str] = []
@@ -98,12 +100,16 @@ def build_story_sections(
             section_warnings.append("section too long")
         if not characters and section_type in {"setup", "inciting_incident", "conflict"}:
             section_warnings.append("no obvious character names")
+        rounded_start = round(tc_start, 3)
+        rounded_end = min(duration_s, round(tc_end, 3))
+        if rounded_end <= rounded_start:
+            continue
         sections.append(
             StorySection(
                 section_id=0,
                 type=section_type,  # reassigned below
-                tc_start=round(tc_start, 3),
-                tc_end=round(tc_end, 3),
+                tc_start=rounded_start,
+                tc_end=rounded_end,
                 segment_ids=[segment.id for segment in bucket],
                 summary=summary,
                 characters=characters,

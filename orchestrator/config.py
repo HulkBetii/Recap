@@ -30,6 +30,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_vision_frames": 200,
         "max_visual_gap_s": 20.0,
         "translate_model": "gpt-4.1-mini",
+        "source_language": "ko",
+        "translate_mode": "ko-en",
         "vision_model": "gpt-4.1-mini",
         "device": "cpu",
         "asr_provider": "faster-whisper",

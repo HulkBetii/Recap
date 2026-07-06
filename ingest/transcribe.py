@@ -32,7 +32,7 @@ def transcribe_korean(audio_path: Path, whisper_model: str, device: str, vad_fil
     return segments
 
 
-def transcribe_openai_gpt4o(audio_path: Path, duration: float, model: str = "gpt-4o-mini-transcribe") -> tuple[list[TranscriptSegment], bool]:
+def transcribe_openai_gpt4o(audio_path: Path, duration: float, model: str = "gpt-4o-mini-transcribe", language: str = "ko") -> tuple[list[TranscriptSegment], bool]:
     from openai import OpenAI
 
     client = OpenAI()
@@ -40,7 +40,7 @@ def transcribe_openai_gpt4o(audio_path: Path, duration: float, model: str = "gpt
         response = client.audio.transcriptions.create(
             model=model,
             file=audio_file,
-            language="ko",
+            language=language,
             response_format="json",
         )
     raw_segments = getattr(response, "segments", None) or []
@@ -70,6 +70,7 @@ def transcribe_openai_chunked(
     chunks_dir: Path,
     model: str = "gpt-4o-mini-transcribe",
     chunk_s: float = 20.0,
+    language: str = "ko",
 ) -> list[TranscriptSegment]:
     from openai import OpenAI
 
@@ -113,7 +114,7 @@ def transcribe_openai_chunked(
                     response = client.audio.transcriptions.create(
                         model=model,
                         file=audio_file,
-                        language="ko",
+                        language=language,
                         response_format="json",
                     )
                 except Exception as exc:

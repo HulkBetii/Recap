@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from ingest.__main__ import load_transcript
+from ingest.__main__ import load_transcript, load_translations
 from ingest.cache import StageCache
 from orchestrator.config import load_config
 from orchestrator.graph import build_paths
@@ -47,6 +47,29 @@ def test_orchestrator_passes_asr_options_to_ingest(tmp_path: Path) -> None:
     assert "--transcript-input" in command
     assert "--timecode-quality" in command
     assert "--no-vad-filter" in command
+
+def test_load_translations_can_keep_vietnamese_source_text(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / "work", force=False)
+    cache.prepare()
+    segment = __import__("common.schema", fromlist=["TranscriptSegment"]).TranscriptSegment(id=0, tc_start=0, tc_end=2, ko="Xin chào mọi người")
+    class Client:
+        def translate_segments(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("translation should be skipped")
+    class Logger:
+        def info(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+    translated, warnings = load_translations(cache, [segment], Client(), Logger(), translate_mode="none")
+    assert warnings == 0
+    assert translated[0].ko == "Xin chào mọi người"
+    assert translated[0].en == "Xin chào mọi người"
+
+def test_orchestrator_passes_vietnamese_source_options_to_ingest(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"ingest": {"source_language": "vi", "translate_mode": "none"}}), encoding="utf-8")
+    config = load_config(config_path)
+    command = build_command("ingest", build_paths(tmp_path / "run"), tmp_path / "film.mp4", config, force=False, python_exe="python")
+    assert command[command.index("--source-language") + 1] == "vi"
+    assert command[command.index("--translate-mode") + 1] == "none"
 
 
 def test_orchestrator_passes_hybrid_alignment_options(tmp_path: Path) -> None:

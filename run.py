@@ -41,6 +41,8 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     config = load_config(args.config.expanduser().resolve() if args.config else None)
     paths = build_paths(run_dir)
     selected = stage_range(args.from_stage, args.to_stage, args.only)
+    if not config.get("preflight", {}).get("enabled", True):
+        selected.discard("preflight")
     forced = forced_stages(selected, args.force, args.force_stage)
     python_exe = config.get("orchestrator", {}).get("python")
     preflight(film=film, selected=selected, forced=forced, paths=paths, config=config, dry_run=args.dry_run)

@@ -20,10 +20,22 @@ class StageCache:
 
     def prepare(self) -> None:
         if self.force and self.work_dir.exists():
-            for name in ("audio.wav", "transcript_raw.json", "translated.json", "vision.json"):
+            for name in (
+                "audio.wav",
+                "transcript_raw.json",
+                "transcript_text.json",
+                "transcript_aligned.json",
+                "transcript_quality.json",
+                "transcript_corrected.json",
+                "translated.json",
+                "vision.json",
+            ):
                 target = self.work_dir / name
                 if target.exists():
                     target.unlink()
+            openai_chunks = self.work_dir / "openai_chunks"
+            if openai_chunks.exists():
+                shutil.rmtree(openai_chunks)
             frames = self.work_dir / "frames"
             if frames.exists():
                 shutil.rmtree(frames)

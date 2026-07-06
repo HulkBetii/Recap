@@ -1,7 +1,6 @@
 orchestrator:
   python: null
   log_level: INFO
-
 preflight:
   enabled: true
   max_intro_s: 240
@@ -10,18 +9,17 @@ preflight:
   confidence_threshold: 0.75
   uncertain_threshold: 0.55
   log_level: INFO
-
 ingest:
   whisper_model: large-v3
   gap_threshold: 4.0
   max_vision_frames: 200
   max_visual_gap_s: 20
   translate_model: gpt-4.1-mini
-  source_language: ko
-  translate_mode: ko-en
+  source_language: vi
+  translate_mode: none
   vision_model: gpt-4.1-mini
   device: cpu
-  asr_provider: faster-whisper
+  asr_provider: openai-gpt4o-hybrid
   aligner: none
   transcript_input: null
   timecode_quality: strict
@@ -31,19 +29,17 @@ ingest:
   openai_transcribe_model: gpt-4o-mini-transcribe
   openai_chunk_s: 20
   alignment_device: cuda
-  transcript_correction: off
+  transcript_correction: false
   glossary: null
   correction_model: gpt-4.1-mini
-  drop_non_korean_intro_s: 30
+  drop_non_korean_intro_s: 0
   drop_visual_before_s: 0
   log_level: INFO
-
 storymap:
   enabled: true
   content_type: movie
   target_story_sections: 7
   log_level: INFO
-
 review:
   content_type: movie
   hook_mode: setup
@@ -58,7 +54,7 @@ review:
   max_beat_audio_s: 18
   story_map: auto
   review_intent_output: null
-  chatgpt_profile_dir: data/chrome_user_data/PROFILE_GPT_1
+  chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
   chat_session_policy: auto
   chat_session_meta: null
   chat_title: null
@@ -72,10 +68,9 @@ review:
   non_story_tail_s: 300
   headless: false
   log_level: INFO
-
 tts:
-  voice_id: null
-  provider_mode: auto
+  voice_id: vbee_hn_female_ngochuyen_full_24k-st
+  provider_mode: ai33
   genmax_voice_id: null
   model: eleven_multilingual_v2
   speed: 1.0
@@ -84,18 +79,16 @@ tts:
   normalize: true
   cost_per_1k_chars: 0.0
   log_level: INFO
-
 shots:
   detector: adaptive
   min_shot_len: 0.4
   sample_frames: 5
-  face_detection: "on"
+  face_detection: 'on'
   min_brightness: 0.06
   skip_intro: 0
   skip_outro: 0
   downscale: auto
   log_level: INFO
-
 match:
   min_clip: 3.0
   max_clip: 5.0
@@ -107,26 +100,26 @@ match:
   max_repeat_per_beat: 2
   max_repeat_ratio_per_beat: 0.35
   min_repeat_alternative_score_ratio: 0.75
-  adjacent_shot_repeat_penalty: 0.50
+  adjacent_shot_repeat_penalty: 0.5
   opening_guard_s: 120
-  opening_max_repeat_ratio: 0.20
+  opening_max_repeat_ratio: 0.2
   opening_max_repeat_per_shot: 1
   opening_min_unique_shots: 4
   opening_allow_short_fill: true
   seed: 1234
-  w_motion: 0.60
+  w_motion: 0.6
   w_face: 0.18
   w_bright: 0.12
   w_reuse: 0.35
   w_semantic: 0.15
   min_semantic_score: 0.22
   match_strategy: chronological
-  chronology_weight: 0.70
+  chronology_weight: 0.7
   max_source_drift_s: 12
-  semantic_mode: bge-m3
+  semantic_mode: tfidf
   semantic_model: BAAI/bge-m3
-  semantic_device: auto
-  semantic_batch_size: 16
+  semantic_device: cpu
+  semantic_batch_size: 8
   semantic_cache_dir: null
   film_map: auto
   output_qa: null
@@ -139,7 +132,6 @@ match:
   ordered_fill_by_audio_progress: true
   review_html: true
   log_level: INFO
-
 render:
   width: 1920
   height: 1080
@@ -150,4 +142,3 @@ render:
   concurrency: 4
   audio_delay_s: 0.0
   log_level: INFO
-
