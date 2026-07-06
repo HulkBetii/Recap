@@ -69,6 +69,8 @@ def fill_beat(
     speedfit_count = 0
     repeat_by_shot: dict[int, int] = {}
     previous_shot_index: int | None = None
+    source_cursor = window_start
+    source_span = max(0.001, window_end - window_start)
 
     while remaining > 1e-6:
         available = [shot for shot in candidates if shot.index not in used_in_beat]
@@ -82,7 +84,7 @@ def fill_beat(
             break
         ranked = rank_shots(available, reuse_counts, weights, semantic_scores, beat.beat_id)
         if ordered_fill:
-            ranked = rank_for_ordered_fill(ranked, reuse_counts, weights, semantic_scores or {}, beat.beat_id)
+            ranked = rank_for_ordered_fill(ranked, reuse_counts, weights, semantic_scores or {}, beat.beat_id, source_cursor)
         shot = choose_diverse_shot(
             ranked,
             reuse_counts,
@@ -121,6 +123,9 @@ def fill_beat(
         previous_shot_index = shot.index
         used_in_beat.add(shot.index)
         remaining = round(remaining - clip_len, 6)
+        if ordered_fill and timing.duration > 0:
+            progress = min(1.0, max(0.0, (timing.duration - remaining) / timing.duration))
+            source_cursor = min(window_end, window_start + source_span * progress)
 
     if remaining > 0.02:
         if allow_repeat and candidates:
@@ -128,11 +133,11 @@ def fill_beat(
             while remaining > 1e-6:
                 ranked_repeat = [shot for shot in rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id) if repeat_by_shot.get(shot.index, 0) < max_repeat_per_beat]
                 if ordered_fill:
-                    ranked_repeat = rank_for_ordered_fill(ranked_repeat, reuse_counts, weights, semantic_scores or {}, beat.beat_id)
+                    ranked_repeat = rank_for_ordered_fill(ranked_repeat, reuse_counts, weights, semantic_scores or {}, beat.beat_id, source_cursor)
                 if not ranked_repeat:
                     ranked_repeat = rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id)
                     if ordered_fill:
-                        ranked_repeat = rank_for_ordered_fill(ranked_repeat, reuse_counts, weights, semantic_scores or {}, beat.beat_id)
+                        ranked_repeat = rank_for_ordered_fill(ranked_repeat, reuse_counts, weights, semantic_scores or {}, beat.beat_id, source_cursor)
                     warnings.append(f"beat {beat.beat_id} exceeded repeat cap during fallback")
                 shot = choose_diverse_shot(
                     ranked_repeat,
@@ -191,15 +196,15 @@ def rank_for_ordered_fill(
     weights: ScoringWeights,
     semantic_scores: dict[tuple[int, int], float],
     beat_id: int,
+    source_cursor: float,
 ) -> list[Shot]:
-    return sorted(
-        ranked,
-        key=lambda shot: (
-            shot.tc_start,
-            -score_shot(shot, reuse_counts.get(shot.index, 0), weights, semantic_scores.get((beat_id, shot.index), 0.0)),
-            shot.index,
-        ),
-    )
+    def sort_key(shot: Shot) -> tuple[int, float, float, int]:
+        is_before_cursor = shot.tc_end < source_cursor
+        distance = abs(shot.tc_start - source_cursor)
+        score = score_shot(shot, reuse_counts.get(shot.index, 0), weights, semantic_scores.get((beat_id, shot.index), 0.0))
+        return (1 if is_before_cursor else 0, distance, -score, shot.index)
+
+    return sorted(ranked, key=sort_key)
 
 def choose_diverse_shot(
     ranked: list[Shot],
