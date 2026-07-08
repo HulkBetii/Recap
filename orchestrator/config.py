@@ -14,7 +14,7 @@ STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "mat
 TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "orchestrator": {"python": None, "log_level": "INFO"},
+    "orchestrator": {"python": None, "log_level": "INFO", "quality_mode": "balanced", "text_llm_backend": "chatgpt_playwright", "api_budget_guard": "warn", "auto_fallback": False, "fallback_on_timecode_warn": True, "fallback_ingest_asr_provider": "openai-gpt4o-hybrid", "fallback_max_vision_frames": 0},
     "preflight": {
         "enabled": True,
         "max_intro_s": 240.0,
@@ -49,6 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "correction_model": "gpt-4.1-mini",
         "drop_non_korean_intro_s": 30.0,
         "drop_visual_before_s": 0.0,
+        "asr_policy": "preset",
         "log_level": "INFO",
     },
     "storymap": {
@@ -77,6 +78,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "chat_session_meta": None,
         "chat_title": None,
         "reply_timeout_s": 600,
+        "llm_backend": "chatgpt_playwright",
         "style_sample": "examples/style/viral_recap_vi.cleaned.txt",
         "style_preset": "viral-recap-vi",
         "style_strength": "strong",
@@ -98,6 +100,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "concurrency": 3,
         "normalize": True,
         "cost_per_1k_chars": 0.0,
+        "text_normalization": "vi",
+        "pronunciation_lexicon": None,
+        "normalized_script_output": None,
+        "normalization_report": None,
+        "pronunciation_qa": True,
+        "pronunciation_qa_output": None,
+        "pronunciation_suggest_backend": None,
+        "lexicon_candidates_output": None,
         "log_level": "INFO",
     },
     "shots": {

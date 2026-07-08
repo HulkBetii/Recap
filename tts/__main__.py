@@ -12,9 +12,10 @@ from common.media import MediaError, normalize_audio, probe_duration, require_ff
 from common.schema import ReviewBeat, TtsManifestEntry, TtsMeta, validate_review_script, write_json
 from tts.cache import TtsCache, build_cache_key, stable_hash
 from tts.concat import concat_voiceover
-from tts.cost import estimate_cost, real_ratio, total_chars
+from tts.cost import estimate_cost, real_ratio
 from tts.providers import ProviderMode, ProviderResult, TtsProviderClient, TtsProviderError
-from tts.sanitize import sanitize_tts_text
+from tts.pronunciation_qa import analyze_pronunciation_risks
+from tts.sanitize import normalize_tts_script
 from tts.timing import build_timings
 
 DEFAULT_MODEL = "eleven_multilingual_v2"
@@ -46,6 +47,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--work-dir", default=Path("work/tts"), type=Path)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--cost-per-1k-chars", default=0.0, type=float)
+    parser.add_argument("--tts-text-normalization", choices=["off", "basic", "vi"], default="vi")
+    parser.add_argument("--tts-pronunciation-lexicon", default=None, type=Path)
+    parser.add_argument("--tts-normalized-script-output", default=None, type=Path)
+    parser.add_argument("--tts-normalization-report", default=None, type=Path)
+    parser.add_argument("--pronunciation-qa", dest="pronunciation_qa", action="store_true", default=True)
+    parser.add_argument("--no-pronunciation-qa", dest="pronunciation_qa", action="store_false")
+    parser.add_argument("--pronunciation-qa-output", default=None, type=Path)
+    parser.add_argument("--pronunciation-suggest-backend", choices=["off", "chatgpt_playwright", "openai_api"], default="off")
+    parser.add_argument("--lexicon-candidates-output", default=None, type=Path)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
 
@@ -81,6 +91,8 @@ def load_film_duration(path: Path | None) -> tuple[float | None, list[str]]:
 async def synthesize_one(
     *,
     beat: ReviewBeat,
+    text: str,
+    cache_salt: str,
     cache: TtsCache,
     manifest: dict[str, TtsManifestEntry],
     provider_client: TtsProviderClient,
@@ -92,7 +104,6 @@ async def synthesize_one(
     normalize: bool,
     semaphore: asyncio.Semaphore,
 ) -> tuple[Path, TtsManifestEntry]:
-    text = sanitize_tts_text(beat.narration)
     target_provider = provider_mode if provider_mode != "auto" else "auto"
     selected_voice_id = genmax_voice_id if provider_mode == "genmax" and genmax_voice_id else voice_id
     cache_key = build_cache_key(
@@ -100,7 +111,7 @@ async def synthesize_one(
         voice_id=selected_voice_id,
         model=model,
         speed=speed,
-        narration=text,
+        narration=text + "\n__tts_cache_salt__=" + cache_salt,
         normalized=normalize,
     )
     cached = cache.get_cached(manifest, beat.beat_id, cache_key)
@@ -155,6 +166,48 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
     beats = load_review_script(review_script)
     if not beats:
         raise TtsError("review_script.json is empty")
+    text_normalization = getattr(args, "tts_text_normalization", "vi")
+    lexicon_path = getattr(args, "tts_pronunciation_lexicon", None)
+    lexicon_path = lexicon_path.expanduser().resolve() if lexicon_path else None
+    normalized_items, normalization_report = normalize_tts_script(
+        beats,
+        mode=text_normalization,
+        pronunciation_lexicon_path=lexicon_path,
+    )
+    normalized_by_beat = {item.beat_id: item.tts_text for item in normalized_items}
+    normalized_script_output = getattr(args, "tts_normalized_script_output", None)
+    if normalized_script_output is None:
+        normalized_script_output = output_timing.with_name("tts_script.json")
+    else:
+        normalized_script_output = normalized_script_output.expanduser().resolve()
+    normalization_report_output = getattr(args, "tts_normalization_report", None)
+    if normalization_report_output is None:
+        normalization_report_output = output_timing.with_name("tts_normalization_report.json")
+    else:
+        normalization_report_output = normalization_report_output.expanduser().resolve()
+    write_json(normalized_script_output, [item.to_json() for item in normalized_items])
+    write_json(normalization_report_output, normalization_report.to_json())
+    pronunciation_qa_output = getattr(args, "pronunciation_qa_output", None)
+    if pronunciation_qa_output is None:
+        pronunciation_qa_output = output_timing.with_name("tts_pronunciation_qa.json")
+    else:
+        pronunciation_qa_output = pronunciation_qa_output.expanduser().resolve()
+    qa_report = analyze_pronunciation_risks(
+        normalized_items,
+        enabled=getattr(args, "pronunciation_qa", True),
+        suggest_backend=getattr(args, "pronunciation_suggest_backend", "off"),
+    )
+    write_json(pronunciation_qa_output, qa_report.to_json())
+    lexicon_candidates_output = getattr(args, "lexicon_candidates_output", None)
+    if lexicon_candidates_output is not None:
+        write_json(lexicon_candidates_output.expanduser().resolve(), qa_report.lexicon_candidates)
+
+    cache_salt = stable_hash(json.dumps({
+        "text_normalization": text_normalization,
+        "pronunciation_lexicon_path": str(lexicon_path) if lexicon_path else None,
+        "pronunciation_lexicon_hash": stable_hash(lexicon_path.read_text(encoding="utf-8")) if lexicon_path else None,
+    }, ensure_ascii=False, sort_keys=True))
+
     cache = TtsCache(work_dir, force=args.force)
     cache.prepare()
     manifest = cache.load_manifest()
@@ -165,6 +218,8 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
     tasks = [
         synthesize_one(
             beat=beat,
+            text=normalized_by_beat[beat.beat_id],
+            cache_salt=cache_salt,
             cache=cache,
             manifest=manifest,
             provider_client=provider_client,
@@ -207,10 +262,11 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         )
     film_duration_s, duration_warnings = load_film_duration(args.film_meta.expanduser().resolve() if args.film_meta else None)
     warnings.extend(duration_warnings)
+    warnings.extend(qa_report.warnings)
 
     logger.info("[4/4] Writing timing and meta")
     write_json(output_timing, timings)
-    chars = total_chars(beats)
+    chars = sum(len(item.tts_text) for item in normalized_items)
     meta = TtsMeta(
         voice_id=args.voice_id,
         provider_mode=args.provider_mode,
@@ -225,6 +281,14 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         created_at=datetime.now(timezone.utc),
         cache_hits=cache.cache_hits,
         warnings=warnings,
+        text_normalization=text_normalization,
+        pronunciation_lexicon_path=str(lexicon_path) if lexicon_path else None,
+        n_text_normalized=normalization_report.n_changed,
+        normalization_warnings=normalization_report.warnings,
+        pronunciation_qa_enabled=qa_report.enabled,
+        pronunciation_risk_count=qa_report.n_risks,
+        pronunciation_suggest_backend=qa_report.suggest_backend,
+        pronunciation_warnings=qa_report.warnings,
     )
     write_json(output_timing.with_name("tts_meta.json"), meta)
     return timings, meta

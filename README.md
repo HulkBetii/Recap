@@ -167,6 +167,7 @@ python -m tts `
   --model eleven_multilingual_v2 `
   --inter-beat-pause 0.15 `
   --concurrency 3 `
+  --tts-text-normalization vi `
   --film-meta out\film_map.meta.json `
   --work-dir work\tts
 ```

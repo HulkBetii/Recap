@@ -77,6 +77,8 @@ def write_stage_outputs(command: list[str]) -> None:
         timing = flag(command, "--output-timing")
         audio.write_bytes(b"voice")
         timing.write_text(json.dumps([{"beat_id":0,"audio_path":"audio/0.mp3","tl_start":0,"tl_end":2,"duration":2}]), encoding="utf-8")
+        timing.with_name("tts_script.json").write_text(json.dumps([{"beat_id":0,"original_text":"M? ??u","tts_text":"M? ??u","changed":False,"rules_applied":[],"warnings":[]}]), encoding="utf-8")
+        timing.with_name("tts_normalization_report.json").write_text(json.dumps({"mode":"vi","pronunciation_lexicon_path":None,"n_items":1,"n_changed":0,"warnings":[]}), encoding="utf-8")
         timing.with_name("tts_meta.json").write_text(json.dumps({"voice_id":"voice","provider_mode":"ai33","model":"eleven_multilingual_v2","speed":1,"inter_beat_pause_s":0.15,"total_duration_s":2,"film_duration_s":2,"real_ratio":1,"total_chars":6,"est_cost":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
     elif stage == "shots":
         output = flag(command, "--output")
@@ -170,6 +172,32 @@ def test_review_command_disables_micro_beats_by_default(tmp_path: Path) -> None:
     assert "--no-micro-beats" in command
     assert "--micro-beats" not in command
 
+def test_tts_command_passes_normalization_options(tmp_path: Path) -> None:
+    from orchestrator.graph import build_paths
+    from orchestrator.runner import build_command
+
+    args = argset(tmp_path)
+    path = args.config
+    data = json.loads(path.read_text(encoding="utf-8"))
+    lexicon = tmp_path / "lexicon.json"
+    lexicon.write_text("{}", encoding="utf-8")
+    data["tts"].update({
+        "text_normalization": "vi",
+        "pronunciation_lexicon": str(lexicon),
+        "normalized_script_output": str(tmp_path / "custom_tts_script.json"),
+        "normalization_report": str(tmp_path / "custom_tts_report.json"),
+    })
+    path.write_text(json.dumps(data), encoding="utf-8")
+    paths = build_paths(tmp_path / "run")
+    config = load_config(path)
+
+    command = build_command("tts", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+
+    assert command[command.index("--tts-text-normalization") + 1] == "vi"
+    assert command[command.index("--tts-pronunciation-lexicon") + 1] == str(lexicon)
+    assert command[command.index("--tts-normalized-script-output") + 1] == str(tmp_path / "custom_tts_script.json")
+    assert command[command.index("--tts-normalization-report") + 1] == str(tmp_path / "custom_tts_report.json")
+
 def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None:
     from orchestrator.graph import build_paths
     from orchestrator.runner import build_command
@@ -184,7 +212,8 @@ def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None
     assert "--ordered-fill-by-audio-progress" in command
 
 def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:
-    path = write_config(tmp_path)
+    args = argset(tmp_path)
+    path = args.config
     data = json.loads(path.read_text(encoding="utf-8"))
     data["review"]["content_type"] = "episode"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -192,3 +221,101 @@ def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:
     assert config["match"]["match_strategy"] == "hybrid"
     assert config["match"]["w_semantic"] == 0.45
 
+
+
+def test_vi_low_openai_preset_has_no_openai_uses() -> None:
+    from orchestrator.config import load_config
+    from orchestrator.cost_policy import resolve_cost_policy
+
+    config = load_config(Path("config.vi.low_openai.yaml"))
+    _resolved, policy = resolve_cost_policy(config)
+
+    assert policy.quality_mode == "low_cost"
+    assert policy.stages["ingest"]["openai_uses"] == []
+
+
+def test_balanced_auto_fallback_reruns_ingest_on_approximate_timecodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    path = args.config
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["orchestrator"] = {"quality_mode": "balanced", "auto_fallback": True, "api_budget_guard": "warn"}
+    data["ingest"] = {"source_language": "vi", "translate_mode": "none", "asr_policy": "local_first", "asr_provider": "faster-whisper", "aligner": "whisperx", "max_vision_frames": 0}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    ingest_calls = 0
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        nonlocal ingest_calls
+        stage = stage_name(command)
+        calls.append(stage)
+        if stage == "ingest":
+            ingest_calls += 1
+            output = flag(command, "--output")
+            output.write_text(json.dumps([{"id":0,"type":"speech","tc_start":0,"tc_end":2,"ko":"hello","en":"hello","scene_desc":None}]), encoding="utf-8")
+            meta = {"input_path":"film.mp4","duration":2,"created_at":NOW,"whisper_model":"large-v3","translate_model":"gpt-4.1-mini","vision_model":"gpt-4.1-mini","gap_threshold":4,"max_vision_frames":0,"speech_count":1,"visual_count":0,"cache_hits":[],"warnings_count":0,"timecode_quality":"approximate","approximate_timecodes":True,"asr_provider":"faster-whisper"}
+            if ingest_calls == 2:
+                meta.update({"timecode_quality":"strict","approximate_timecodes":False,"asr_provider":"openai-gpt4o-hybrid"})
+            output.with_name("film_map.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        else:
+            write_stage_outputs(command)
+
+    assert run_pipeline(args, executor=fake_executor) == 0
+    assert calls.count("ingest") == 2
+    assert "storymap" in calls and "render" in calls
+    fallback = json.loads((tmp_path / "run" / "fallback_plan.json").read_text(encoding="utf-8"))
+    assert fallback["triggered"] is True
+    cost = json.loads((tmp_path / "run" / "cost_summary.json").read_text(encoding="utf-8"))
+    assert cost["openai_fallback_triggered"] is True
+
+
+def test_low_cost_blocks_required_openai_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    path = args.config
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["orchestrator"] = {"quality_mode": "low_cost", "auto_fallback": True, "api_budget_guard": "block"}
+    data["ingest"] = {"source_language": "vi", "translate_mode": "none", "asr_policy": "local_first", "asr_provider": "faster-whisper", "aligner": "whisperx", "max_vision_frames": 0}
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        if stage_name(command) == "ingest":
+            output = flag(command, "--output")
+            output.write_text(json.dumps([{"id":0,"type":"speech","tc_start":0,"tc_end":2,"ko":"hello","en":"hello","scene_desc":None}]), encoding="utf-8")
+            output.with_name("film_map.meta.json").write_text(json.dumps({"input_path":"film.mp4","duration":2,"created_at":NOW,"whisper_model":"large-v3","translate_model":"gpt-4.1-mini","vision_model":"gpt-4.1-mini","gap_threshold":4,"max_vision_frames":0,"speech_count":1,"visual_count":0,"cache_hits":[],"warnings_count":0,"timecode_quality":"approximate","approximate_timecodes":True,"asr_provider":"faster-whisper"}), encoding="utf-8")
+        else:
+            write_stage_outputs(command)
+
+    with pytest.raises(Exception, match="OpenAI fallback required but blocked"):
+        run_pipeline(args, executor=fake_executor)
+
+
+def test_balanced_auto_does_not_fallback_for_strict_timecodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    path = args.config
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["orchestrator"] = {"quality_mode": "balanced", "auto_fallback": True, "api_budget_guard": "warn"}
+    data["ingest"] = {"source_language": "vi", "translate_mode": "none", "asr_policy": "local_first", "asr_provider": "faster-whisper", "aligner": "whisperx", "max_vision_frames": 0}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        calls.append(stage_name(command))
+        write_stage_outputs(command)
+        if stage_name(command) == "ingest":
+            meta_path = flag(command, "--output").with_name("film_map.meta.json")
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta.update({"timecode_quality":"strict","approximate_timecodes":False,"asr_provider":"faster-whisper"})
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    assert run_pipeline(args, executor=fake_executor) == 0
+    assert calls.count("ingest") == 1
+    fallback = json.loads((tmp_path / "run" / "fallback_plan.json").read_text(encoding="utf-8"))
+    assert fallback["triggered"] is False

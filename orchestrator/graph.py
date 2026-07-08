@@ -55,6 +55,10 @@ class RunPaths:
     render_meta: Path
     work_dir: Path
     run_log: Path
+    cost_policy: Path
+    cost_summary: Path
+    fallback_plan: Path
+    fallback_summary: Path
     summary: Path
 
 
@@ -88,6 +92,10 @@ def build_paths(run_dir: Path) -> RunPaths:
         render_meta=run_dir / "render.meta.json",
         work_dir=run_dir / "work",
         run_log=run_dir / "run.log",
+        cost_policy=run_dir / "cost_policy.json",
+        cost_summary=run_dir / "cost_summary.json",
+        fallback_plan=run_dir / "fallback_plan.json",
+        fallback_summary=run_dir / "fallback_summary.json",
         summary=run_dir / "summary.json",
     )
 

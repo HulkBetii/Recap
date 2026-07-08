@@ -1,4 +1,11 @@
 orchestrator:
+  quality_mode: balanced
+  text_llm_backend: chatgpt_playwright
+  api_budget_guard: warn
+  auto_fallback: false
+  fallback_on_timecode_warn: true
+  fallback_ingest_asr_provider: openai-gpt4o-hybrid
+  fallback_max_vision_frames: 0
   python: null
   log_level: INFO
 
@@ -21,6 +28,7 @@ ingest:
   translate_mode: ko-en
   vision_model: gpt-4.1-mini
   device: cpu
+  asr_policy: preset
   asr_provider: faster-whisper
   aligner: none
   transcript_input: null
@@ -83,6 +91,14 @@ tts:
   concurrency: 3
   normalize: true
   cost_per_1k_chars: 0.0
+  text_normalization: vi
+  pronunciation_lexicon: null
+  normalized_script_output: null
+  normalization_report: null
+  pronunciation_qa: true
+  pronunciation_qa_output: null
+  pronunciation_suggest_backend: null
+  lexicon_candidates_output: null
   log_level: INFO
 
 shots:

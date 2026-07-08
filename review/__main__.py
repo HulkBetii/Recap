@@ -119,6 +119,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         args.story_map = None
     if not hasattr(args, "review_intent_output"):
         args.review_intent_output = None
+    if not hasattr(args, "llm_backend"):
+        args.llm_backend = "chatgpt_playwright"
     if not hasattr(args, "micro_beats") or args.micro_beats is None:
         args.micro_beats = False
     if not hasattr(args, "target_beat_audio_s"):
@@ -394,7 +396,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         coverage_pct=coverage_pct,
         qa_report=qa_report,
         n_qa_iterations=n_qa_iterations,
-        model_versions={"llm": "chatgpt-playwright"},
+        model_versions={"llm": args.llm_backend},
+        llm_backend=args.llm_backend,
         created_at=datetime.now(timezone.utc),
         warnings=warnings,
         cache_hits=cache.cache_hits,

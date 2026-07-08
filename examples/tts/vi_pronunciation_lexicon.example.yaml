@@ -1,0 +1,7 @@
+﻿# Example Vietnamese TTS pronunciation lexicon.
+# Keys are matched exactly before default normalization rules.
+AI: "ây ai"
+A.I.: "ây ai"
+ChatGPT: "chat gi pi ti"
+TTS: "ti ti ét"
+API: "ây pi ai"

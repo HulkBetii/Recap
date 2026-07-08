@@ -2,7 +2,7 @@ orchestrator:
   quality_mode: balanced
   text_llm_backend: chatgpt_playwright
   api_budget_guard: warn
-  auto_fallback: false
+  auto_fallback: true
   fallback_on_timecode_warn: true
   fallback_ingest_asr_provider: openai-gpt4o-hybrid
   fallback_max_vision_frames: 0
@@ -19,15 +19,15 @@ preflight:
 ingest:
   whisper_model: large-v3
   gap_threshold: 4.0
-  max_vision_frames: 200
+  max_vision_frames: 0
   max_visual_gap_s: 20
   translate_model: gpt-4.1-mini
   source_language: vi
   translate_mode: none
   vision_model: gpt-4.1-mini
   device: cpu
-  asr_policy: preset
-  asr_provider: openai-gpt4o-hybrid
+  asr_policy: local_first
+  asr_provider: faster-whisper
   aligner: whisperx
   transcript_input: null
   timecode_quality: strict

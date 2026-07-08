@@ -572,3 +572,27 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Added G1 `source_language=vi` and `translate_mode=none` so Vietnamese source videos skip KO→EN translation and keep transcript text directly in `film_map.json`.
 - Added `config.vi.stable.yaml` for Vietnamese movie/video smoke tests, based on the stable movie preset with OpenAI chunked ASR and no translation.
 - Fixed G1 force cache cleanup to remove transcript/alignment/chunk artifacts when rerunning with a different language mode.
+
+
+### 2026-07-08 - G?3 Vietnamese TTS text normalization
+
+- Added deterministic Vietnamese TTS text normalization before provider submit, without changing `review_script.json`.
+- G?3 now writes `tts_script.json` and `tts_normalization_report.json`; `tts_meta.json` records normalization mode, lexicon path, changed count, and warnings.
+- Default `vi` keeps lowercase Vietnamese `ai` untouched while normalizing clear acronyms like `AI`, `A.I.`, `ChatGPT`, `TTS`, plus common symbols/units.
+- Orchestrator/config now pass TTS normalization settings; added example pronunciation lexicon and tests.
+
+
+### 2026-07-08 - Cost-aware backend policy
+
+- Added orchestrator `quality_mode`, `text_llm_backend`, and `api_budget_guard` policy resolution.
+- Runs now write `cost_policy.json` and `cost_summary.json`; dry-run prints policy/summary before commands.
+- Added deterministic G?3 `tts_pronunciation_qa.json` and optional lexicon candidate output before paid TTS synthesize.
+- `low_cost` uses local-first ASR and disables OpenAI vision by default; `balanced` keeps quality preset while text QA stays Playwright-first.
+
+
+### 2026-07-08 - Auto low-OpenAI Vietnamese fallback presets
+
+- Added `config.vi.low_openai.yaml` for local-first Vietnamese runs with OpenAI blocked by default.
+- Added `config.vi.balanced.auto.yaml` for auto 100% local-first runs that fallback to OpenAI hybrid ASR only when G?1 timecode QA fails.
+- Orchestrator now writes `fallback_plan.json` / `fallback_summary.json` and updates `cost_summary.json` with fallback possible/triggered flags.
+- Fallback forces downstream selected stages after rerunning G?1 so stale story/review/TTS/match/render artifacts are not reused.

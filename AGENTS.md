@@ -381,3 +381,32 @@ repo/
 - Sync QA flags beat start/end/duration deltas, placements outside the beat timing window, source-order mismatch, high reuse, long clips, and timeline gaps/overlaps.
 - Use this report before changing global audio offset; if only a few beats are flagged, fix matching/timing locally instead of delaying the whole voiceover.
 - `summary.json` includes `timecode_qa` from `film_map.meta.json`; if `approximate_timecodes=true`, treat footage/narration mismatch as an ASR/alignment risk first, not a render audio-delay problem.
+
+
+## 31. G?3 TTS TEXT NORMALIZATION / PRONUNCIATION QA
+
+- G?3 kh?ng s?a `review_script.json`; text g?c v?n d?ng cho QA/G?5, c?n text g?i provider n?m trong `tts_script.json`.
+- CLI h? tr? `--tts-text-normalization off|basic|vi`, `--tts-pronunciation-lexicon`, `--tts-normalized-script-output`, v? `--tts-normalization-report`.
+- Default `vi` x? l? acronym/k? hi?u/s? nh? cho ti?ng Vi?t: `AI`, `A.I.`, `ChatGPT`, `TTS`, `%`, `/`, URL/email/emoji; kh?ng ???c ??i ch? th??ng `ai` th?nh acronym.
+- `tts_meta.json` ghi `text_normalization`, `pronunciation_lexicon_path`, `n_text_normalized`, v? `normalization_warnings`.
+- Cache G?3 ph?i d?ng `tts_text` ?? normalize ?? ??i lexicon/rule th? render l?i ??ng beat.
+- Lexicon m?u kh?ng ch?a secret n?m ? `examples/tts/vi_pronunciation_lexicon.example.yaml`; key API v?n ch? ??c env/.env gitignored.
+
+
+## 32. COST-AWARE BACKEND POLICY
+
+- Orchestrator c? `quality_mode: low_cost|balanced|max_quality`, `text_llm_backend`, v? `api_budget_guard` ?? ch?n backend theo chi ph?/ch?t l??ng.
+- Default `balanced`: text-heavy QA/review d?ng ChatGPT Playwright; ASR/vision theo preset; TTS v?n d?ng provider tr? ph? nh?ng cache theo beat.
+- `low_cost` ?u ti?n local-first ASR, t?t OpenAI vision m?c ??nh, v? kh?ng t? fallback sang OpenAI khi `api_budget_guard=block`.
+- `cost_policy.json` v? `cost_summary.json` l? artifact b?t bu?c c?a run orchestrator ?? review stage n?o c? th? t?n API/TTS tr??c khi ch?y th?t.
+- G?3 pronunciation QA deterministic ch?y tr??c synthesize v? ghi `tts_pronunciation_qa.json`; backend suggestion ch? sinh candidate lexicon, kh?ng t? s?a `review_script.json` v? kh?ng t? g?i TTS l?i.
+- Playwright ch? d?ng cho text/QA d?i; kh?ng d?ng thay th? TTS audio th?t ho?c media artifact c?n provider/local runtime ?n ??nh.
+
+
+## 33. AUTO LOW-OPENAI VIETNAMESE PIPELINE
+
+- `config.vi.low_openai.yaml` l? preset test r? cho video ti?ng Vi?t: local-first ASR (`faster-whisper` + `whisperx`), `translate_mode=none`, `max_vision_frames=0`, v? `api_budget_guard=block`.
+- `config.vi.balanced.auto.yaml` v?n auto 100%: ch?y local-first tr??c, n?u G?1 timecode QA warn/fail th? t? rerun G?1 b?ng `openai-gpt4o-hybrid` r?i force rerun downstream selected stages.
+- Fallback ch? d?a tr?n `film_map.meta.json`: `timecode_quality != strict`, `approximate_timecodes=true`, ho?c warning alignment/timecode nghi?m tr?ng.
+- `fallback_plan.json` ghi trigger/block reason; `fallback_summary.json` ghi k?t qu? sau fallback; `cost_summary.json` c? `openai_fallback_possible` v? `openai_fallback_triggered`.
+- N?u `api_budget_guard=block`, fallback OpenAI ph?i b? ch?n r? r?ng thay v? ?m th?m t?n API.

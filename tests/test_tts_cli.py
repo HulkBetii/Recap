@@ -12,9 +12,11 @@ class FakeProvider(TtsProviderClient):
     def __init__(self, fail_ai33: bool = False) -> None:
         self.fail_ai33 = fail_ai33
         self.calls: list[str] = []
+        self.texts: list[str] = []
 
     async def _synthesize_ai33(self, text: str, voice_id: str, speed: float, output_path: Path) -> ProviderResult:
         self.calls.append("ai33")
+        self.texts.append(text)
         if self.fail_ai33:
             raise TtsProviderError("ai33 failed")
         output_path.write_bytes(f"ai33:{text}".encode("utf-8"))
@@ -22,6 +24,7 @@ class FakeProvider(TtsProviderClient):
 
     async def _synthesize_genmax(self, text: str, voice_id: str, model: str, output_path: Path) -> ProviderResult:
         self.calls.append("genmax")
+        self.texts.append(text)
         output_path.write_bytes(f"genmax:{text}".encode("utf-8"))
         return ProviderResult(provider="genmax", voice_id=voice_id, audio_url="file://genmax")
 
@@ -55,6 +58,10 @@ def make_args(tmp_path, review_script, film_meta=None, force=False):  # type: ig
         work_dir=tmp_path / "work" / "tts",
         force=force,
         cost_per_1k_chars=0.01,
+        tts_text_normalization="vi",
+        tts_pronunciation_lexicon=None,
+        tts_normalized_script_output=None,
+        tts_normalization_report=None,
         log_level="ERROR",
     )
 
@@ -78,16 +85,21 @@ def test_tts_cli_mock_end_to_end(tmp_path, monkeypatch) -> None:  # type: ignore
 
     import asyncio
 
-    timings, meta = asyncio.run(run_tts_with_client(make_args(tmp_path, review_script, film_meta), FakeProvider()))
+    provider = FakeProvider()
+    timings, meta = asyncio.run(run_tts_with_client(make_args(tmp_path, review_script, film_meta), provider))
 
     assert (tmp_path / "out" / "audio" / "0.mp3").exists()
     assert (tmp_path / "out" / "audio" / "1.mp3").exists()
     assert (tmp_path / "out" / "voiceover.mp3").exists()
     assert (tmp_path / "out" / "beats_timing.json").exists()
     assert (tmp_path / "out" / "tts_meta.json").exists()
+    assert (tmp_path / "out" / "tts_script.json").exists()
+    assert (tmp_path / "out" / "tts_normalization_report.json").exists()
+    assert provider.texts == ["M\u1edf \u0111\u1ea7u c\u0103ng th\u1eb3ng.", "C\u00e2u chuy\u1ec7n ti\u1ebfp t\u1ee5c."]
     assert [(t.tl_start, t.tl_end) for t in timings] == [(0.0, 1.0), (1.15, 3.15)]
     assert meta.real_ratio == 0.315
     assert meta.est_cost > 0
+    assert meta.text_normalization == "vi"
 
 
 def test_tts_cli_cache_skips_second_run(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

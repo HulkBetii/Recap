@@ -35,6 +35,7 @@ from common.schema import (
     validate_story_map,
 )
 from orchestrator.config import add_option
+from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
 
@@ -164,7 +165,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
-        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "log_level"):
+        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "log_level"):
             add_option(command, key, section.get(key))
         command.append("--style-qa" if section.get("style_qa", True) else "--no-style-qa")
         command.append("--opening-coherence-qa" if section.get("opening_coherence_qa", section.get("content_type") == "movie") else "--no-opening-coherence-qa")
@@ -176,6 +177,17 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--review-script", str(paths.review_script), "--output-audio", str(paths.voiceover), "--output-timing", str(paths.beats_timing)]
         for key in ("voice_id", "provider_mode", "genmax_voice_id", "model", "speed", "inter_beat_pause", "concurrency", "cost_per_1k_chars", "log_level"):
             add_option(command, key, section.get(key))
+        add_option(command, "tts_text_normalization", section.get("text_normalization"))
+        add_option(command, "tts_pronunciation_lexicon", section.get("pronunciation_lexicon"))
+        add_option(command, "tts_normalized_script_output", section.get("normalized_script_output"))
+        add_option(command, "tts_normalization_report", section.get("normalization_report"))
+        add_option(command, "pronunciation_qa_output", section.get("pronunciation_qa_output"))
+        add_option(command, "pronunciation_suggest_backend", section.get("pronunciation_suggest_backend"))
+        add_option(command, "lexicon_candidates_output", section.get("lexicon_candidates_output"))
+        if section.get("pronunciation_qa", True):
+            command.append("--pronunciation-qa")
+        else:
+            command.append("--no-pronunciation-qa")
         command += ["--film-meta", str(paths.film_map_meta)]
         if not section.get("normalize", True):
             command.append("--no-normalize")
@@ -233,13 +245,19 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
     return command
 
 
-def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPaths, config: dict[str, Any], dry_run: bool = False) -> None:
+def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPaths, config: dict[str, Any], dry_run: bool = False, cost_policy: CostPolicy | None = None) -> None:
     if not film.is_file():
         raise OrchestratorError(f"input film does not exist: {film}")
     if selected & {"ingest", "tts", "shots", "render"} and not dry_run:
         require_ffmpeg()
     will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage)}
-    if "ingest" in will_run and not os.getenv("OPENAI_API_KEY") and not dry_run:
+    if cost_policy is not None:
+        blocked = disallowed_openai_stages(cost_policy, will_run)
+        if blocked:
+            raise OrchestratorError("api_budget_guard=block forbids OpenAI usage: " + "; ".join(blocked))
+    ingest_policy = cost_policy.stages.get("ingest", {}) if cost_policy is not None else {}
+    ingest_needs_openai = bool(ingest_policy.get("openai_uses")) if ingest_policy else True
+    if "ingest" in will_run and ingest_needs_openai and not os.getenv("OPENAI_API_KEY") and not dry_run:
         raise OrchestratorError("OPENAI_API_KEY is required to run ingest")
     if "review" in will_run and not dry_run:
         profile = Path(str(config["review"].get("chatgpt_profile_dir"))).expanduser()

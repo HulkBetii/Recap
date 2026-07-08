@@ -216,6 +216,7 @@ class ReviewMeta(BaseModel):
     qa_report: list[dict[str, Any]] = Field(default_factory=list)
     n_qa_iterations: int = Field(ge=0)
     model_versions: dict[str, str] = Field(default_factory=dict)
+    llm_backend: str = "chatgpt_playwright"
     video_profile_path: str | None = None
     n_non_story: int = Field(default=0, ge=0)
     intro_detection: dict[str, Any] | None = None
@@ -293,6 +294,14 @@ class TtsMeta(BaseModel):
     created_at: datetime
     cache_hits: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    text_normalization: str = "vi"
+    pronunciation_lexicon_path: str | None = None
+    n_text_normalized: int = Field(default=0, ge=0)
+    normalization_warnings: list[str] = Field(default_factory=list)
+    pronunciation_qa_enabled: bool = True
+    pronunciation_risk_count: int = Field(default=0, ge=0)
+    pronunciation_suggest_backend: str = "off"
+    pronunciation_warnings: list[str] = Field(default_factory=list)
 
 
 
