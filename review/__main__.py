@@ -93,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chatgpt-session-file", default=None, type=Path, help="Optional saved ChatGPT cookies/session JSON to restore before opening ChatGPT")
     parser.add_argument("--chat-title", default=None, help="Optional human title saved in chat_session_meta.json")
     parser.add_argument("--reply-timeout-s", default=None, type=int, help="Max seconds to wait for one ChatGPT response")
+    parser.add_argument("--llm-backend", default="chatgpt_playwright", choices=["chatgpt_playwright", "openai_api", "off"])
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
