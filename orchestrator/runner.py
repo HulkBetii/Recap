@@ -215,6 +215,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command.append("--allow-repeat" if section.get("allow_repeat", True) else "--no-allow-repeat")
         command.append("--allow-speedfit" if section.get("allow_speedfit", False) else "--no-allow-speedfit")
         command.append("--exclude-non-story" if section.get("exclude_non_story", True) else "--no-exclude-non-story")
+        command.append("--opening-story-visual-start" if section.get("opening_story_visual_start", True) else "--no-opening-story-visual-start")
         command.append("--opening-allow-short-fill" if section.get("opening_allow_short_fill", True) else "--no-opening-allow-short-fill")
         command.append("--opening-ordered-fill" if section.get("opening_ordered_fill", True) else "--no-opening-ordered-fill")
         command.append("--ordered-fill-by-audio-progress" if section.get("ordered_fill_by_audio_progress", True) else "--no-ordered-fill-by-audio-progress")

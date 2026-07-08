@@ -72,6 +72,15 @@ def test_orchestrator_passes_vietnamese_source_options_to_ingest(tmp_path: Path)
     assert command[command.index("--translate-mode") + 1] == "none"
 
 
+
+def test_vietnamese_stable_config_uses_whisperx_alignment() -> None:
+    config = load_config(Path("config.vi.stable.yaml"))
+    command = build_command("ingest", build_paths(Path("runs/test")), Path("film.mp4"), config, force=False, python_exe="python")
+    assert command[command.index("--source-language") + 1] == "vi"
+    assert command[command.index("--translate-mode") + 1] == "none"
+    assert command[command.index("--aligner") + 1] == "whisperx"
+    assert command[command.index("--alignment-device") + 1] == "cuda"
+
 def test_orchestrator_passes_hybrid_alignment_options(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"ingest": {"asr_provider": "openai-gpt4o-hybrid", "aligner": "whisperx", "openai_chunk_s": 15, "alignment_device": "cuda"}}), encoding="utf-8")

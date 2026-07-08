@@ -86,7 +86,7 @@ def load_transcript(
         quality = TranscriptQuality.model_validate(cache.read_json("transcript_quality.json"))
         return segments, quality
 
-    for key, value in {"openai_transcribe_model": "gpt-4o-mini-transcribe", "openai_chunk_s": 20.0, "alignment_device": "cuda", "drop_non_korean_intro_s": 30.0}.items():
+    for key, value in {"openai_transcribe_model": "gpt-4o-mini-transcribe", "openai_chunk_s": 20.0, "alignment_device": "cuda", "drop_non_korean_intro_s": 30.0, "source_language": "ko"}.items():
         if not hasattr(args, key):
             setattr(args, key, value)
     logger.info("[2/6] Loading transcript with ASR provider: %s", args.asr_provider)
@@ -129,7 +129,7 @@ def load_transcript(
     if not transcript:
         raise IngestError("transcript is empty")
     transcript = split_long_segments(transcript, args.max_segment_s)
-    transcript, quality = apply_alignment(transcript, quality, args.aligner, args.timecode_quality, audio_path=audio_path, alignment_device=args.alignment_device)
+    transcript, quality = apply_alignment(transcript, quality, args.aligner, args.timecode_quality, audio_path=audio_path, alignment_device=args.alignment_device, source_language=args.source_language)
     transcript, qc_warnings = clean_aligned_segments(
         transcript,
         duration=duration,

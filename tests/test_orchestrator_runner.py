@@ -180,6 +180,7 @@ def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None
     assert command[command.index("--match-strategy") + 1] == "chronological"
     assert command[command.index("--w-semantic") + 1] == "0.15"
     assert command[command.index("--max-source-drift-s") + 1] == "12.0"
+    assert "--opening-story-visual-start" in command
     assert "--ordered-fill-by-audio-progress" in command
 
 def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:

@@ -53,7 +53,7 @@ python run.py --input path\to\video-vi.mp4 --run-dir runs\movie-vi01 --config co
 - `movie` preset ưu tiên kể mạch dễ hiểu từ đầu phim: `storymap`, `hook_mode=setup`, `target_ratio=auto`.
 - GĐ5 dùng `match_strategy=chronological`, `w_semantic=0.15`, `audio_delay_s=0.0`; semantic/story/intent chỉ làm tie-breaker, không kéo footage lệch nhịp nguồn.
 - Không dùng cutoff intro cố định; GĐ0 `preflight` detect non-story/intro theo từng video.
-- Với nguồn tiếng Việt, `config.vi.stable.yaml` dùng `source_language=vi` và `translate_mode=none`; GĐ1 giữ transcript Việt trực tiếp trong `film_map.json` để GĐ2 xử lý.
+- Với nguồn tiếng Việt, `config.vi.stable.yaml` dùng `source_language=vi`, `translate_mode=none` và `aligner=whisperx`; GĐ1 giữ transcript Việt trực tiếp trong `film_map.json` và forced-align bằng WhisperX khi runtime có sẵn.
 
 Tùy chọn resume/debug:
 

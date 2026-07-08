@@ -127,6 +127,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "opening_max_repeat_ratio": 0.20,
         "opening_max_repeat_per_shot": 1,
         "opening_min_unique_shots": 4,
+        "opening_story_visual_start": True,
         "opening_allow_short_fill": True,
         "seed": 1234,
         "w_motion": 0.60,

@@ -1,5 +1,17 @@
 # PROJECT_LOG.md
 
+## 2026-07-08 — Opening story visual start guard
+
+- Added GĐ5 opening guard to avoid selecting early logo/title/credit visuals when `film_map` identifies a later story visual segment inside the opening source window.
+- Used for `Gang-To-Tai-Xuat` where source `0–45s` contains Shoebox/opening credits but beat narration starts at the fish market.
+
+
+## 2026-07-06 — Vietnamese WhisperX alignment preset
+
+- Updated Vietnamese source preset to use `aligner=whisperx` on CUDA for finer timecodes.
+- GĐ1 WhisperX alignment now receives `source_language` so Vietnamese runs load the `vi` align model instead of hardcoded Korean.
+
+
 ## 2026-07-06 — Timecode QA in run summary
 
 - Added `summary.json.timecode_qa` from `film_map.meta.json` so runs clearly show strict vs approximate timecodes.

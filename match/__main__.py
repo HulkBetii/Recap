@@ -7,7 +7,7 @@ import random
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.schema import BeatTiming, EdlMeta, EdlPlacement, ReviewBeat, ReviewIntent, Shot, StorySection, validate_edl, validate_review_intents, validate_story_map, write_json
+from common.schema import BeatTiming, EdlMeta, EdlPlacement, FilmMapSegment, ReviewBeat, ReviewIntent, Shot, StorySection, validate_edl, validate_review_intents, validate_story_map, write_json
 from match.cache import MatchCache, file_hash, stable_hash
 from match.fill import assign_timeline, fill_beat, fill_timeline_gaps
 from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
@@ -73,6 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--opening-max-repeat-ratio", default=0.20, type=float)
     parser.add_argument("--opening-max-repeat-per-shot", default=1, type=int)
     parser.add_argument("--opening-min-unique-shots", default=4, type=int)
+    parser.add_argument("--opening-story-visual-start", action="store_true", default=True)
+    parser.add_argument("--no-opening-story-visual-start", dest="opening_story_visual_start", action="store_false")
     parser.add_argument("--opening-allow-short-fill", action="store_true", default=True)
     parser.add_argument("--no-opening-allow-short-fill", dest="opening_allow_short_fill", action="store_false")
     parser.add_argument("--opening-ordered-fill", action="store_true", default=True)
@@ -114,7 +116,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "sync_qa": True,
         "review_thumbs_per_beat": args.review_thumbs_per_beat,
         "repeat_guard": [args.max_repeat_per_beat, args.max_repeat_ratio_per_beat, args.min_repeat_alternative_score_ratio, args.adjacent_shot_repeat_penalty],
-        "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill, args.ordered_fill_by_audio_progress],
+        "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill, args.ordered_fill_by_audio_progress, args.opening_story_visual_start],
     })
 
 
@@ -203,6 +205,29 @@ def load_story_sections(path: Path | None) -> dict[int, StorySection]:
     sections = validate_story_map([StorySection.model_validate(item) for item in raw])
     return {section.section_id: section for section in sections}
 
+
+def opening_story_visual_start(beat: ReviewBeat, film_map: list[FilmMapSegment], *, max_start_s: float = 90.0) -> float | None:
+    if beat.src_tc_start > 1.0:
+        return None
+    candidates = [
+        segment
+        for segment in film_map
+        if segment.type == "visual"
+        and segment.scene_desc
+        and beat.src_tc_start <= segment.tc_start < min(beat.src_tc_end, max_start_s)
+        and not is_opening_non_story_description(segment.scene_desc)
+    ]
+    if not candidates:
+        return None
+    first_visual = min(candidates, key=lambda segment: segment.tc_start)
+    return round(first_visual.tc_start, 3)
+
+
+def is_opening_non_story_description(text: str) -> bool:
+    lowered = text.lower()
+    markers = ("logo", "title card", "opening credits", "credits", "black screen", "white text", "production", "studio")
+    return any(marker in lowered for marker in markers)
+
 def run_match(args: argparse.Namespace) -> int:
     logger = logging.getLogger("match")
     if not hasattr(args, "exclude_non_story"):
@@ -216,6 +241,8 @@ def run_match(args: argparse.Namespace) -> int:
         args.opening_ordered_fill = True
     if not hasattr(args, "ordered_fill_by_audio_progress"):
         args.ordered_fill_by_audio_progress = True
+    if not hasattr(args, "opening_story_visual_start"):
+        args.opening_story_visual_start = True
     if not hasattr(args, "match_strategy"):
         args.match_strategy = "hybrid"
     if not hasattr(args, "review_html"):
@@ -269,10 +296,10 @@ def run_match(args: argparse.Namespace) -> int:
     missing = sorted(set(beats_by_id) ^ set(timings_by_id))
     if missing:
         raise MatchError(f"review_script and beats_timing beat ids differ: {missing}")
+    film_map = load_film_map(args.film_map.expanduser().resolve()) if args.film_map else []
     semantic_result = None
     semantic_scores: dict[tuple[int, int], float] = {}
     if args.semantic_mode != "off":
-        film_map = load_film_map(args.film_map.expanduser().resolve())
         semantic_cache_dir = args.semantic_cache_dir.expanduser().resolve() if args.semantic_cache_dir else args.work_dir.expanduser().resolve() / "semantic"
         semantic_result = compute_semantic_result(
             review_beats,
@@ -299,6 +326,9 @@ def run_match(args: argparse.Namespace) -> int:
     for timing in sorted(timings, key=lambda item: item.tl_start):
         beat = beats_by_id[timing.beat_id]
         in_opening_guard = args.opening_guard_s > 0 and timing.tl_start < args.opening_guard_s
+        source_start_override = None
+        if in_opening_guard and args.opening_story_visual_start and film_map:
+            source_start_override = opening_story_visual_start(beat, film_map)
         result = fill_beat(
             beat=beat,
             timing=timing,
@@ -321,7 +351,10 @@ def run_match(args: argparse.Namespace) -> int:
             match_strategy=args.match_strategy,
             chronology_weight=args.chronology_weight,
             max_source_drift_s=args.max_source_drift_s,
+            source_start_override=source_start_override,
         )
+        if source_start_override is not None:
+            result.warnings.append(f"beat {beat.beat_id} opening_story_visual_start {source_start_override:.3f}s")
         if in_opening_guard and args.opening_ordered_fill:
             result.warnings.append(f"beat {beat.beat_id} opening_ordered_fill")
         if in_opening_guard:

@@ -248,6 +248,7 @@ repo/
 - G?1 gi? contract `film_map.json` nh?ng meta c? th?m `asr_provider`, `aligner_provider`, `timecode_quality`, `approximate_timecodes`, `asr_warnings`.
 - GĐ1 hỗ trợ nguồn tiếng Việt bằng `--source-language vi --translate-mode none`; transcript Việt được giữ nguyên vào cả `ko` và `en` để không phá contract cũ, và không gọi KO→EN translation.
 - Preset tiếng Việt ổn định nằm ở `config.vi.stable.yaml`; dùng cho video đã là recap/phim tiếng Việt trước khi cân nhắc pipeline Korean drama mặc định.
+- Preset tiếng Việt mặc định bật `aligner=whisperx` với `source_language=vi`; WhisperX phải dùng align model `vi`, không được hardcode `ko`.
 - ASR provider hi?n c?: `faster-whisper` default, `openai-gpt4o`, `openai-gpt4o-hybrid`, v? `manual` ?? import transcript Markdown/JSON.
 - Cache transcript m?i trong `--work-dir`: `transcript_text.json`, `transcript_aligned.json`, `transcript_quality.json`.
 - Manual transcript d?ng `[MM:SS] text` ch? c? timestamp start; end-time ???c suy lu?n n?n lu?n ??nh d?u approximate n?u ch?a align.
@@ -364,6 +365,7 @@ repo/
 - `skip_intro` and `drop_visual_before_s` are manual debug overrides only, not default pipeline behavior.
 - Movie micro-beats are experimental opt-in (`micro_beats=false` by default) because real smoke testing showed whole-film splitting can make audio run ahead of visuals.
 - For localized opening image/voice ordering issues, prefer a G5 ordered/diversity fill inside `opening_guard_s`; do not hardcode a cutoff and do not split the whole film.
+- G5 `opening_story_visual_start` may skip early logo/title/credit shots only when `film_map` has a later story visual segment inside the opening source window; this is not a fixed intro cutoff.
 
 ## Movie-First Story Structure / Visual Intent
 

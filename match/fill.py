@@ -54,11 +54,13 @@ def fill_beat(
     match_strategy: str = "hybrid",
     chronology_weight: float = 0.70,
     max_source_drift_s: float = 12.0,
+    source_start_override: float | None = None,
 ) -> FillResult:
     warnings: list[str] = []
+    effective_start = max(beat.src_tc_start, source_start_override) if source_start_override is not None else beat.src_tc_start
     window_start, window_end, candidates, widen_count = widen_until_enough(
         shots=shots,
-        start=beat.src_tc_start,
+        start=effective_start,
         end=beat.src_tc_end,
         needed_duration=timing.duration,
         margin=widen_margin,

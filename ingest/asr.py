@@ -221,6 +221,7 @@ def apply_alignment(
     requested_quality: str,
     audio_path: Path | None = None,
     alignment_device: str = "cuda",
+    source_language: str = "ko",
 ) -> tuple[list[TranscriptSegment], TranscriptQuality]:
     warnings = list(quality.warnings)
     if aligner == "none":
@@ -233,7 +234,7 @@ def apply_alignment(
         })
     if aligner == "whisperx" and audio_path is not None:
         try:
-            aligned = align_with_whisperx(segments, audio_path, alignment_device)
+            aligned = align_with_whisperx(segments, audio_path, alignment_device, source_language=source_language)
             return aligned, quality.model_copy(update={
                 "aligner_provider": "whisperx",
                 "timecode_quality": "strict",
@@ -257,7 +258,17 @@ def apply_alignment(
     })
 
 
-def align_with_whisperx(segments: list[TranscriptSegment], audio_path: Path, device: str) -> list[TranscriptSegment]:
+def whisperx_language_code(source_language: str) -> str:
+    language_map = {"ko": "ko", "vi": "vi"}
+    return language_map.get(source_language, source_language)
+
+
+def align_with_whisperx(
+    segments: list[TranscriptSegment],
+    audio_path: Path,
+    device: str,
+    source_language: str = "ko",
+) -> list[TranscriptSegment]:
     import whisperx
 
     whisperx_segments = [
@@ -265,7 +276,7 @@ def align_with_whisperx(segments: list[TranscriptSegment], audio_path: Path, dev
         for segment in segments
     ]
     audio = whisperx.load_audio(str(audio_path))
-    model, metadata = whisperx.load_align_model(language_code="ko", device=device)
+    model, metadata = whisperx.load_align_model(language_code=whisperx_language_code(source_language), device=device)
     result = whisperx.align(whisperx_segments, model, metadata, audio, device, return_char_alignments=False)
     aligned: list[TranscriptSegment] = []
     for item in result.get("segments", []):
