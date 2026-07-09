@@ -23,6 +23,9 @@ from common.schema import (
     ReviewBeat,
     ReviewMeta,
     ReviewIntent,
+    MicroPolicyMeta,
+    ReviewMicroBeat,
+    ReviewMicroMeta,
     Shot,
     ShotsMeta,
     TtsMeta,
@@ -54,6 +57,7 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "storymap": StageSpec("storymap", ("story_map", "story_map_meta", "story_map_qa"), "story_map_meta"),
     "review": StageSpec("review", ("review_script", "review_meta"), "review_meta"),
     "tts": StageSpec("tts", ("voiceover", "beats_timing", "tts_meta"), "tts_meta"),
+    "tts_align": StageSpec("tts_align", ("micro_policy", "tts_align", "review_micro", "review_micro_meta"), "review_micro_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
     "match": StageSpec("match", ("edl", "edl_meta", "edl_qa", "edl_sync_qa", "edl_review_html"), "edl_meta"),
     "render": StageSpec("render", ("recap", "render_meta"), "render_meta"),
@@ -94,6 +98,14 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
             validate_beats_timing([BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)], pause_s=tts_meta.inter_beat_pause_s)
             if not paths.voiceover.is_file():
                 raise ValueError("voiceover.mp3 is missing")
+        elif stage == "tts_align":
+            MicroPolicyMeta.model_validate(load_json(paths.micro_policy))
+            micro_beats = [ReviewMicroBeat.model_validate(item) for item in load_json(paths.review_micro)]
+            ReviewMicroMeta.model_validate(load_json(paths.review_micro_meta))
+            if not isinstance(load_json(paths.tts_align), dict):
+                raise ValueError("tts_align.json must be an object")
+            if not micro_beats:
+                raise ValueError("review_script.micro.json cannot be empty")
         elif stage == "shots":
             meta = ShotsMeta.model_validate(load_json(paths.shots_meta))
             validate_shots([Shot.model_validate(item) for item in load_json(paths.shots)], duration=meta.duration_s)
@@ -191,6 +203,20 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--film-meta", str(paths.film_map_meta)]
         if not section.get("normalize", True):
             command.append("--no-normalize")
+    elif stage == "tts_align":
+        command += [
+            "--review-script", str(paths.review_script),
+            "--beats-timing", str(paths.beats_timing),
+            "--film-map", str(paths.film_map),
+            "--audio-dir", str(paths.audio_dir),
+            "--output-micro", str(paths.review_micro),
+            "--output-policy", str(paths.micro_policy),
+            "--output-align", str(paths.tts_align),
+            "--output-meta", str(paths.review_micro_meta),
+        ]
+        for key in ("mode", "max_source_span_s", "max_narration_chars", "min_sentences", "target_sub_beat_audio_s", "max_sub_beat_audio_s", "aligner", "alignment_device", "source_language", "log_level"):
+            add_option(command, key, section.get(key))
+        command.append("--split-hooks" if section.get("split_hooks", True) else "--no-split-hooks")
     elif stage == "shots":
         command += ["--input", str(film), "--output", str(paths.shots), "--thumb-dir", str(paths.shots_dir)]
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
@@ -199,6 +225,18 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             add_option(command, key, section.get(key))
     elif stage == "match":
         command += ["--review-script", str(paths.review_script), "--beats-timing", str(paths.beats_timing), "--shots", str(paths.shots), "--output", str(paths.edl)]
+        review_micro_setting = section.get("review_micro", "auto")
+        if review_micro_setting == "auto" and paths.review_micro.is_file():
+            micro_enabled = True
+            if paths.micro_policy.is_file():
+                try:
+                    micro_enabled = bool(load_json(paths.micro_policy).get("enabled", False))
+                except Exception:
+                    micro_enabled = False
+            if micro_enabled:
+                command += ["--review-micro", str(paths.review_micro)]
+        elif review_micro_setting not in {None, "auto"}:
+            command += ["--review-micro", str(review_micro_setting)]
         review_intent_setting = section.get("review_intent", "auto")
         if review_intent_setting == "auto" and paths.review_intent.is_file():
             command += ["--review-intent", str(paths.review_intent)]

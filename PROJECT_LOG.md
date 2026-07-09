@@ -596,3 +596,9 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Added `config.vi.balanced.auto.yaml` for auto 100% local-first runs that fallback to OpenAI hybrid ASR only when G?1 timecode QA fails.
 - Orchestrator now writes `fallback_plan.json` / `fallback_summary.json` and updates `cost_summary.json` with fallback possible/triggered flags.
 - Fallback forces downstream selected stages after rerunning G?1 so stale story/review/TTS/match/render artifacts are not reused.
+
+## 2026-07-09 — Phase 1 Auto Micro-Beats + TTS Align
+
+- Added stage `tts_align` between GĐ3 and GĐ5 to build additive `micro_policy.json`, `tts_align.json`, `review_script.micro.json`, and `review_script.micro.meta.json`.
+- `review_script.json` remains the parent script and is not modified; rollback is `tts_align.mode: off` or deleting `review_script.micro.json`.
+- GĐ5 accepts optional `--review-micro` and matches micro units only when policy is enabled; otherwise old matching behavior remains.

@@ -7,12 +7,12 @@ from orchestrator.graph import forced_stages, stage_range
 
 
 def test_stage_range_full_and_only() -> None:
-    assert stage_range() == {"preflight", "ingest", "storymap", "review", "tts", "shots", "match", "render"}
+    assert stage_range() == {"preflight", "ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "render"}
     assert stage_range(only="match") == {"match"}
 
 
 def test_stage_range_from_tts_to_match_includes_shots_by_order() -> None:
-    assert stage_range("tts", "match") == {"tts", "shots", "match"}
+    assert stage_range("tts", "match") == {"tts", "tts_align", "shots", "match"}
 
 
 def test_only_cannot_combine_with_range() -> None:
@@ -23,7 +23,7 @@ def test_only_cannot_combine_with_range() -> None:
 def test_force_stage_invalidates_downstream() -> None:
     selected = set(stage_range())
     assert forced_stages(selected, False, ["match"]) == {"match", "render"}
-    assert forced_stages({"tts", "shots", "match"}, False, ["tts"]) == {"tts", "match"}
+    assert forced_stages({"tts", "tts_align", "shots", "match"}, False, ["tts"]) == {"tts", "tts_align", "match"}
 
 
 def test_config_rejects_unknown_key(tmp_path) -> None:

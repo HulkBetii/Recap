@@ -420,3 +420,9 @@ python -m storymap `
 ### Sync QA report
 
 G?5 writes `edl.sync.qa.json` for debugging perceived audio/video sync. The report compares `beats_timing.json` with actual EDL placements per beat and flags source-order mismatch, beat timing deltas, reuse-heavy beats, long clips, and placements outside the beat timing window. Check this before applying a global render audio delay.
+
+### GĐ3.5 — TTS Align / Auto Micro-Beats
+
+Long movie runs can create parent review beats with very wide source windows. The optional `tts_align` stage builds `review_script.micro.json` from the existing parent script, beat timings, and per-beat TTS audio so GĐ5 can match footage at a finer sub-beat level without changing `review_script.json` or rerunning TTS.
+
+Key outputs: `micro_policy.json`, `tts_align.json`, `review_script.micro.json`, `review_script.micro.meta.json`. Disable with `tts_align.mode: off` to return to the previous GĐ5 behavior.

@@ -410,3 +410,12 @@ repo/
 - Fallback ch? d?a tr?n `film_map.meta.json`: `timecode_quality != strict`, `approximate_timecodes=true`, ho?c warning alignment/timecode nghi?m tr?ng.
 - `fallback_plan.json` ghi trigger/block reason; `fallback_summary.json` ghi k?t qu? sau fallback; `cost_summary.json` c? `openai_fallback_possible` v? `openai_fallback_triggered`.
 - N?u `api_budget_guard=block`, fallback OpenAI ph?i b? ch?n r? r?ng thay v? ?m th?m t?n API.
+
+## 31. GĐ3.5 TTS ALIGN / AUTO MICRO-BEATS
+
+- GĐ3.5 chạy bằng `python -m tts_align` sau GĐ3 và trước GĐ5.
+- Stage này chỉ sinh artifact additive: `micro_policy.json`, `tts_align.json`, `review_script.micro.json`, `review_script.micro.meta.json`; không được sửa `review_script.json` và không gọi TTS provider.
+- `tts_align.mode=auto|on|off`; với `off` hoặc policy không enabled, GĐ5 không dùng micro artifact và quay về behavior cũ.
+- Input alignment chính là audio per-beat ở `audio/<beat_id>.mp3`; WhisperX là optional, lỗi runtime phải fallback proportional và ghi warning.
+- GĐ5 nhận optional `--review-micro`; khi dùng micro, match unit là sub-beat nhưng `edl.json` contract không đổi.
+- Rollback an toàn: đặt `tts_align.mode: off` hoặc xóa `review_script.micro.json`; không chỉnh global audio delay để xử lý mismatch cục bộ.

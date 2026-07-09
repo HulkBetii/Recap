@@ -277,6 +277,103 @@ class BeatTiming(BaseModel):
             raise ValueError("tl_end must equal tl_start + duration")
         return self
 
+class MicroPolicyMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str = "off"
+    enabled: bool = False
+    reason: str = "mode=off"
+    n_parent_beats: int = Field(default=0, ge=0)
+    n_candidate_beats: int = Field(default=0, ge=0)
+    avg_source_span_s: float = Field(default=0.0, ge=0)
+    max_source_span_s: float = Field(default=0.0, ge=0)
+    max_narration_chars: int = Field(default=0, ge=0)
+    thresholds: dict[str, float] = Field(default_factory=dict)
+    cache_key: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+
+class TtsSentenceAlignment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_beat_id: int = Field(ge=0)
+    sentence_index: int = Field(ge=0)
+    text: str
+    audio_start: float = Field(ge=0)
+    audio_end: float = Field(gt=0)
+    tl_start: float = Field(ge=0)
+    tl_end: float = Field(gt=0)
+    alignment_method: str = "proportional"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("sentence text cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_alignment(self) -> "TtsSentenceAlignment":
+        if self.audio_end <= self.audio_start:
+            raise ValueError("audio_end must be greater than audio_start")
+        if self.tl_end <= self.tl_start:
+            raise ValueError("tl_end must be greater than tl_start")
+        return self
+
+class ReviewMicroBeat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: int = Field(ge=0)
+    parent_beat_id: int = Field(ge=0)
+    sub_beat_id: int = Field(ge=0)
+    narration: str
+    from_seg_id: int = Field(ge=0)
+    to_seg_id: int = Field(ge=0)
+    src_tc_start: float = Field(ge=0)
+    src_tc_end: float = Field(gt=0)
+    tl_start: float = Field(ge=0)
+    tl_end: float = Field(gt=0)
+    duration: float = Field(gt=0)
+    alignment_method: str = "proportional"
+    is_hook: bool = False
+
+    @field_validator("narration")
+    @classmethod
+    def validate_narration(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("narration cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_micro_beat(self) -> "ReviewMicroBeat":
+        if self.to_seg_id < self.from_seg_id:
+            raise ValueError("to_seg_id must be >= from_seg_id")
+        if self.src_tc_end <= self.src_tc_start:
+            raise ValueError("src_tc_end must be greater than src_tc_start")
+        if self.tl_end <= self.tl_start:
+            raise ValueError("tl_end must be greater than tl_start")
+        if abs((self.tl_end - self.tl_start) - self.duration) > 1e-3:
+            raise ValueError("tl_end must equal tl_start + duration")
+        return self
+
+class ReviewMicroMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    mode: str = "off"
+    n_parent_beats: int = Field(default=0, ge=0)
+    n_micro_beats: int = Field(default=0, ge=0)
+    n_split_parent_beats: int = Field(default=0, ge=0)
+    avg_source_span_s: float = Field(default=0.0, ge=0)
+    max_source_span_s: float = Field(default=0.0, ge=0)
+    alignment_methods: dict[str, int] = Field(default_factory=dict)
+    policy_path: str | None = None
+    alignment_path: str | None = None
+    created_at: datetime
+    warnings: list[str] = Field(default_factory=list)
+
 
 class TtsMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")

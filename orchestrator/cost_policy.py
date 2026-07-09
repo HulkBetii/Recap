@@ -73,6 +73,7 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
         "ingest": describe_ingest(ingest),
         "review": {"backend": text_llm_backend, "cost": "playwright_session" if text_llm_backend == "chatgpt_playwright" else text_llm_backend},
         "tts": describe_tts(tts),
+        "tts_align": {"backend": resolved.get("tts_align", {}).get("aligner", "whisperx"), "cost": "local"},
         "preflight": {"backend": resolved.get("preflight", {}).get("classifier", "heuristic"), "cost": "local"},
         "match": {"backend": resolved.get("match", {}).get("semantic_mode", "off"), "cost": "local"},
         "render": {"backend": "ffmpeg", "cost": "local"},

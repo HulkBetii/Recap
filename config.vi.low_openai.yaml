@@ -95,6 +95,19 @@ tts:
   pronunciation_suggest_backend: null
   lexicon_candidates_output: null
   log_level: INFO
+tts_align:
+  mode: auto
+  max_source_span_s: 120
+  max_narration_chars: 520
+  min_sentences: 2
+  target_sub_beat_audio_s: 8
+  max_sub_beat_audio_s: 12
+  split_hooks: true
+  aligner: whisperx
+  alignment_device: auto
+  source_language: vi
+  log_level: INFO
+
 shots:
   detector: adaptive
   min_shot_len: 0.4
@@ -144,6 +157,7 @@ match:
   review_asset_dir: null
   review_thumbs_per_beat: 8
   review_intent: auto
+  review_micro: auto
   story_map: auto
   opening_ordered_fill: true
   ordered_fill_by_audio_progress: true

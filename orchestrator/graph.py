@@ -3,23 +3,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-STAGES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "match", "render")
+STAGES = ("preflight", "ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "render")
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "preflight": (),
     "ingest": ("preflight",),
     "storymap": ("ingest",),
     "review": ("storymap",),
     "tts": ("review",),
+    "tts_align": ("review", "tts"),
     "shots": ("preflight",),
-    "match": ("review", "tts", "shots"),
+    "match": ("review", "tts", "tts_align", "shots"),
     "render": ("match", "tts"),
 }
 DOWNSTREAM: dict[str, tuple[str, ...]] = {
-    "preflight": ("ingest", "storymap", "review", "tts", "shots", "match", "render"),
-    "ingest": ("storymap", "review", "tts", "match", "render"),
-    "storymap": ("review", "tts", "match", "render"),
-    "review": ("tts", "match", "render"),
-    "tts": ("match", "render"),
+    "preflight": ("ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "render"),
+    "ingest": ("storymap", "review", "tts", "tts_align", "match", "render"),
+    "storymap": ("review", "tts", "tts_align", "match", "render"),
+    "review": ("tts", "tts_align", "match", "render"),
+    "tts": ("tts_align", "match", "render"),
+    "tts_align": ("match", "render"),
     "shots": ("match", "render"),
     "match": ("render",),
     "render": (),
@@ -41,6 +43,10 @@ class RunPaths:
     voiceover: Path
     beats_timing: Path
     tts_meta: Path
+    micro_policy: Path
+    tts_align: Path
+    review_micro: Path
+    review_micro_meta: Path
     audio_dir: Path
     shots: Path
     shots_meta: Path
@@ -78,6 +84,10 @@ def build_paths(run_dir: Path) -> RunPaths:
         voiceover=run_dir / "voiceover.mp3",
         beats_timing=run_dir / "beats_timing.json",
         tts_meta=run_dir / "tts_meta.json",
+        micro_policy=run_dir / "micro_policy.json",
+        tts_align=run_dir / "tts_align.json",
+        review_micro=run_dir / "review_script.micro.json",
+        review_micro_meta=run_dir / "review_script.micro.meta.json",
         audio_dir=run_dir / "audio",
         shots=run_dir / "shots.json",
         shots_meta=run_dir / "shots.meta.json",

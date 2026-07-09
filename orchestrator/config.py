@@ -10,7 +10,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only without optional dep
     yaml = None  # type: ignore[assignment]
 
-STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "match", "render")
+STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "render")
 TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -110,6 +110,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "lexicon_candidates_output": None,
         "log_level": "INFO",
     },
+    "tts_align": {
+        "mode": "auto",
+        "max_source_span_s": 120,
+        "max_narration_chars": 520,
+        "min_sentences": 2,
+        "target_sub_beat_audio_s": 8,
+        "max_sub_beat_audio_s": 12,
+        "split_hooks": True,
+        "aligner": "whisperx",
+        "alignment_device": "auto",
+        "source_language": "vi",
+        "log_level": "INFO",
+    },
     "shots": {
         "detector": "adaptive",
         "min_shot_len": 0.4,
@@ -160,6 +173,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "review_asset_dir": None,
         "review_thumbs_per_beat": 8,
         "review_intent": "auto",
+        "review_micro": "auto",
         "story_map": "auto",
         "opening_ordered_fill": True,
         "ordered_fill_by_audio_progress": True,

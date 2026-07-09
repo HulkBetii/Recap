@@ -10,7 +10,7 @@ from pathlib import Path
 from common.schema import BeatTiming, EdlMeta, EdlPlacement, FilmMapSegment, ReviewBeat, ReviewIntent, Shot, StorySection, validate_edl, validate_review_intents, validate_story_map, write_json
 from match.cache import MatchCache, file_hash, stable_hash
 from match.fill import assign_timeline, fill_beat, fill_timeline_gaps
-from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
+from match.inputs import load_beats_timing, load_film_map, load_review_micro, load_review_script, load_shots
 from match.qa import build_edl_qa
 from match.review_html import write_review_html
 from match.scoring import ScoringWeights
@@ -26,6 +26,7 @@ class MatchError(RuntimeError):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Stage 5 match: review + timing + shots -> edl.json")
     parser.add_argument("--review-script", required=True, type=Path)
+    parser.add_argument("--review-micro", default=None, type=Path)
     parser.add_argument("--beats-timing", required=True, type=Path)
     parser.add_argument("--shots", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
@@ -89,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
 def make_cache_key(args: argparse.Namespace) -> str:
     return stable_hash({
         "review_script": file_hash(args.review_script.expanduser().resolve()),
+        "review_micro": file_hash(args.review_micro.expanduser().resolve()) if getattr(args, "review_micro", None) else None,
         "beats_timing": file_hash(args.beats_timing.expanduser().resolve()),
         "shots": file_hash(args.shots.expanduser().resolve()),
         "min_clip": args.min_clip,
@@ -284,10 +286,15 @@ def run_match(args: argparse.Namespace) -> int:
             write_json(sync_qa_path, cached["sync_qa"])
         return 0
 
-    review_beats = load_review_script(args.review_script.expanduser().resolve())
-    review_intents = load_review_intents(args.review_intent, review_beats)
+    micro_items = {}
+    if getattr(args, "review_micro", None) and args.review_micro.expanduser().resolve().is_file():
+        review_beats, timings, micro_items = load_review_micro(args.review_micro.expanduser().resolve())
+        review_intents = {}
+    else:
+        review_beats = load_review_script(args.review_script.expanduser().resolve())
+        timings = load_beats_timing(args.beats_timing.expanduser().resolve())
+        review_intents = load_review_intents(args.review_intent, review_beats)
     story_sections = load_story_sections(args.story_map)
-    timings = load_beats_timing(args.beats_timing.expanduser().resolve())
     all_shots = load_shots(args.shots.expanduser().resolve())
     n_intro_excluded = sum(1 for shot in all_shots if not shot.is_story)
     shots = [shot for shot in all_shots if shot.is_story] if args.exclude_non_story else all_shots
@@ -318,6 +325,8 @@ def run_match(args: argparse.Namespace) -> int:
     reuse_counts: dict[int, int] = {}
     placements: list[EdlPlacement] = []
     warnings: list[str] = []
+    if micro_items:
+        warnings.append(f"using review micro beats: {len(micro_items)} unit(s)")
     n_beats_widened = 0
     n_reused = 0
     n_speedfit = 0
