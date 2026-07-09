@@ -1,5 +1,10 @@
 # PROJECT_LOG.md
 
+## 2026-07-09 ? G?5 near-repeat guard
+
+- Added timeline-proximity repeat guard so G?5 avoids reusing shots that appeared in the last few seconds when a good alternative exists.
+- Opening uses a stricter default window to target visible repeats in the first seconds without changing TTS, micro-beats, or global audio delay.
+
 ## 2026-07-09 ? G?6 optional BGM + burn-in captions
 
 - Added opt-in render-layer BGM mixing from a user-provided file; default remains off and old mux path is preserved.

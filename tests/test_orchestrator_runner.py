@@ -208,6 +208,9 @@ def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None
     assert command[command.index("--match-strategy") + 1] == "chronological"
     assert command[command.index("--w-semantic") + 1] == "0.15"
     assert command[command.index("--max-source-drift-s") + 1] == "12.0"
+    assert command[command.index("--near-repeat-guard-s") + 1] == "6.0"
+    assert command[command.index("--opening-near-repeat-guard-s") + 1] == "10.0"
+    assert command[command.index("--near-repeat-min-alternative-score-ratio") + 1] == "0.65"
     assert "--opening-story-visual-start" in command
     assert "--ordered-fill-by-audio-progress" in command
 

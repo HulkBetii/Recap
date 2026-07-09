@@ -74,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--opening-max-repeat-ratio", default=0.20, type=float)
     parser.add_argument("--opening-max-repeat-per-shot", default=1, type=int)
     parser.add_argument("--opening-min-unique-shots", default=4, type=int)
+    parser.add_argument("--near-repeat-guard-s", default=6.0, type=float)
+    parser.add_argument("--opening-near-repeat-guard-s", default=10.0, type=float)
+    parser.add_argument("--near-repeat-min-alternative-score-ratio", default=0.65, type=float)
     parser.add_argument("--opening-story-visual-start", action="store_true", default=True)
     parser.add_argument("--no-opening-story-visual-start", dest="opening_story_visual_start", action="store_false")
     parser.add_argument("--opening-allow-short-fill", action="store_true", default=True)
@@ -117,7 +120,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "review_html": args.review_html,
         "sync_qa": True,
         "review_thumbs_per_beat": args.review_thumbs_per_beat,
-        "repeat_guard": [args.max_repeat_per_beat, args.max_repeat_ratio_per_beat, args.min_repeat_alternative_score_ratio, args.adjacent_shot_repeat_penalty],
+        "repeat_guard": [args.max_repeat_per_beat, args.max_repeat_ratio_per_beat, args.min_repeat_alternative_score_ratio, args.adjacent_shot_repeat_penalty, args.near_repeat_guard_s, args.opening_near_repeat_guard_s, args.near_repeat_min_alternative_score_ratio],
         "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill, args.ordered_fill_by_audio_progress, args.opening_story_visual_start],
     })
 
@@ -167,6 +170,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError("--opening-max-repeat-per-shot must be >= 0")
     if args.opening_min_unique_shots < 0:
         raise MatchError("--opening-min-unique-shots must be >= 0")
+    if args.near_repeat_guard_s < 0:
+        raise MatchError("--near-repeat-guard-s must be >= 0")
+    if args.opening_near_repeat_guard_s < 0:
+        raise MatchError("--opening-near-repeat-guard-s must be >= 0")
+    if args.near_repeat_min_alternative_score_ratio < 0:
+        raise MatchError("--near-repeat-min-alternative-score-ratio must be >= 0")
 
 
 def review_html_paths(args: argparse.Namespace, output_path: Path) -> tuple[Path, Path]:
@@ -234,7 +243,7 @@ def run_match(args: argparse.Namespace) -> int:
     logger = logging.getLogger("match")
     if not hasattr(args, "exclude_non_story"):
         args.exclude_non_story = True
-    for name, default in (("max_repeat_per_beat", 2), ("max_repeat_ratio_per_beat", 0.35), ("min_repeat_alternative_score_ratio", 0.75), ("adjacent_shot_repeat_penalty", 0.50), ("opening_guard_s", 0.0), ("opening_max_repeat_ratio", 0.20), ("opening_max_repeat_per_shot", 1), ("opening_min_unique_shots", 4), ("chronology_weight", 0.70), ("max_source_drift_s", 12.0)):
+    for name, default in (("max_repeat_per_beat", 2), ("max_repeat_ratio_per_beat", 0.35), ("min_repeat_alternative_score_ratio", 0.75), ("adjacent_shot_repeat_penalty", 0.50), ("opening_guard_s", 0.0), ("opening_max_repeat_ratio", 0.20), ("opening_max_repeat_per_shot", 1), ("opening_min_unique_shots", 4), ("near_repeat_guard_s", 6.0), ("opening_near_repeat_guard_s", 10.0), ("near_repeat_min_alternative_score_ratio", 0.65), ("chronology_weight", 0.70), ("max_source_drift_s", 12.0)):
         if not hasattr(args, name):
             setattr(args, name, default)
     if not hasattr(args, "opening_allow_short_fill"):
@@ -335,6 +344,12 @@ def run_match(args: argparse.Namespace) -> int:
     for timing in sorted(timings, key=lambda item: item.tl_start):
         beat = beats_by_id[timing.beat_id]
         in_opening_guard = args.opening_guard_s > 0 and timing.tl_start < args.opening_guard_s
+        near_repeat_window_s = args.opening_near_repeat_guard_s if in_opening_guard else args.near_repeat_guard_s
+        avoid_recent_shots = {
+            placement.shot_index
+            for placement in placements
+            if near_repeat_window_s > 0 and placement.tl_end > timing.tl_start - near_repeat_window_s
+        }
         source_start_override = None
         if in_opening_guard and args.opening_story_visual_start and film_map:
             source_start_override = opening_story_visual_start(beat, film_map)
@@ -361,6 +376,8 @@ def run_match(args: argparse.Namespace) -> int:
             chronology_weight=args.chronology_weight,
             max_source_drift_s=args.max_source_drift_s,
             source_start_override=source_start_override,
+            avoid_recent_shot_indexes=avoid_recent_shots,
+            near_repeat_min_alternative_score_ratio=args.near_repeat_min_alternative_score_ratio,
         )
         if source_start_override is not None:
             result.warnings.append(f"beat {beat.beat_id} opening_story_visual_start {source_start_override:.3f}s")

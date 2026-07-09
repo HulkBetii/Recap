@@ -214,6 +214,7 @@ repo/
   - `match/`: candidate filtering/widening, scoring, semantic adapters, greedy fill, timeline assignment, cache va CLI orchestration.
   - `common/schema.py`: co them `EdlPlacement`, `EdlMeta`, `validate_edl`.
 - Fallback thieu footage: noi cua so nguon truoc, sau do repeat co kiem soat; speedfit mac dinh tat.
+- G?5 c? near-repeat guard theo timeline: tr?nh d?ng l?i shot v?a xu?t hi?n trong v?i gi?y g?n ?? (`near_repeat_guard_s`, opening d?ng `opening_near_repeat_guard_s`) n?u c? alternative ?? t?t; ch? warning khi kh?ng tr?nh ???c.
 - Cache GD5 nam trong `--work-dir/plan.json`; embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
 - Test tu dong dung JSON fixtures/mock; khong dung video/ffmpeg/API.
 
