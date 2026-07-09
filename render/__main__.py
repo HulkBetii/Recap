@@ -10,7 +10,8 @@ from pathlib import Path
 from common.media import MediaError, has_audio_stream, probe_duration, probe_video_stream, require_ffmpeg
 from common.schema import EdlPlacement, RenderMeta, validate_edl, write_json
 from render.cache import RenderCache
-from render.compose import concat_video, mux_voiceover, pad_video_to_duration
+from render.captions import CaptionStyle, build_caption_events, write_ass
+from render.compose import concat_video, mux_final, mux_voiceover, pad_video_to_duration
 from render.cut import RenderParams, clamp_source, cut_temp_clip, temp_cache_key
 from render.quantize import quantize_placements
 
@@ -32,6 +33,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preset", default="medium")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--audio-delay-s", type=float, default=0.0, help="Delay voiceover audio at mux time; use when audio subjectively leads video")
+    parser.add_argument("--bgm", type=Path, default=None)
+    parser.add_argument("--bgm-gain-db", type=float, default=-20.0)
+    parser.add_argument("--bgm-fade-in-s", type=float, default=1.5)
+    parser.add_argument("--bgm-fade-out-s", type=float, default=2.5)
+    parser.add_argument("--bgm-ducking", choices=["none", "sidechain"], default="none")
+    parser.add_argument("--captions", action="store_true")
+    parser.add_argument("--review-script", type=Path, default=None)
+    parser.add_argument("--beats-timing", type=Path, default=None)
+    parser.add_argument("--review-micro", type=Path, default=None)
+    parser.add_argument("--tts-align", type=Path, default=None)
+    parser.add_argument("--captions-output", type=Path, default=None)
+    parser.add_argument("--caption-font-name", default="Arial")
+    parser.add_argument("--caption-font-size", type=int, default=54)
+    parser.add_argument("--caption-margin-v", type=int, default=64)
+    parser.add_argument("--caption-outline", type=int, default=3)
+    parser.add_argument("--caption-max-chars-per-line", type=int, default=42)
+    parser.add_argument("--caption-max-lines", type=int, default=2)
     parser.add_argument("--work-dir", type=Path, default=Path("work") / "render")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -90,6 +108,14 @@ def run_render(args: argparse.Namespace) -> int:
         raise RenderError("concurrency must be greater than zero")
     if args.audio_delay_s < 0:
         raise RenderError("--audio-delay-s must be >= 0")
+    bgm_path = getattr(args, "bgm", None)
+    if bgm_path is not None:
+        ensure_file(bgm_path, "bgm")
+    captions_enabled = bool(getattr(args, "captions", False))
+    if captions_enabled and (args.caption_font_size <= 0 or args.caption_margin_v < 0 or args.caption_outline < 0):
+        raise RenderError("caption font size must be > 0 and margins/outline must be >= 0")
+    if captions_enabled and (args.caption_max_chars_per_line <= 0 or args.caption_max_lines <= 0):
+        raise RenderError("caption line limits must be greater than zero")
     placements = load_edl(args.edl)
     if not placements:
         raise RenderError("edl cannot be empty")
@@ -125,8 +151,55 @@ def run_render(args: argparse.Namespace) -> int:
         logging.info("pad video-only concat to voiceover duration")
         pad_video_to_duration(video_only, padded_video, mux_audio_duration)
         video_for_mux = padded_video
-    logging.info("mux voiceover")
-    mux_voiceover(video_for_mux, args.voiceover, args.output, audio_delay_s=args.audio_delay_s)
+    caption_info = {"enabled": captions_enabled, "source": "none", "event_count": 0, "ass_path": None}
+    captions_path = None
+    if captions_enabled:
+        captions_path = args.captions_output or args.output.with_name("captions.ass")
+        style = CaptionStyle(
+            font_name=args.caption_font_name,
+            font_size=args.caption_font_size,
+            margin_v=args.caption_margin_v,
+            outline=args.caption_outline,
+            max_chars_per_line=args.caption_max_chars_per_line,
+            max_lines=args.caption_max_lines,
+        )
+        caption_result = build_caption_events(
+            review_script=args.review_script,
+            beats_timing=args.beats_timing,
+            review_micro=args.review_micro,
+            tts_align=args.tts_align,
+            style=style,
+        )
+        warnings.extend(caption_result.warnings)
+        write_ass(captions_path, events=caption_result.events, width=args.width, height=args.height, style=style)
+        caption_info = {"enabled": True, "source": caption_result.source, "event_count": len(caption_result.events), "ass_path": str(captions_path)}
+
+    bgm_gain_db = getattr(args, "bgm_gain_db", -20.0)
+    bgm_fade_in_s = getattr(args, "bgm_fade_in_s", 1.5)
+    bgm_fade_out_s = getattr(args, "bgm_fade_out_s", 2.5)
+    bgm_ducking = getattr(args, "bgm_ducking", "none")
+    bgm_info = {"enabled": bgm_path is not None, "path": str(bgm_path) if bgm_path else None, "gain_db": bgm_gain_db, "ducking": bgm_ducking, "applied": False}
+    if bgm_path is None and not captions_enabled:
+        logging.info("mux voiceover")
+        mux_voiceover(video_for_mux, args.voiceover, args.output, audio_delay_s=args.audio_delay_s)
+    else:
+        logging.info("mux final with optional bgm/captions")
+        mux_final(
+            video_path=video_for_mux,
+            voiceover_path=args.voiceover,
+            output_path=args.output,
+            audio_duration_s=mux_audio_duration,
+            audio_delay_s=args.audio_delay_s,
+            bgm_path=bgm_path,
+            bgm_gain_db=bgm_gain_db,
+            bgm_fade_in_s=bgm_fade_in_s,
+            bgm_fade_out_s=bgm_fade_out_s,
+            bgm_ducking=bgm_ducking,
+            captions_path=captions_path,
+            crf=args.crf,
+            preset=args.preset,
+        )
+        bgm_info["applied"] = bgm_path is not None
     output_info = probe_video_stream(args.output)
     video_duration = probe_duration(args.output)
     if not has_audio_stream(args.output):
@@ -153,6 +226,8 @@ def run_render(args: argparse.Namespace) -> int:
         warnings=warnings,
         created_at=datetime.now(timezone.utc),
         cache_hits=cache.cache_hits,
+        bgm=bgm_info,
+        captions=caption_info,
     )
     write_json(args.output.with_name("render.meta.json"), meta)
     return 0

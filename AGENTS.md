@@ -8,7 +8,7 @@
 
 ## 1. DỰ ÁN LÀ GÌ
 
-Pipeline tự động end-to-end: nhận **1 tập phim** (drama Hàn) → sinh **1 video recap review** (16:9 1080p, clip full-screen, giọng đọc TTS tiếng Việt đè lên, tắt tiếng gốc, không caption, không nhạc nền).
+Pipeline tự động end-to-end: nhận **1 tập phim** (drama Hàn) → sinh **1 video recap review** (16:9 1080p, clip full-screen, giọng đọc TTS tiếng Việt đè lên, tắt tiếng gốc; caption/BGM là lớp GĐ6 opt-in, mặc định tắt).
 
 **Cơ chế lõi:** dùng Whisper transcript **có timecode** làm cầu nối. AI viết review gắn kèm timecode nguồn cho mỗi câu → khớp footage tự động, không đoán mò.
 
@@ -98,7 +98,7 @@ Các stage giao tiếp QUA FILE JSON, không truyền object in-memory. Mỗi st
 - Viết review: **GPT**, ~**1/3** độ dài phim, giọng **kịch tính kiểu recap VN**, có **cold-open hook**, gắn **timecode nguồn** mỗi beat, có **vòng tự duyệt** đối chiếu transcript.
 - TTS: **ElevenLabs**, giọng **nữ**, tốc độ **chuẩn**.
 - Footage: chọn **shot động/có mặt người**; cắt vụn **3–5s**.
-- Render: **16:9 1080p**, full-screen, **tắt tiếng gốc**, **không caption**, **không nhạc nền**.
+- Render: **16:9 1080p**, full-screen, **tắt tiếng gốc**; **caption/BGM mặc định tắt** và chỉ bật bằng config/flag GĐ6.
 - Tự động hóa: **một phát ra video** (QA nằm ở vòng tự duyệt GĐ2).
 - Phạm vi: **chỉ ra file video** (không thumbnail/SEO). Xử lý **1 tập/lần**.
 
@@ -221,7 +221,8 @@ repo/
 ## 15. GĐ6 IMPLEMENTATION HIỆN TẠI
 
 - GĐ6 là CLI local/offline, chạy bằng `python -m render`.
-- GĐ6 chỉ đọc `edl.json`, `voiceover.mp3`, `film.mp4` và sinh `recap.mp4` + `render.meta.json`; không gọi API, không chọn lại footage, không caption, không nhạc nền, không giữ tiếng gốc.
+- GĐ6 chỉ đọc `edl.json`, `voiceover.mp3`, `film.mp4` và optional `review_script.json`/`beats_timing.json`/`review_script.micro.json` cho caption; sinh `recap.mp4` + `render.meta.json`; không gọi API, không chọn lại footage, không giữ tiếng gốc.
+- Caption burn-in và BGM user-provided là opt-in ở GĐ6: default không bật thì render giữ path cũ `mux_voiceover` với `-c:v copy`; khi bật caption, GĐ6 sinh `.ass` và re-encode final video; khi bật BGM, GĐ6 mix BGM dưới voiceover bằng ffmpeg, không đổi `audio_delay_s`.
 - Render dùng `ffmpeg/ffprobe`; temp clips luôn video-only, re-encode H.264 `yuv420p`, cùng resolution/fps/codec params rồi concat bằng demuxer `-c copy`.
 - Frame-lock toàn cục: placement chiếm frame `[round(tl_start*fps), round(tl_end*fps))`; không round duration từng clip độc lập.
 - Fit v1 chỉ hỗ trợ `cover`: scale-to-cover + center crop, không letterbox.

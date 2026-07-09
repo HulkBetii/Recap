@@ -189,6 +189,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "preset": "medium",
         "concurrency": 4,
         "audio_delay_s": 0.0,
+        "bgm": {
+            "enabled": False,
+            "path": None,
+            "gain_db": -20.0,
+            "fade_in_s": 1.5,
+            "fade_out_s": 2.5,
+            "ducking": "none",
+        },
+        "captions": {
+            "enabled": False,
+            "font_name": "Arial",
+            "font_size": 54,
+            "margin_v": 64,
+            "outline": 3,
+            "max_chars_per_line": 42,
+            "max_lines": 2,
+        },
         "log_level": "INFO",
     },
 }

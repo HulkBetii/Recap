@@ -644,6 +644,8 @@ class RenderMeta(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
     cache_hits: list[str] = Field(default_factory=list)
+    bgm: dict[str, Any] = Field(default_factory=dict)
+    captions: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("codec")
     @classmethod

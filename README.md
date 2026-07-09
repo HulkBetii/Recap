@@ -279,9 +279,9 @@ Nguyên tắc GĐ5:
 - Thi?u footage th? n?i c?a s? ngu?n tr??c, sau ?? m?i repeat c? ki?m so?t.
 - Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
 
-## Chạy GĐ6
+## Ch?y G?6
 
-GĐ6 nhận `edl.json`, `voiceover.mp3`, `film.mp4` và tạo `recap.mp4` + `render.meta.json`. Stage này chỉ render offline bằng `ffmpeg/ffprobe`, tắt hoàn toàn tiếng gốc và không tạo caption/nhạc nền.
+G?6 nh?n `edl.json`, `voiceover.mp3`, `film.mp4` v? t?o `recap.mp4` + `render.meta.json`. Stage n?y render offline b?ng `ffmpeg/ffprobe`, t?t ho?n to?n ti?ng g?c. BGM v? caption burn-in l? opt-in, m?c ??nh t?t n?n kh?ng ??i behavior c?.
 
 ```powershell
 python -m render `
@@ -296,14 +296,31 @@ python -m render `
   --work-dir work\render
 ```
 
-Nguyên tắc GĐ6:
+B?t BGM/caption khi c?n l?p compliance:
 
-- Frame-lock toàn cục: quantize mốc timeline theo frame trước khi cắt để tránh trôi sync.
-- Mỗi placement được re-encode thành temp clip video-only cùng resolution/fps/codec/pix_fmt.
-- Temp clip dùng cache trong `work/render/temp_clips/`; thêm `--force` để render lại toàn bộ cache GĐ6.
-- Concat temp clips bằng demuxer `-c copy`, sau đó mux `voiceover.mp3` thành audio duy nhất.
-- `render.meta.json` ghi duration video/audio, số temp clips, cache hits và warnings.
+```powershell
+python -m render `
+  --edl out\edl.json `
+  --voiceover out\voiceover.mp3 `
+  --film path\to\film.mp4 `
+  --output out\recap.mp4 `
+  --bgm assets\bgm.mp3 `
+  --bgm-gain-db -20 `
+  --captions `
+  --review-script out\review_script.json `
+  --beats-timing out\beats_timing.json `
+  --review-micro out\review_script.micro.json
+```
 
+Nguy?n t?c G?6:
+
+- Frame-lock to?n c?c: quantize m?c timeline theo frame tr??c khi c?t ?? tr?nh tr?i sync.
+- M?i placement ???c re-encode th?nh temp clip video-only c?ng resolution/fps/codec/pix_fmt.
+- Temp clip d?ng cache trong `work/render/temp_clips/`; th?m `--force` ?? render l?i to?n b? cache G?6.
+- Default concat temp clips b?ng demuxer `-c copy`, sau ?? mux `voiceover.mp3` th?nh audio duy nh?t.
+- Khi b?t BGM, ffmpeg loop/trim/mix BGM d??i voiceover; BGM kh?ng ???c k?o d?i output.
+- Khi b?t caption, G?6 sinh `.ass` t? `review_script.micro.json` n?u c?, fallback `review_script.json` + `beats_timing.json`, r?i burn-in ? final pass.
+- `render.meta.json` ghi duration video/audio, BGM/caption status, s? temp clips, cache hits v? warnings.
 
 ### Transcript correction / glossary
 

@@ -1,5 +1,11 @@
 # PROJECT_LOG.md
 
+## 2026-07-09 ? G?6 optional BGM + burn-in captions
+
+- Added opt-in render-layer BGM mixing from a user-provided file; default remains off and old mux path is preserved.
+- Added opt-in `.ass` caption generation/burn-in from `review_script.micro.json`, `tts_align.json`, or parent beat timing fallback.
+- Extended render config/meta with BGM/caption status while keeping `edl.json`, `beats_timing.json`, TTS, matching, and `audio_delay_s` unchanged.
+
 ## 2026-07-08 — Opening story visual start guard
 
 - Added GĐ5 opening guard to avoid selecting early logo/title/credit visuals when `film_map` identifies a later story visual segment inside the opening source window.

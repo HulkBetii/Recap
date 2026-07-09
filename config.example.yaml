@@ -180,5 +180,20 @@ render:
   preset: medium
   concurrency: 4
   audio_delay_s: 0.0
+  bgm:
+    enabled: false
+    path: null
+    gain_db: -20
+    fade_in_s: 1.5
+    fade_out_s: 2.5
+    ducking: none
+  captions:
+    enabled: false
+    font_name: Arial
+    font_size: 54
+    margin_v: 64
+    outline: 3
+    max_chars_per_line: 42
+    max_lines: 2
   log_level: INFO
 

@@ -211,6 +211,32 @@ def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None
     assert "--opening-story-visual-start" in command
     assert "--ordered-fill-by-audio-progress" in command
 
+def test_render_command_passes_bgm_and_caption_options(tmp_path: Path) -> None:
+    from orchestrator.graph import build_paths
+    from orchestrator.runner import build_command
+
+    args = argset(tmp_path)
+    path = args.config
+    bgm = tmp_path / "bgm.mp3"
+    bgm.write_bytes(b"bgm")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["render"] = {
+        "bgm": {"enabled": True, "path": str(bgm), "gain_db": -18, "fade_in_s": 1, "fade_out_s": 2, "ducking": "none"},
+        "captions": {"enabled": True, "font_name": "Arial", "font_size": 50, "margin_v": 60, "outline": 3, "max_chars_per_line": 40, "max_lines": 2},
+    }
+    path.write_text(json.dumps(data), encoding="utf-8")
+    paths = build_paths(tmp_path / "run")
+    paths.run_dir.mkdir(parents=True)
+    paths.review_micro.write_text("[]", encoding="utf-8")
+    paths.tts_align.write_text("{}", encoding="utf-8")
+    config = load_config(path)
+    command = build_command("render", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+    assert command[command.index("--bgm") + 1] == str(bgm)
+    assert "--captions" in command
+    assert command[command.index("--review-script") + 1] == str(paths.review_script)
+    assert command[command.index("--review-micro") + 1] == str(paths.review_micro)
+    assert command[command.index("--caption-font-size") + 1] == "50"
+
 def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:
     args = argset(tmp_path)
     path = args.config

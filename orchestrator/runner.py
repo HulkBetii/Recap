@@ -275,6 +275,21 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--edl", str(paths.edl), "--voiceover", str(paths.voiceover), "--film", str(film), "--output", str(paths.recap)]
         for key in ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s", "log_level"):
             add_option(command, key, section.get(key))
+        bgm = section.get("bgm") or {}
+        if bgm.get("enabled") and bgm.get("path"):
+            command += ["--bgm", str(bgm["path"])]
+            for key in ("gain_db", "fade_in_s", "fade_out_s", "ducking"):
+                add_option(command, "bgm_" + key, bgm.get(key))
+        captions = section.get("captions") or {}
+        if captions.get("enabled"):
+            command.append("--captions")
+            command += ["--review-script", str(paths.review_script), "--beats-timing", str(paths.beats_timing)]
+            if paths.review_micro.is_file():
+                command += ["--review-micro", str(paths.review_micro)]
+            if paths.tts_align.is_file():
+                command += ["--tts-align", str(paths.tts_align)]
+            for key in ("font_name", "font_size", "margin_v", "outline", "max_chars_per_line", "max_lines"):
+                add_option(command, "caption_" + key, captions.get(key))
     else:
         raise OrchestratorError(f"unknown stage: {stage}")
     command += ["--work-dir", str(stage_work(paths, stage))]

@@ -38,6 +38,23 @@ def make_args(tmp_path: Path, force: bool = False) -> argparse.Namespace:
         preset="medium",
         concurrency=2,
         audio_delay_s=0.0,
+        bgm=None,
+        bgm_gain_db=-20.0,
+        bgm_fade_in_s=1.5,
+        bgm_fade_out_s=2.5,
+        bgm_ducking="none",
+        captions=False,
+        review_script=None,
+        beats_timing=None,
+        review_micro=None,
+        tts_align=None,
+        captions_output=None,
+        caption_font_name="Arial",
+        caption_font_size=54,
+        caption_margin_v=64,
+        caption_outline=3,
+        caption_max_chars_per_line=42,
+        caption_max_lines=2,
         work_dir=tmp_path / "work" / "render",
         force=force,
         log_level="ERROR",
@@ -95,3 +112,29 @@ def test_render_cli_duration_warning(tmp_path: Path, monkeypatch: pytest.MonkeyP
     meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
     assert meta["duration_match"] is False
     assert meta["warnings"]
+
+def test_render_cli_bgm_and_captions_use_final_mux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    args = make_args(tmp_path)
+    bgm = tmp_path / "bgm.mp3"
+    bgm.write_bytes(b"bgm")
+    args.bgm = bgm
+    args.captions = True
+    args.review_script = tmp_path / "review_script.json"
+    args.beats_timing = tmp_path / "beats_timing.json"
+    args.review_script.write_text('[{"beat_id":0,"narration":"Xin chào.","src_tc_start":0,"src_tc_end":1,"is_hook":true}]', encoding="utf-8")
+    args.beats_timing.write_text('[{"beat_id":0,"audio_path":"audio/0.mp3","tl_start":0,"tl_end":2,"duration":2}]', encoding="utf-8")
+    monkeypatch.setattr("render.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("render.__main__.probe_video_stream", lambda path: {"width":1920,"height":1080,"codec":"h264","fps":30.0,"duration":10.0})
+    monkeypatch.setattr("render.__main__.probe_duration", lambda path: 2.0)
+    monkeypatch.setattr("render.__main__.has_audio_stream", lambda path: True)
+    monkeypatch.setattr("render.__main__.cut_temp_clip", lambda **kwargs: kwargs["output_path"].write_bytes(b"temp"))
+    monkeypatch.setattr("render.__main__.concat_video", lambda temp_paths, output_path, work_dir: output_path.write_bytes(b"video"))
+    calls = []
+    monkeypatch.setattr("render.__main__.mux_final", lambda **kwargs: (calls.append(kwargs), kwargs["output_path"].write_bytes(b"recap")))
+    assert run_render(args) == 0
+    assert calls and calls[0]["bgm_path"] == bgm
+    assert calls[0]["captions_path"].name == "captions.ass"
+    meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
+    assert meta["bgm"]["applied"] is True
+    assert meta["captions"]["enabled"] is True
+    assert meta["captions"]["event_count"] >= 1
