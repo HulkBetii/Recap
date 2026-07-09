@@ -443,3 +443,16 @@ G?5 writes `edl.sync.qa.json` for debugging perceived audio/video sync. The repo
 Long movie runs can create parent review beats with very wide source windows. The optional `tts_align` stage builds `review_script.micro.json` from the existing parent script, beat timings, and per-beat TTS audio so GĐ5 can match footage at a finer sub-beat level without changing `review_script.json` or rerunning TTS.
 
 Key outputs: `micro_policy.json`, `tts_align.json`, `review_script.micro.json`, `review_script.micro.meta.json`. Disable with `tts_align.mode: off` to return to the previous GĐ5 behavior.
+
+## Optional GĐ5.5 — B-roll Image Handoff
+
+`broll` is an opt-in stage for compliance/variety. It does not call image APIs. In `plan` mode it reads GĐ5 QA artifacts and exports `broll_plan.json` plus `broll_prompts.jsonl`. The user generates images externally with RUN VEO and places them in `broll_assets/<asset_id>.png|jpg|webp`. In `apply` mode it renders Ken Burns clips with ffmpeg and writes additive `edl.broll.json` plus `broll.qa.json`.
+
+```powershell
+python -m broll --mode plan --edl runs\x\edl.json --edl-qa runs\x\edl.qa.json --edl-sync-qa runs\x\edl.sync.qa.json --review-script runs\x\review_script.json
+python -m broll --mode apply --edl runs\x\edl.json --output-plan runs\x\broll_plan.json --asset-dir runs\x\broll_assets --output-edl runs\x\edl.broll.json
+```
+
+Default config keeps `broll.enabled: false`, so existing runs render from `edl.json`. When enabled and `edl.broll.json` exists, orchestrator passes it to GĐ6; otherwise render falls back to the original EDL.
+
+B-roll prompt export is intentionally English-only for RUN VEO. Narration text is used only for QA preview, not inserted into the image prompt, so broken source encoding cannot leak mojibake into prompts. Candidate reports include reason buckets such as `high_reuse`, `transition`, `ratio_fill`, `source_order_mismatch`, `long_clip`, and `high_source_drift`.

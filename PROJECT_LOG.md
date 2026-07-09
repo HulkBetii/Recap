@@ -613,3 +613,16 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Added stage `tts_align` between GĐ3 and GĐ5 to build additive `micro_policy.json`, `tts_align.json`, `review_script.micro.json`, and `review_script.micro.meta.json`.
 - `review_script.json` remains the parent script and is not modified; rollback is `tts_align.mode: off` or deleting `review_script.micro.json`.
 - GĐ5 accepts optional `--review-micro` and matches micro units only when policy is enabled; otherwise old matching behavior remains.
+
+## 2026-07-09 — Optional B-roll Stage Plan/Apply
+
+- Added optional `broll` stage after GĐ5 and before GĐ6 for AI image B-roll handoff: `plan` exports prompts, `apply` consumes user-provided images and creates Ken Burns clips.
+- `edl.json` remains unchanged; B-roll outputs are additive (`broll_plan.json`, `broll_prompts.jsonl`, `broll_manifest.json`, `edl.broll.json`, `broll.qa.json`).
+- The pipeline never calls image-generation APIs; RUN VEO integration is manual folder handoff through `broll_assets/`.
+- GĐ6 now resolves `placement.src` to an existing media file when present, so `edl.broll.json` can mix original film and pre-rendered B-roll clips.
+
+### 2026-07-09 — B-roll English Prompt Guard + Reason Buckets
+
+- B-roll prompt export is now English-only/ASCII for RUN VEO; Vietnamese narration stays only in QA preview and is not inserted into the image-generation prompt.
+- Added lightweight mojibake repair for B-roll narration previews so QA reports do not copy broken Vietnamese text when source artifacts were decoded incorrectly.
+- Candidate reasons now include `transition` and `ratio_fill` buckets in addition to reuse/order/drift/long-clip reasons.

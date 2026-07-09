@@ -421,3 +421,17 @@ repo/
 - Input alignment chính là audio per-beat ở `audio/<beat_id>.mp3`; WhisperX là optional, lỗi runtime phải fallback proportional và ghi warning.
 - GĐ5 nhận optional `--review-micro`; khi dùng micro, match unit là sub-beat nhưng `edl.json` contract không đổi.
 - Rollback an toàn: đặt `tts_align.mode: off` hoặc xóa `review_script.micro.json`; không chỉnh global audio delay để xử lý mismatch cục bộ.
+
+## 31. OPTIONAL B-ROLL STAGE
+
+- `broll` is an optional GĐ5.5 stage after `match` and before `render`; default config keeps it disabled.
+- It is a file-based manual handoff for RUN VEO image mode: `plan` writes `broll_plan.json` and `broll_prompts.jsonl`; user puts generated images in `broll_assets/`; `apply` renders Ken Burns mp4 clips and writes `edl.broll.json`, `broll_manifest.json`, and `broll.qa.json`.
+- The stage must never call paid image-generation APIs automatically. All image spending is user-controlled outside this repo.
+- `edl.json` remains the canonical GĐ5 output and is not modified. `edl.broll.json` is additive and can be deleted/ignored to roll back.
+- GĐ6 resolves `placement.src` to an existing media file when present, so B-roll EDLs may mix original film footage and generated B-roll clips; original placements still fall back to `--film`.
+
+## 32. B-ROLL PROMPT LANGUAGE / QA
+
+- RUN VEO prompts exported by `broll` must be English-only plain text and must keep safety/compliance terms: no text, no logo, no watermark, no subtitles, no recognizable actor likeness, not a movie screenshot.
+- Vietnamese narration may be kept in `broll_plan.json` only as QA preview; if source artifacts contain common UTF-8/cp1252 mojibake, B-roll should repair it for preview rather than copying broken text into reports.
+- Candidate reason buckets include `high_reuse`, `source_order_mismatch`, `transition`, `ratio_fill`, `long_clip`, and `high_source_drift` for compliance reporting.

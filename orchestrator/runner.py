@@ -37,6 +37,7 @@ from common.schema import (
     validate_shots,
     validate_story_map,
 )
+from broll.schema import BrollPlan, BrollQa
 from orchestrator.config import add_option
 from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
@@ -60,6 +61,7 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "tts_align": StageSpec("tts_align", ("micro_policy", "tts_align", "review_micro", "review_micro_meta"), "review_micro_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
     "match": StageSpec("match", ("edl", "edl_meta", "edl_qa", "edl_sync_qa", "edl_review_html"), "edl_meta"),
+    "broll": StageSpec("broll", ("broll_plan", "broll_prompts"), None),
     "render": StageSpec("render", ("recap", "render_meta"), "render_meta"),
 }
 
@@ -68,12 +70,14 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def output_paths(paths: RunPaths, stage: str) -> list[Path]:
+def output_paths(paths: RunPaths, stage: str, config: dict[str, Any] | None = None) -> list[Path]:
+    if stage == "broll" and config is not None and config.get("broll", {}).get("mode", "plan") == "apply":
+        return [paths.broll_plan, paths.broll_prompts, paths.edl_broll, paths.broll_manifest, paths.broll_qa]
     return [getattr(paths, name) for name in STAGE_SPECS[stage].outputs]
 
 
-def all_outputs_exist(paths: RunPaths, stage: str) -> bool:
-    return all(path.is_file() for path in output_paths(paths, stage))
+def all_outputs_exist(paths: RunPaths, stage: str, config: dict[str, Any] | None = None) -> bool:
+    return all(path.is_file() for path in output_paths(paths, stage, config))
 
 
 def validate_stage(paths: RunPaths, stage: str) -> None:
@@ -116,6 +120,11 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
             timings = validate_beats_timing([BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)], pause_s=pause_s)
             total_duration = timings[-1].tl_end if timings else None
             validate_edl([EdlPlacement.model_validate(item) for item in load_json(paths.edl)], total_duration=total_duration)
+        elif stage == "broll":
+            BrollPlan.model_validate(load_json(paths.broll_plan))
+            if paths.broll_qa.is_file():
+                BrollQa.model_validate(load_json(paths.broll_qa))
+                validate_edl([EdlPlacement.model_validate(item) for item in load_json(paths.edl_broll)])
         elif stage == "render":
             RenderMeta.model_validate(load_json(paths.render_meta))
             if not paths.recap.is_file():
@@ -126,8 +135,10 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
         raise OrchestratorError(f"{stage} output validation failed: {exc}") from exc
 
 
-def outputs_valid(paths: RunPaths, stage: str) -> bool:
-    if not all_outputs_exist(paths, stage):
+def outputs_valid(paths: RunPaths, stage: str, config: dict[str, Any] | None = None) -> bool:
+    if stage == "broll" and config is not None and not config.get("broll", {}).get("enabled", False):
+        return True
+    if not all_outputs_exist(paths, stage, config):
         return False
     try:
         validate_stage(paths, stage)
@@ -156,7 +167,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--input", str(film), "--output", str(paths.film_map)]
         for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "source_language", "translate_mode", "vision_model", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
             add_option(command, key, section.get(key))
-        # GĐ1 CLI does not currently accept video_profile directly; downstream
+        # GÄ1 CLI does not currently accept video_profile directly; downstream
         # visual stages consume it when preflight is enabled.
         if not section.get("vad_filter", True):
             command.append("--no-vad-filter")
@@ -271,8 +282,29 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command.append("--ordered-fill-by-audio-progress" if section.get("ordered_fill_by_audio_progress", True) else "--no-ordered-fill-by-audio-progress")
         if not section.get("review_html", True):
             command.append("--no-review-html")
+    elif stage == "broll":
+        broll = config.get("broll", {})
+        mode = broll.get("mode", "plan")
+        command += ["--mode", str(mode), "--edl", str(paths.edl), "--output-plan", str(paths.broll_plan), "--output-prompts", str(paths.broll_prompts)]
+        if paths.edl_qa.is_file() or mode == "plan":
+            command += ["--edl-qa", str(paths.edl_qa)]
+        if paths.edl_sync_qa.is_file() or mode == "plan":
+            command += ["--edl-sync-qa", str(paths.edl_sync_qa)]
+        if paths.review_script.is_file() or mode == "plan":
+            command += ["--review-script", str(paths.review_script)]
+        if paths.review_intent.is_file():
+            command += ["--review-intent", str(paths.review_intent)]
+        if mode == "apply":
+            asset_dir = broll.get("asset_dir") or paths.broll_assets_dir
+            command += ["--asset-dir", str(asset_dir), "--clip-dir", str(paths.broll_clips_dir), "--output-edl", str(paths.edl_broll), "--output-manifest", str(paths.broll_manifest), "--output-qa", str(paths.broll_qa)]
+            render_cfg = config.get("render", {})
+            for key in ("width", "height", "fps", "crf", "preset"):
+                add_option(command, key, render_cfg.get(key))
+        for key in ("max_replacement_ratio", "max_broll_per_parent_beat", "exclude_opening_s", "log_level"):
+            add_option(command, key, broll.get(key))
     elif stage == "render":
-        command += ["--edl", str(paths.edl), "--voiceover", str(paths.voiceover), "--film", str(film), "--output", str(paths.recap)]
+        render_edl = paths.edl_broll if config.get("broll", {}).get("enabled", False) and paths.edl_broll.is_file() else paths.edl
+        command += ["--edl", str(render_edl), "--voiceover", str(paths.voiceover), "--film", str(film), "--output", str(paths.recap)]
         for key in ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s", "log_level"):
             add_option(command, key, section.get(key))
         bgm = section.get("bgm") or {}
@@ -301,9 +333,9 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
 def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPaths, config: dict[str, Any], dry_run: bool = False, cost_policy: CostPolicy | None = None) -> None:
     if not film.is_file():
         raise OrchestratorError(f"input film does not exist: {film}")
-    if selected & {"ingest", "tts", "shots", "render"} and not dry_run:
+    if selected & {"ingest", "tts", "shots", "broll", "render"} and not dry_run:
         require_ffmpeg()
-    will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage)}
+    will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage, config)}
     if cost_policy is not None:
         blocked = disallowed_openai_stages(cost_policy, will_run)
         if blocked:
@@ -349,8 +381,10 @@ def run_stage(
     executor: Callable[[list[str], Path], None] = run_subprocess,
 ) -> StageSummary:
     command = build_command(stage, paths, film, config, force, python_exe=python_exe)
-    outputs = [str(path) for path in output_paths(paths, stage)]
-    if not force and outputs_valid(paths, stage):
+    outputs = [str(path) for path in output_paths(paths, stage, config)]
+    if stage == "broll" and not config.get("broll", {}).get("enabled", False):
+        return StageSummary(stage=stage, status="skipped", duration_s=0.0, command=command, outputs=outputs)
+    if not force and outputs_valid(paths, stage, config):
         return StageSummary(stage=stage, status="skipped", duration_s=0.0, command=command, outputs=outputs)
     if dry_run:
         return StageSummary(stage=stage, status="planned", duration_s=0.0, command=command, outputs=outputs)
@@ -365,4 +399,8 @@ def run_stage(
 
 def ordered_selected(selected: set[str]) -> list[str]:
     return [stage for stage in STAGES if stage in selected]
+
+
+
+
 

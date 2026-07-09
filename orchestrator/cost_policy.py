@@ -76,6 +76,7 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
         "tts_align": {"backend": resolved.get("tts_align", {}).get("aligner", "whisperx"), "cost": "local"},
         "preflight": {"backend": resolved.get("preflight", {}).get("classifier", "heuristic"), "cost": "local"},
         "match": {"backend": resolved.get("match", {}).get("semantic_mode", "off"), "cost": "local"},
+        "broll": {"backend": "manual_file_handoff", "cost": "local_no_image_api"},
         "render": {"backend": "ffmpeg", "cost": "local"},
     }
     policy = CostPolicy(
@@ -148,3 +149,4 @@ def disallowed_openai_stages(policy: CostPolicy, will_run: set[str]) -> list[str
     if "review" in will_run and policy.text_llm_backend == "openai_api":
         blocked.append("review:openai_api")
     return blocked
+

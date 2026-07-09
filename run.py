@@ -128,7 +128,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     if "shots" in selected:
         with ThreadPoolExecutor(max_workers=1) as pool:
             shots_future = pool.submit(execute, "shots")
-            for stage in ("ingest", "storymap", "review", "tts"):
+            for stage in ("ingest", "storymap", "review", "tts", "tts_align"):
                 if stage in selected:
                     summaries.append(execute(stage))
                     if stage == "ingest":
@@ -144,7 +144,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                         )
             summaries.append(shots_future.result())
     else:
-        for stage in ("ingest", "storymap", "review", "tts"):
+        for stage in ("ingest", "storymap", "review", "tts", "tts_align"):
             if stage in selected:
                 summaries.append(execute(stage))
                 if stage == "ingest":
@@ -159,7 +159,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                         executor=executor,
                     )
 
-    for stage in ("match", "render"):
+    for stage in ("match", "broll", "render"):
         if stage in selected:
             summaries.append(execute(stage))
 
@@ -177,6 +177,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
             "tts": paths.tts_meta,
             "shots": paths.shots_meta,
             "match": paths.edl_meta,
+            "broll": paths.broll_qa,
             "render": paths.render_meta,
         },
     )
@@ -208,14 +209,14 @@ def maybe_run_ingest_fallback(
         write_fallback_artifacts(paths, {"possible": True, "triggered": False, "blocked": True, "reasons": reasons, "error": "OPENAI_API_KEY missing"})
         raise OrchestratorError("OpenAI fallback required but OPENAI_API_KEY is not set: " + "; ".join(reasons))
     fallback_config = build_fallback_config(config)
-    forced.update(stage for stage in ("storymap", "review", "tts", "match", "render") if stage in selected)
+    forced.update(stage for stage in ("storymap", "review", "tts", "tts_align", "match", "broll", "render") if stage in selected)
     plan = {
         "possible": True,
         "triggered": True,
         "reasons": reasons,
         "fallback_asr_provider": fallback_config["ingest"].get("asr_provider"),
         "fallback_max_vision_frames": fallback_config["ingest"].get("max_vision_frames"),
-        "rerun_stages": [stage for stage in ("ingest", "storymap", "review", "tts", "match", "render") if stage in selected],
+        "rerun_stages": [stage for stage in ("ingest", "storymap", "review", "tts", "tts_align", "match", "broll", "render") if stage in selected],
     }
     write_fallback_artifacts(paths, plan)
     stage_summary = run_stage(
@@ -244,3 +245,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

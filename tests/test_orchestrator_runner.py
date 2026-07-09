@@ -59,7 +59,7 @@ def write_stage_outputs(command: list[str]) -> None:
         output.write_text(json.dumps({"input_path":"film.mp4","duration_s":2,"intro":{"detected":False,"confidence":0,"reasons":[]},"non_story_ranges":[],"classifier":"heuristic","created_at":NOW,"warnings":[],"cache_hits":[]}), encoding="utf-8")
     elif stage == "ingest":
         output = flag(command, "--output")
-        output.write_text(json.dumps([{"id":0,"type":"speech","tc_start":0,"tc_end":2,"ko":"ì•ˆë…•","en":"hello","scene_desc":None}]), encoding="utf-8")
+        output.write_text(json.dumps([{"id":0,"type":"speech","tc_start":0,"tc_end":2,"ko":"Ã¬â€¢Ë†Ã«â€¦â€¢","en":"hello","scene_desc":None}]), encoding="utf-8")
         output.with_name("film_map.meta.json").write_text(json.dumps({"input_path":"film.mp4","duration":2,"created_at":NOW,"whisper_model":"large-v3","translate_model":"gpt-4.1-mini","vision_model":"gpt-4.1-mini","gap_threshold":4,"max_vision_frames":200,"speech_count":1,"visual_count":0,"cache_hits":[],"warnings_count":0}), encoding="utf-8")
     elif stage == "storymap":
         output = flag(command, "--output")
@@ -68,7 +68,7 @@ def write_stage_outputs(command: list[str]) -> None:
         flag(command, "--output-qa").write_text(json.dumps({"n_sections":1,"n_non_story":0,"warnings":[],"section_warnings":[]}), encoding="utf-8")
     elif stage == "review":
         output = flag(command, "--output")
-        output.write_text(json.dumps([{"beat_id":0,"narration":"Má»Ÿ Ä‘áº§u","from_seg_id":0,"to_seg_id":0,"src_tc_start":0,"src_tc_end":2,"is_hook":True}]), encoding="utf-8")
+        output.write_text(json.dumps([{"beat_id":0,"narration":"MÃ¡Â»Å¸ Ã„â€˜Ã¡ÂºÂ§u","from_seg_id":0,"to_seg_id":0,"src_tc_start":0,"src_tc_end":2,"is_hook":True}]), encoding="utf-8")
         output.with_name("review_script.meta.json").write_text(json.dumps({"glossary":[],"target_video_s":2,"char_budget":30,"est_total_chars":6,"coverage_pct":1,"qa_report":[],"n_qa_iterations":0,"model_versions":{},"created_at":NOW,"warnings":[],"cache_hits":[]}), encoding="utf-8")
         if "--review-intent-output" in command:
             flag(command, "--review-intent-output").write_text(json.dumps([{"beat_id":0,"story_section_id":0,"story_section_type":"setup","visual_intent":"character_intro","chronology_mode":"ordered","warnings":[]}]), encoding="utf-8")
@@ -80,6 +80,12 @@ def write_stage_outputs(command: list[str]) -> None:
         timing.with_name("tts_script.json").write_text(json.dumps([{"beat_id":0,"original_text":"M? ??u","tts_text":"M? ??u","changed":False,"rules_applied":[],"warnings":[]}]), encoding="utf-8")
         timing.with_name("tts_normalization_report.json").write_text(json.dumps({"mode":"vi","pronunciation_lexicon_path":None,"n_items":1,"n_changed":0,"warnings":[]}), encoding="utf-8")
         timing.with_name("tts_meta.json").write_text(json.dumps({"voice_id":"voice","provider_mode":"ai33","model":"eleven_multilingual_v2","speed":1,"inter_beat_pause_s":0.15,"total_duration_s":2,"film_duration_s":2,"real_ratio":1,"total_chars":6,"est_cost":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
+    elif stage == "tts_align":
+        policy = flag(command, "--output-policy")
+        policy.write_text(json.dumps({"enabled":False,"mode":"off","reason":"mode=off","n_parent_beats":1,"n_candidate_beats":0,"avg_source_span_s":2,"max_source_span_s":2,"max_narration_chars":0,"thresholds":{},"cache_key":{},"warnings":[]}), encoding="utf-8")
+        flag(command, "--output-align").write_text(json.dumps({"beats":[],"warnings":[]}), encoding="utf-8")
+        flag(command, "--output-micro").write_text(json.dumps([{"beat_id":0,"parent_beat_id":0,"sub_beat_id":0,"narration":"M? ??u","from_seg_id":0,"to_seg_id":0,"src_tc_start":0,"src_tc_end":2,"tl_start":0,"tl_end":2,"duration":2,"alignment_method":"proportional","is_hook":True}]), encoding="utf-8")
+        flag(command, "--output-meta").write_text(json.dumps({"enabled":False,"mode":"off","n_parent_beats":1,"n_micro_beats":1,"n_split_parent_beats":0,"avg_source_span_s":2,"max_source_span_s":2,"alignment_methods":{"proportional":1},"created_at":NOW,"warnings":[]}), encoding="utf-8")
     elif stage == "shots":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"src":"film.mp4","index":0,"tc_start":0,"tc_end":2,"duration":2,"thumb":"shots/film-000.jpg","motion_score":0.5,"face_count":0,"face_area":0,"brightness":0.5,"is_usable":True}]), encoding="utf-8")
@@ -117,7 +123,7 @@ def test_full_pipeline_mock_writes_summary_and_runs_shots_parallel(tmp_path: Pat
         write_stage_outputs(command)
 
     assert run_pipeline(argset(tmp_path), executor=fake_executor) == 0
-    assert set(calls) == {"preflight", "ingest", "storymap", "review", "tts", "shots", "match", "render"}
+    assert set(calls) == {"preflight", "ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "render"}
     summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
     assert summary["calibrate"] == {"real_ratio": 1, "n_beats_widened": 0, "duration_match": True}
     assert (tmp_path / "run" / "review_meta.json").exists()
@@ -348,3 +354,38 @@ def test_balanced_auto_does_not_fallback_for_strict_timecodes(tmp_path: Path, mo
     assert calls.count("ingest") == 1
     fallback = json.loads((tmp_path / "run" / "fallback_plan.json").read_text(encoding="utf-8"))
     assert fallback["triggered"] is False
+
+def test_broll_enabled_plan_is_between_match_and_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    data = json.loads(args.config.read_text(encoding="utf-8"))
+    data["broll"] = {"enabled": True, "mode": "plan"}
+    args.config.write_text(json.dumps(data), encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        calls.append(stage_name(command))
+        if stage_name(command) == "broll":
+            flag(command, "--output-plan").write_text(json.dumps({"mode":"plan","source_edl":"edl.json","max_replacement_ratio":0.3,"max_broll_per_parent_beat":1,"exclude_opening_s":5.5,"n_placements":1,"n_candidates":0,"target_replacements":0,"original_footage_ratio_estimate":1,"candidates":[],"warnings":["no broll candidates selected"]}), encoding="utf-8")
+            flag(command, "--output-prompts").write_text("", encoding="utf-8")
+        else:
+            write_stage_outputs(command)
+
+    assert run_pipeline(args, executor=fake_executor) == 0
+    assert "broll" in calls
+    assert calls.index("match") < calls.index("broll") < calls.index("render")
+
+
+def test_render_uses_broll_edl_when_apply_output_exists(tmp_path: Path) -> None:
+    from orchestrator.graph import build_paths
+    from orchestrator.runner import build_command
+
+    paths = build_paths(tmp_path / "run")
+    paths.run_dir.mkdir(parents=True)
+    paths.edl_broll.write_text("[]", encoding="utf-8")
+    config = load_config(None)
+    config["broll"].update({"enabled": True, "mode": "apply"})
+    command = build_command("render", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+    assert command[command.index("--edl") + 1] == str(paths.edl_broll)

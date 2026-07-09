@@ -69,26 +69,40 @@ def ensure_file(path: Path, label: str) -> None:
         raise RenderError(f"{label} file does not exist: {path}")
 
 
-def render_temp_clips(*, film_path: Path, frames, film_duration: float, params: RenderParams, cache: RenderCache, concurrency: int) -> tuple[list[Path], list[str]]:
+def resolve_source_path(placement: EdlPlacement, film_path: Path) -> Path:
+    candidate = Path(placement.src).expanduser()
+    if candidate.is_file():
+        return candidate.resolve()
+    if not candidate.is_absolute():
+        film_relative = film_path.parent / candidate
+        if film_relative.is_file():
+            return film_relative.resolve()
+    return film_path.resolve()
+
+def render_temp_clips(*, film_path: Path, frames, params: RenderParams, cache: RenderCache, concurrency: int) -> tuple[list[Path], list[str]]:
     warnings: list[str] = []
     temp_paths: list[Path | None] = [None] * len(frames)
     jobs = []
+    duration_cache: dict[Path, float] = {}
     for frame in frames:
-        source = clamp_source(frame.placement, film_duration)
+        actual_source_path = resolve_source_path(frame.placement, film_path)
+        if actual_source_path not in duration_cache:
+            duration_cache[actual_source_path] = probe_duration(actual_source_path)
+        source = clamp_source(frame.placement, duration_cache[actual_source_path])
         warnings.extend(source.warnings)
-        cache_key = temp_cache_key(film_path=film_path, frame=frame, source=source, params=params)
+        cache_key = temp_cache_key(film_path=actual_source_path, frame=frame, source=source, params=params)
         cached = cache.get_cached_temp(cache_key)
         if cached is not None:
             temp_paths[frame.index] = cached
             continue
         output_path = cache.temp_path(cache_key)
-        jobs.append((frame, source, output_path))
+        jobs.append((frame, source, output_path, actual_source_path))
     if jobs:
         workers = max(1, concurrency)
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_map = {
-                executor.submit(cut_temp_clip, film_path=film_path, output_path=output_path, frame=frame, source=source, params=params): (frame, output_path)
-                for frame, source, output_path in jobs
+                executor.submit(cut_temp_clip, film_path=actual_source_path, output_path=output_path, frame=frame, source=source, params=params): (frame, output_path)
+                for frame, source, output_path, actual_source_path in jobs
             }
             for completed, future in enumerate(as_completed(future_map), start=1):
                 frame, output_path = future_map[future]
@@ -130,7 +144,6 @@ def run_render(args: argparse.Namespace) -> int:
     temp_paths, warnings = render_temp_clips(
         film_path=args.film,
         frames=frames,
-        film_duration=film_duration,
         params=params,
         cache=cache,
         concurrency=args.concurrency,
@@ -244,3 +257,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

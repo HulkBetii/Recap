@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-STAGES = ("preflight", "ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "render")
+STAGES = ("preflight", "ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "broll", "render")
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "preflight": (),
     "ingest": ("preflight",),
@@ -13,17 +13,19 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "tts_align": ("review", "tts"),
     "shots": ("preflight",),
     "match": ("review", "tts", "tts_align", "shots"),
+    "broll": ("match",),
     "render": ("match", "tts"),
 }
 DOWNSTREAM: dict[str, tuple[str, ...]] = {
-    "preflight": ("ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "render"),
-    "ingest": ("storymap", "review", "tts", "tts_align", "match", "render"),
-    "storymap": ("review", "tts", "tts_align", "match", "render"),
-    "review": ("tts", "tts_align", "match", "render"),
-    "tts": ("tts_align", "match", "render"),
-    "tts_align": ("match", "render"),
-    "shots": ("match", "render"),
-    "match": ("render",),
+    "preflight": ("ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "broll", "render"),
+    "ingest": ("storymap", "review", "tts", "tts_align", "match", "broll", "render"),
+    "storymap": ("review", "tts", "tts_align", "match", "broll", "render"),
+    "review": ("tts", "tts_align", "match", "broll", "render"),
+    "tts": ("tts_align", "match", "broll", "render"),
+    "tts_align": ("match", "broll", "render"),
+    "shots": ("match", "broll", "render"),
+    "match": ("broll", "render"),
+    "broll": ("render",),
     "render": (),
 }
 
@@ -57,6 +59,13 @@ class RunPaths:
     edl_sync_qa: Path
     edl_review_html: Path
     edl_review_dir: Path
+    broll_plan: Path
+    broll_prompts: Path
+    broll_assets_dir: Path
+    broll_clips_dir: Path
+    broll_manifest: Path
+    edl_broll: Path
+    broll_qa: Path
     recap: Path
     render_meta: Path
     work_dir: Path
@@ -98,6 +107,13 @@ def build_paths(run_dir: Path) -> RunPaths:
         edl_sync_qa=run_dir / "edl.sync.qa.json",
         edl_review_html=run_dir / "edl.review.html",
         edl_review_dir=run_dir / "edl.review",
+        broll_plan=run_dir / "broll_plan.json",
+        broll_prompts=run_dir / "broll_prompts.jsonl",
+        broll_assets_dir=run_dir / "broll_assets",
+        broll_clips_dir=run_dir / "broll_clips",
+        broll_manifest=run_dir / "broll_manifest.json",
+        edl_broll=run_dir / "edl.broll.json",
+        broll_qa=run_dir / "broll.qa.json",
         recap=run_dir / "recap.mp4",
         render_meta=run_dir / "render.meta.json",
         work_dir=run_dir / "work",
@@ -139,3 +155,5 @@ def forced_stages(selected: set[str], force: bool, force_stage: list[str]) -> se
         forced.add(stage)
         forced.update(DOWNSTREAM[stage])
     return forced & selected
+
+

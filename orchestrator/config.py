@@ -10,7 +10,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only without optional dep
     yaml = None  # type: ignore[assignment]
 
-STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "render")
+STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "tts_align", "shots", "match", "broll", "render")
 TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -183,6 +183,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "review_html": True,
         "log_level": "INFO",
     },
+    "broll": {
+        "enabled": False,
+        "mode": "plan",
+        "max_replacement_ratio": 0.30,
+        "max_broll_per_parent_beat": 1,
+        "exclude_opening_s": 5.5,
+        "asset_dir": None,
+        "log_level": "INFO",
+    },
     "render": {
         "width": 1920,
         "height": 1080,
@@ -280,4 +289,6 @@ def add_option(args: list[str], key: str, value: Any) -> None:
             args.append(flag_name(key))
         return
     args.extend([flag_name(key), str(value)])
+
+
 
