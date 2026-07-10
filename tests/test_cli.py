@@ -71,7 +71,7 @@ def test_run_ingest_mocked_end_to_end(tmp_path, monkeypatch) -> None:  # type: i
     monkeypatch.setattr("ingest.__main__.extract_audio", lambda src, dst: dst.write_bytes(b"wav"))
     monkeypatch.setattr(
         "ingest.__main__.transcribe_korean",
-        lambda audio, model, device: [
+        lambda audio, model, device, *args, **kwargs: [
             TranscriptSegment(id=0, tc_start=2.0, tc_end=3.0, ko="안녕"),
             TranscriptSegment(id=1, tc_start=6.0, tc_end=7.0, ko="가자"),
         ],

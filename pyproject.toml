@@ -36,6 +36,12 @@ video-profile = [
     "open-clip-torch>=2.24,<3",
     "Pillow>=10,<12",
 ]
+visual-index = [
+    "torch>=2.8",
+    "transformers>=4.53,<5",
+    "Pillow>=10,<12",
+    "safetensors>=0.4,<1",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

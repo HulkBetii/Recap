@@ -8,15 +8,21 @@ from common.schema import TranscriptSegment
 
 MIN_SEGMENT_SECONDS = 0.2
 MIN_OPENAI_CHUNK_BYTES = 1024
+LOCAL_ASR_CHUNK_SECONDS = 600.0
 
 
-def transcribe_korean(audio_path: Path, whisper_model: str, device: str, vad_filter: bool = True) -> list[TranscriptSegment]:
-    from faster_whisper import WhisperModel
-
-    model = WhisperModel(whisper_model, device=device)
+def _transcribe_with_model(
+    model: object,
+    audio_path: Path,
+    *,
+    language: str,
+    vad_filter: bool,
+    offset_s: float = 0.0,
+    start_id: int = 0,
+) -> list[TranscriptSegment]:
     raw_segments, _info = model.transcribe(
         str(audio_path),
-        language="ko",
+        language=language,
         word_timestamps=False,
         vad_filter=vad_filter,
         condition_on_previous_text=False,
@@ -24,12 +30,79 @@ def transcribe_korean(audio_path: Path, whisper_model: str, device: str, vad_fil
     segments: list[TranscriptSegment] = []
     for raw in raw_segments:
         text = str(getattr(raw, "text", "") or "").strip()
-        start = float(getattr(raw, "start", 0.0))
-        end = float(getattr(raw, "end", 0.0))
+        start = offset_s + float(getattr(raw, "start", 0.0))
+        end = offset_s + float(getattr(raw, "end", 0.0))
         if not text or end - start < MIN_SEGMENT_SECONDS:
             continue
-        segments.append(TranscriptSegment(id=len(segments), tc_start=start, tc_end=end, ko=text))
+        segments.append(TranscriptSegment(id=start_id + len(segments), tc_start=start, tc_end=end, ko=text))
     return segments
+
+
+def _extract_audio_chunk(audio_path: Path, chunk_path: Path, start_s: float, length_s: float) -> None:
+    chunk_path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{start_s:.3f}",
+            "-i",
+            str(audio_path),
+            "-t",
+            f"{length_s:.3f}",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            str(chunk_path),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+    )
+
+
+def transcribe_korean(
+    audio_path: Path,
+    whisper_model: str,
+    device: str,
+    vad_filter: bool = True,
+    *,
+    language: str = "ko",
+    duration: float | None = None,
+    chunks_dir: Path | None = None,
+    chunk_s: float = LOCAL_ASR_CHUNK_SECONDS,
+) -> list[TranscriptSegment]:
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel(whisper_model, device=device)
+    if duration is None or chunks_dir is None or duration <= chunk_s:
+        return _transcribe_with_model(model, audio_path, language=language, vad_filter=vad_filter)
+
+    segments: list[TranscriptSegment] = []
+    start = 0.0
+    index = 0
+    while start < duration - 1e-6:
+        length = min(chunk_s, duration - start)
+        if length < MIN_SEGMENT_SECONDS:
+            break
+        chunk_path = chunks_dir / f"chunk-{index:04d}.wav"
+        if not chunk_path.exists():
+            _extract_audio_chunk(audio_path, chunk_path, start, length)
+        segments.extend(
+            _transcribe_with_model(
+                model,
+                chunk_path,
+                language=language,
+                vad_filter=vad_filter,
+                offset_s=start,
+                start_id=len(segments),
+            )
+        )
+        start += chunk_s
+        index += 1
+    return [segment.model_copy(update={"id": index}) for index, segment in enumerate(segments)]
 
 
 def transcribe_openai_gpt4o(audio_path: Path, duration: float, model: str = "gpt-4o-mini-transcribe", language: str = "ko") -> tuple[list[TranscriptSegment], bool]:

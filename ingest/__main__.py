@@ -121,7 +121,15 @@ def load_transcript(
         )
     else:
         try:
-            transcript = transcribe_korean(audio_path, args.whisper_model, args.device, vad_filter=args.vad_filter)
+            transcript = transcribe_korean(
+                audio_path,
+                args.whisper_model,
+                args.device,
+                vad_filter=args.vad_filter,
+                language=args.source_language,
+                duration=duration,
+                chunks_dir=cache.path("local_asr_chunks"),
+            )
         except TypeError:
             transcript = transcribe_korean(audio_path, args.whisper_model, args.device)
         quality = TranscriptQuality(asr_provider="faster-whisper", aligner_provider="none", timecode_quality="strict", approximate_timecodes=False)
@@ -177,7 +185,7 @@ def correct_transcript(
 def load_translations(
     cache: StageCache,
     transcript: list[TranscriptSegment],
-    client: OpenAIIngestClient,
+    client: OpenAIIngestClient | None,
     logger: logging.Logger,
     translate_mode: str = "ko-en",
 ) -> tuple[list[TranslatedSegment], int]:
@@ -192,6 +200,8 @@ def load_translations(
         ]
         cache.write_json("translated.json", translated)
         return translated, 0
+    if client is None:
+        raise IngestError("OPENAI_API_KEY is required for translation")
     logger.info("[3/6] Translating KO -> EN with stable segment ids")
     translated, warnings_count = client.translate_segments(transcript, logger=logger)
     cache.write_json("translated.json", translated)
@@ -220,7 +230,7 @@ def load_vision(
     gap_threshold: float,
     max_vision_frames: int,
     max_visual_gap_s: float,
-    client: OpenAIIngestClient,
+    client: OpenAIIngestClient | None,
     logger: logging.Logger,
     drop_visual_before_s: float = 0.0,
     video_profile: VideoProfile | None = None,
@@ -237,6 +247,11 @@ def load_vision(
         gaps = [gap.model_copy(update={"id": index, "tc_start": max(gap.tc_start, drop_visual_before_s)}) for index, gap in enumerate(gaps) if max(gap.tc_start, drop_visual_before_s) < gap.tc_end]
     selected_gaps = select_gaps_for_vision(gaps, max_vision_frames)
     logger.info("[5/6] Running vision on %d/%d split gaps", len(selected_gaps), len(gaps))
+    if not selected_gaps:
+        cache.write_json("vision.json", [])
+        return [], 0
+    if client is None:
+        raise IngestError("OPENAI_API_KEY is required for vision")
     vision_segments, warnings_count = describe_gaps(
         input_path=input_path,
         gaps=selected_gaps,
@@ -298,15 +313,21 @@ def run_ingest(args: argparse.Namespace) -> int:
         logger.warning("source_language=vi should use translate_mode=none; overriding translate_mode")
         args.translate_mode = "none"
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise IngestError("OPENAI_API_KEY is required for translation and vision")
-    if args.asr_provider == "openai-gpt4o" and not api_key:
-        raise IngestError("OPENAI_API_KEY is required for openai-gpt4o ASR")
+    needs_openai_asr = args.asr_provider in {"openai-gpt4o", "openai-gpt4o-hybrid"}
+    needs_openai_translate = args.translate_mode != "none"
+    needs_openai_vision = args.max_vision_frames > 0
+    needs_openai_correction = args.transcript_correction == "openai"
+    if (needs_openai_asr or needs_openai_translate or needs_openai_vision or needs_openai_correction) and not api_key:
+        raise IngestError("OPENAI_API_KEY is required for configured ingest OpenAI usage")
 
     require_ffmpeg()
     cache = StageCache(work_dir, force=args.force)
     cache.prepare()
-    client = OpenAIIngestClient(api_key, args.translate_model, args.vision_model)
+    client = (
+        OpenAIIngestClient(api_key, args.translate_model, args.vision_model)
+        if needs_openai_translate or needs_openai_vision
+        else None
+    )
 
     logger.info("[0/6] Probing input video")
     duration = probe_duration(input_path)

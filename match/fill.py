@@ -45,6 +45,7 @@ def fill_beat(
     allow_repeat: bool,
     allow_speedfit: bool,
     semantic_scores: dict[tuple[int, int], float] | None = None,
+    visual_scores: dict[tuple[int, int], float] | None = None,
     max_repeat_per_beat: int = 2,
     max_repeat_ratio_per_beat: float = 0.35,
     min_repeat_alternative_score_ratio: float = 0.75,
@@ -88,13 +89,14 @@ def fill_beat(
             repeated = True
         if not available:
             break
-        ranked = rank_shots(available, reuse_counts, weights, semantic_scores, beat.beat_id)
+        ranked = rank_shots(available, reuse_counts, weights, semantic_scores, visual_scores, beat.beat_id)
         if ordered_fill or match_strategy in {"chronological", "hybrid"}:
             ranked = rank_for_ordered_fill(
                 ranked,
                 reuse_counts,
                 weights,
                 semantic_scores or {},
+                visual_scores or {},
                 beat.beat_id,
                 source_cursor,
                 match_strategy=match_strategy,
@@ -106,6 +108,7 @@ def fill_beat(
             reuse_counts,
             weights,
             semantic_scores or {},
+            visual_scores or {},
             beat.beat_id,
             previous_shot_index,
             min_repeat_alternative_score_ratio,
@@ -149,13 +152,14 @@ def fill_beat(
         if allow_repeat and candidates:
             warnings.append(f"beat {beat.beat_id} required controlled repeat fallback")
             while remaining > 1e-6:
-                ranked_repeat = [shot for shot in rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id) if repeat_by_shot.get(shot.index, 0) < max_repeat_per_beat]
+                ranked_repeat = [shot for shot in rank_shots(candidates, reuse_counts, weights, semantic_scores, visual_scores, beat.beat_id) if repeat_by_shot.get(shot.index, 0) < max_repeat_per_beat]
                 if ordered_fill or match_strategy in {"chronological", "hybrid"}:
                     ranked_repeat = rank_for_ordered_fill(
                         ranked_repeat,
                         reuse_counts,
                         weights,
                         semantic_scores or {},
+                        visual_scores or {},
                         beat.beat_id,
                         source_cursor,
                         match_strategy=match_strategy,
@@ -163,13 +167,14 @@ def fill_beat(
                         max_source_drift_s=max_source_drift_s,
                     )
                 if not ranked_repeat:
-                    ranked_repeat = rank_shots(candidates, reuse_counts, weights, semantic_scores, beat.beat_id)
+                    ranked_repeat = rank_shots(candidates, reuse_counts, weights, semantic_scores, visual_scores, beat.beat_id)
                     if ordered_fill or match_strategy in {"chronological", "hybrid"}:
                         ranked_repeat = rank_for_ordered_fill(
                             ranked_repeat,
                             reuse_counts,
                             weights,
                             semantic_scores or {},
+                            visual_scores or {},
                             beat.beat_id,
                             source_cursor,
                             match_strategy=match_strategy,
@@ -182,6 +187,7 @@ def fill_beat(
                     reuse_counts,
                     weights,
                     semantic_scores or {},
+                    visual_scores or {},
                     beat.beat_id,
                     previous_shot_index,
                     min_repeat_alternative_score_ratio,
@@ -233,6 +239,7 @@ def rank_for_ordered_fill(
     reuse_counts: dict[int, int],
     weights: ScoringWeights,
     semantic_scores: dict[tuple[int, int], float],
+    visual_scores: dict[tuple[int, int], float],
     beat_id: int,
     source_cursor: float,
     match_strategy: str = "hybrid",
@@ -247,7 +254,13 @@ def rank_for_ordered_fill(
     def sort_key(shot: Shot) -> tuple[float, float, float, int]:
         is_before_cursor = shot.tc_end < source_cursor
         distance = drift(shot)
-        score = score_shot(shot, reuse_counts.get(shot.index, 0), weights, semantic_scores.get((beat_id, shot.index), 0.0))
+        score = score_shot(
+            shot,
+            reuse_counts.get(shot.index, 0),
+            weights,
+            semantic_scores.get((beat_id, shot.index), 0.0),
+            visual_scores.get((beat_id, shot.index), 0.0),
+        )
         if match_strategy == "chronological":
             beyond_drift = distance > max_source_drift_s
             return (1.0 if beyond_drift else 0.0, distance, -score, shot.index)
@@ -263,6 +276,7 @@ def choose_diverse_shot(
     reuse_counts: dict[int, int],
     weights: ScoringWeights,
     semantic_scores: dict[tuple[int, int], float],
+    visual_scores: dict[tuple[int, int], float],
     beat_id: int,
     previous_shot_index: int | None,
     min_alternative_ratio: float,
@@ -271,7 +285,13 @@ def choose_diverse_shot(
     if not ranked:
         raise ValueError("cannot choose from empty candidates")
     top = ranked[0]
-    top_score = score_shot(top, reuse_counts.get(top.index, 0), weights, semantic_scores.get((beat_id, top.index), 0.0))
+    top_score = score_shot(
+        top,
+        reuse_counts.get(top.index, 0),
+        weights,
+        semantic_scores.get((beat_id, top.index), 0.0),
+        visual_scores.get((beat_id, top.index), 0.0),
+    )
     if previous_shot_index is None or top.index != previous_shot_index:
         return top
     threshold = max(top_score * min_alternative_ratio, top_score - adjacent_penalty)
@@ -281,6 +301,7 @@ def choose_diverse_shot(
             reuse_counts.get(candidate.index, 0),
             weights,
             semantic_scores.get((beat_id, candidate.index), 0.0),
+            visual_scores.get((beat_id, candidate.index), 0.0),
         )
         if candidate.index != previous_shot_index and candidate_score >= threshold:
             return candidate

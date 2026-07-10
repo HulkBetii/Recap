@@ -2,13 +2,14 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Iterator, Protocol
 
 import numpy as np
 
 from shots.detect import ShotSpan
 
 TRANSITION_SPIKE_THRESHOLD = 0.92
+DEFAULT_FRAME_SAMPLE_WIDTH = 360
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,18 @@ class ShotFeatures:
     face_area: float
     brightness: float
     is_usable: bool
+
+@dataclass(frozen=True)
+class FrameSampleRequest:
+    shot_index: int
+    timestamp: float
+    frame_index: int
+
+@dataclass(frozen=True)
+class SampledFrame:
+    shot_index: int
+    timestamp: float
+    frame: np.ndarray
 
 
 class FaceDetector(Protocol):
@@ -71,30 +84,172 @@ def create_face_detector(mode: str) -> tuple[FaceDetector, list[str]]:
         return NoFaceDetector(), [f"Face detection disabled: {exc}"]
 
 
-def sample_frames(input_path: Path, shot: ShotSpan, sample_count: int, max_width: int = 360) -> list[np.ndarray]:
+def shot_sample_times(shot: ShotSpan, sample_count: int) -> list[float]:
+    count = max(1, sample_count)
+    if count == 1:
+        return [shot.tc_start + shot.duration / 2]
+    margin = min(0.05, shot.duration / 4)
+    return np.linspace(shot.tc_start + margin, shot.tc_end - margin, count).tolist()
+
+def frame_index_for_timestamp(timestamp: float, *, fps: float, frame_count: int = 0) -> int:
+    if fps <= 0:
+        raise ValueError("fps must be > 0")
+    frame_index = max(0, int(round(max(0.0, timestamp) * fps)))
+    if frame_count > 0:
+        frame_index = min(frame_index, frame_count - 1)
+    return frame_index
+
+def build_frame_sample_requests(
+    spans: list[ShotSpan],
+    sample_count: int,
+    *,
+    fps: float,
+    frame_count: int = 0,
+) -> list[FrameSampleRequest]:
+    requests: list[FrameSampleRequest] = []
+    for span in sorted(spans, key=lambda item: (item.tc_start, item.index)):
+        for timestamp in shot_sample_times(span, sample_count):
+            requests.append(
+                FrameSampleRequest(
+                    shot_index=span.index,
+                    timestamp=float(timestamp),
+                    frame_index=frame_index_for_timestamp(timestamp, fps=fps, frame_count=frame_count),
+                )
+            )
+    return requests
+
+def sample_frames(
+    input_path: Path,
+    shot: ShotSpan,
+    sample_count: int,
+    max_width: int = DEFAULT_FRAME_SAMPLE_WIDTH,
+) -> list[np.ndarray]:
     import cv2
 
     cap = cv2.VideoCapture(str(input_path))
     frames: list[np.ndarray] = []
     try:
-        count = max(1, sample_count)
-        if count == 1:
-            times = [shot.tc_start + shot.duration / 2]
-        else:
-            margin = min(0.05, shot.duration / 4)
-            times = np.linspace(shot.tc_start + margin, shot.tc_end - margin, count).tolist()
-        for timestamp in times:
+        for timestamp in shot_sample_times(shot, sample_count):
             cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, timestamp) * 1000)
             ok, frame = cap.read()
             if not ok or frame is None:
                 continue
-            if frame.shape[1] > max_width:
-                scale = max_width / frame.shape[1]
-                frame = cv2.resize(frame, (max_width, max(1, int(frame.shape[0] * scale))))
-            frames.append(frame)
+            frames.append(resize_frame(frame, max_width=max_width))
     finally:
         cap.release()
     return frames
+
+def iter_batch_sampled_frames(
+    input_path: Path,
+    spans: list[ShotSpan],
+    sample_count: int,
+    max_width: int = DEFAULT_FRAME_SAMPLE_WIDTH,
+) -> Iterator[tuple[ShotSpan, list[SampledFrame]]]:
+    import cv2
+
+    ordered_spans = sorted(spans, key=lambda item: (item.tc_start, item.index))
+    if not ordered_spans:
+        return
+    cap = cv2.VideoCapture(str(input_path))
+    try:
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if fps <= 0:
+            cap.release()
+            for span in ordered_spans:
+                yield (
+                    span,
+                    [
+                        SampledFrame(shot_index=span.index, timestamp=timestamp, frame=frame)
+                        for timestamp, frame in zip(shot_sample_times(span, sample_count), sample_frames(input_path, span, sample_count, max_width=max_width))
+                    ],
+                )
+            return
+        requests = build_frame_sample_requests(ordered_spans, sample_count, fps=fps, frame_count=frame_count)
+        current_shot = ordered_spans[0].index
+        current_samples: list[SampledFrame] = []
+        span_cursor = 0
+        current_position = 0
+        for request, frame, current_position in _iter_request_frames(
+            cap,
+            requests,
+            current_position=current_position,
+            max_width=max_width,
+        ):
+            if request.shot_index != current_shot:
+                while span_cursor < len(ordered_spans) and ordered_spans[span_cursor].index != current_shot:
+                    yield ordered_spans[span_cursor], []
+                    span_cursor += 1
+                if span_cursor < len(ordered_spans):
+                    yield ordered_spans[span_cursor], current_samples
+                    span_cursor += 1
+                while span_cursor < len(ordered_spans) and ordered_spans[span_cursor].index != request.shot_index:
+                    yield ordered_spans[span_cursor], []
+                    span_cursor += 1
+                current_shot = request.shot_index
+                current_samples = []
+            if frame is not None:
+                current_samples.append(SampledFrame(shot_index=request.shot_index, timestamp=request.timestamp, frame=frame))
+        while span_cursor < len(ordered_spans) and ordered_spans[span_cursor].index != current_shot:
+            yield ordered_spans[span_cursor], []
+            span_cursor += 1
+        if span_cursor < len(ordered_spans):
+            yield ordered_spans[span_cursor], current_samples
+            span_cursor += 1
+        while span_cursor < len(ordered_spans):
+            yield ordered_spans[span_cursor], []
+            span_cursor += 1
+    finally:
+        cap.release()
+
+def _iter_request_frames(
+    cap,  # type: ignore[no-untyped-def]
+    requests: list[FrameSampleRequest],
+    *,
+    current_position: int,
+    max_width: int,
+) -> Iterator[tuple[FrameSampleRequest, np.ndarray | None, int]]:
+    index = 0
+    while index < len(requests):
+        frame_index = requests[index].frame_index
+        group: list[FrameSampleRequest] = []
+        while index < len(requests) and requests[index].frame_index == frame_index:
+            group.append(requests[index])
+            index += 1
+        frame, current_position = _read_frame_at_index(cap, frame_index, current_position=current_position, max_width=max_width)
+        for request in group:
+            yield request, frame, current_position
+
+def _read_frame_at_index(
+    cap,  # type: ignore[no-untyped-def]
+    frame_index: int,
+    *,
+    current_position: int,
+    max_width: int,
+) -> tuple[np.ndarray | None, int]:
+    import cv2
+
+    if frame_index < current_position:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        current_position = frame_index
+    while current_position < frame_index:
+        ok = cap.grab()
+        if not ok:
+            return None, current_position
+        current_position += 1
+    ok, frame = cap.read()
+    current_position += 1
+    if not ok or frame is None:
+        return None, current_position
+    return resize_frame(frame, max_width=max_width), current_position
+
+def resize_frame(frame: np.ndarray, *, max_width: int) -> np.ndarray:
+    if max_width > 0 and frame.shape[1] > max_width:
+        import cv2
+
+        scale = max_width / frame.shape[1]
+        return cv2.resize(frame, (max_width, max(1, int(frame.shape[0] * scale))))
+    return frame
 
 
 def compute_features_from_frames(

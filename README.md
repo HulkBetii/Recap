@@ -44,6 +44,13 @@ Preset phim lẻ ổn định hiện tại dùng trực tiếp:
 python run.py --input path\to\film.mp4 --run-dir runs\movie01 --config config.movie.stable.yaml
 ```
 
+Preset phim lẻ có visual index/rerank thử nghiệm:
+
+```powershell
+python -m pip install -e .[visual-index]
+python run.py --input path\to\film.mp4 --run-dir runs\movie-visual01 --config config.movie.visual.yaml
+```
+
 Preset video/phim nguồn tiếng Việt, không dịch KO→EN:
 
 ```powershell
@@ -67,6 +74,7 @@ python run.py --input path\to\film.mp4 --run-dir runs\ep01 --config config.yaml 
 Run directory chính:
 
 - `film_map.json`, `review_script.json`, `voiceover.mp3`, `beats_timing.json`, `shots.json`, `edl.json`, `edl.qa.json`, `edl.review.html`, `recap.mp4`
+- Khi bật visual preset: thêm `shot_visual_index.json`, `visual_index/`, `edl.visual.qa.json`.
 - `*.meta.json`, `audio/`, `shots/`, `work/<stage>/`, `run.log`, `summary.json`
 
 `summary.json` gom duration từng stage, trạng thái run/skip, warnings, `timecode_qa` và ba số calibrate: `real_ratio`, `n_beats_widened`, `duration_match`. Nếu `timecode_qa.approximate_timecodes=true`, ưu tiên kiểm tra `edl.review.html`/alignment trước khi chỉnh audio delay global.
@@ -225,6 +233,23 @@ Face detection v1 dùng Haar cascade bundled trong OpenCV. Nếu không cần fa
 python -m shots --input path\to\film.mp4 --output out\shots.json --face-detection off
 ```
 
+Với phim dài, có thể dùng detector ffmpeg nhanh hơn và split scene dài để GĐ5 có đủ candidate granular:
+
+```powershell
+python -m shots `
+  --input path\to\film.mp4 `
+  --output out\shots.json `
+  --thumb-dir out\shots `
+  --detector ffmpeg-scene `
+  --scene-threshold 0.3 `
+  --scene-scale-width 640 `
+  --max-shot-len 8 `
+  --frame-sampling batch `
+  --face-detection off
+```
+
+`--frame-sampling batch` opens the video once and samples frames in timeline order, then reuses those frames for features and thumbnails. The default remains `per-shot` for compatibility; `config.movie.visual.yaml` enables `batch` for long-movie visual runs.
+
 Cache GĐ4:
 
 - `work/shots/detection.json` — shot spans, không phụ thuộc `video_profile.json`.
@@ -233,6 +258,40 @@ Cache GĐ4:
 - `work/shots/thumbs/`
 
 Khi chỉ đổi `video_profile.json`, GĐ4 chỉ re-apply profile marking và không re-detect/recompute features. Thêm `--profile-only` để debug re-apply từ cache; thêm `--force` để detect/tính feature lại toàn bộ.
+
+## Chạy GĐ4.5 Visual Index
+
+GĐ4.5 là optional stage để GĐ5 có tín hiệu hình thật thay vì chỉ text-text semantic. Stage này trích keyframe theo shot, encode bằng SigLIP2 mặc định, và lưu vector sidecar `.npy` float16.
+
+```powershell
+python -m pip install -e .[visual-index]
+
+python -m visual_index `
+  --film path\to\film.mp4 `
+  --shots out\shots.json `
+  --output out\shot_visual_index.json `
+  --asset-dir out\visual_index `
+  --embedding-mode siglip2 `
+  --embedding-model google/siglip2-base-patch16-384 `
+  --device auto `
+  --keyframes-per-shot 2 `
+  --work-dir work\visual_index
+```
+
+GĐ5 dùng visual index bằng:
+
+```powershell
+python -m match `
+  --review-script out\review_script.json `
+  --beats-timing out\beats_timing.json `
+  --shots out\shots.json `
+  --visual-index out\shot_visual_index.json `
+  --visual-mode rerank `
+  --w-visual 0.20 `
+  --output out\edl.json
+```
+
+Visual score chỉ rerank candidates trong source window/widen hiện có; nếu thiếu index/model thì GĐ5 fallback text-only và ghi `edl.visual.qa.json` với `visual_enabled=false`.
 ## Chạy GĐ5
 
 GD5 nhan `review_script.json`, `beats_timing.json`, `shots.json` va tao `edl.json` + `edl.meta.json` + `edl.qa.json`. Neu truyen them `--film-map`, GD5 co the dung semantic offline: `bge-m3` multilingual embedding la default orchestrator, con `tfidf` la fallback nhe. Stage nay chi xu ly JSON, khong decode video va khong dung API.

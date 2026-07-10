@@ -58,8 +58,14 @@ def write_review_html(
         for beat in qa.get("beats", []) if isinstance(beat, dict)
         for selected in beat.get("selected", []) if isinstance(selected, dict)
     ]
+    visual_values = [
+        float(selected.get("visual_score", 0.0))
+        for beat in qa.get("beats", []) if isinstance(beat, dict)
+        for selected in beat.get("selected", []) if isinstance(selected, dict)
+    ]
     avg_semantic = sum(semantic_values) / len(semantic_values) if semantic_values else 0.0
     min_semantic = min(semantic_values) if semantic_values else 0.0
+    avg_visual = sum(visual_values) / len(visual_values) if visual_values else 0.0
     warnings_count = sum(len(item.get("warnings", [])) for item in qa_by_beat.values())
     rel_asset_dir = asset_dir.relative_to(output_path.parent).as_posix() if asset_dir.is_relative_to(output_path.parent) else asset_dir.as_posix()
 
@@ -73,7 +79,7 @@ def write_review_html(
         "<h1>EDL Review</h1>",
         "<section class=\"summary\">",
         f"<div><b>Total beats:</b> {len(beats)} | <b>placements:</b> {len(placements)} | <b>intro excluded:</b> {escape(_fmt(qa.get('n_intro_excluded')))}</div>",
-        f"<div><b>selected_from_non_story:</b> {escape(_fmt(qa.get('selected_from_non_story')))} | <b>avg semantic:</b> {avg_semantic:.3f} | <b>min semantic:</b> {min_semantic:.3f} | <b>warnings:</b> {warnings_count}</div>",
+        f"<div><b>selected_from_non_story:</b> {escape(_fmt(qa.get('selected_from_non_story')))} | <b>avg semantic:</b> {avg_semantic:.3f} | <b>min semantic:</b> {min_semantic:.3f} | <b>avg visual:</b> {avg_visual:.3f} | <b>warnings:</b> {warnings_count}</div>",
         "</section>",
     ]
     for beat in sorted(beats, key=lambda item: item.beat_id):
@@ -88,7 +94,10 @@ def write_review_html(
         drift_info = ""
         if isinstance(qa_beat, dict):
             drift_info = f" | Avg drift: {escape(_fmt(qa_beat.get('avg_source_drift_s')))}s | Max drift: {escape(_fmt(qa_beat.get('max_source_drift_s')))}s"
-        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}</div>")
+        visual_query = ""
+        if isinstance(qa_beat, dict) and qa_beat.get("visual_queries"):
+            visual_query = " | Visual query: " + escape(" / ".join(str(item) for item in qa_beat.get("visual_queries", [])[:2]))
+        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}{visual_query}</div>")
         if beat_warnings:
             parts.append("<ul class=\"warn\">" + "".join(f"<li>{escape(str(warning))}</li>" for warning in beat_warnings) + "</ul>")
         parts.append("<div class=\"grid\">")
@@ -117,6 +126,7 @@ def write_review_html(
                 f"SRC {placement.src_in:.3f}–{placement.src_out:.3f}<br>"
                 f"shot {placement.shot_index} | reused={placement.reused}<br>"
                 f"semantic={escape(_fmt(qa_selected.get('semantic_score') if qa_selected else None))} rank={escape(_fmt(qa_selected.get('semantic_rank') if qa_selected else None))}<br>"
+                f"visual={escape(_fmt(qa_selected.get('visual_score') if qa_selected else None))} rank={escape(_fmt(qa_selected.get('visual_rank') if qa_selected else None))}<br>"
                 f"expected={escape(_fmt(qa_selected.get('expected_src_position') if qa_selected else None))} drift={escape(_fmt(qa_selected.get('source_drift_s') if qa_selected else None))} chrono={escape(_fmt(qa_selected.get('chronology_score') if qa_selected else None))}<br>"
                 f"motion={escape(_fmt(shot.motion_score if shot else None))} bright={escape(_fmt(shot.brightness if shot else None))} face={escape(_fmt(shot.face_count if shot else None))}<br>"
                 f"is_story={escape(_fmt(shot.is_story if shot else None))} reason={escape(_fmt(shot.exclude_reason if shot else None))}"

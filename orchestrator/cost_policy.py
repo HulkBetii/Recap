@@ -74,6 +74,7 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
         "review": {"backend": text_llm_backend, "cost": "playwright_session" if text_llm_backend == "chatgpt_playwright" else text_llm_backend},
         "tts": describe_tts(tts),
         "preflight": {"backend": resolved.get("preflight", {}).get("classifier", "heuristic"), "cost": "local"},
+        "visual_index": {"backend": resolved.get("visual_index", {}).get("embedding_mode", "off"), "cost": "local"},
         "match": {"backend": resolved.get("match", {}).get("semantic_mode", "off"), "cost": "local"},
         "render": {"backend": "ffmpeg", "cost": "local"},
     }

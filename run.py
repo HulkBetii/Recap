@@ -86,6 +86,8 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     selected = stage_range(args.from_stage, args.to_stage, args.only)
     if not config.get("preflight", {}).get("enabled", True):
         selected.discard("preflight")
+    if not config.get("visual_index", {}).get("enabled", False):
+        selected.discard("visual_index")
     forced = forced_stages(selected, args.force, args.force_stage)
     python_exe = config.get("orchestrator", {}).get("python")
     will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage)}
@@ -143,6 +145,8 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                             executor=executor,
                         )
             summaries.append(shots_future.result())
+            if "visual_index" in selected:
+                summaries.append(execute("visual_index"))
     else:
         for stage in ("ingest", "storymap", "review", "tts"):
             if stage in selected:
@@ -158,6 +162,8 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                         python_exe=python_exe,
                         executor=executor,
                     )
+        if "visual_index" in selected:
+            summaries.append(execute("visual_index"))
 
     for stage in ("match", "render"):
         if stage in selected:
@@ -176,6 +182,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
             "review": paths.review_meta,
             "tts": paths.tts_meta,
             "shots": paths.shots_meta,
+            "visual_index": paths.shot_visual_index,
             "match": paths.edl_meta,
             "render": paths.render_meta,
         },

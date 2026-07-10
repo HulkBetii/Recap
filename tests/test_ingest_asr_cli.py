@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from ingest.__main__ import load_transcript, load_translations
+from ingest.__main__ import load_transcript, load_translations, load_vision
 from ingest.cache import StageCache
 from orchestrator.config import load_config
 from orchestrator.graph import build_paths
@@ -62,6 +62,45 @@ def test_load_translations_can_keep_vietnamese_source_text(tmp_path: Path) -> No
     assert warnings == 0
     assert translated[0].ko == "Xin chào mọi người"
     assert translated[0].en == "Xin chào mọi người"
+
+def test_load_translations_none_does_not_need_openai_client(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / "work", force=False)
+    cache.prepare()
+    segment = __import__("common.schema", fromlist=["TranscriptSegment"]).TranscriptSegment(id=0, tc_start=0, tc_end=2, ko="Xin chào mọi người")
+    class Logger:
+        def info(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+    translated, warnings = load_translations(cache, [segment], None, Logger(), translate_mode="none")
+    assert warnings == 0
+    assert translated[0].en == "Xin chào mọi người"
+
+def test_load_vision_no_selected_gaps_does_not_need_openai_client(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / "work", force=False)
+    cache.prepare()
+    translated_segment = __import__("common.schema", fromlist=["TranslatedSegment"]).TranslatedSegment(
+        id=0,
+        tc_start=0,
+        tc_end=10,
+        ko="Xin chào mọi người",
+        en="Xin chào mọi người",
+    )
+    class Logger:
+        def info(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+    vision, warnings = load_vision(
+        cache=cache,
+        input_path=tmp_path / "film.mp4",
+        translated=[translated_segment],
+        duration=10,
+        gap_threshold=4,
+        max_vision_frames=0,
+        max_visual_gap_s=20,
+        client=None,
+        logger=Logger(),
+    )
+    assert vision == []
+    assert warnings == 0
+    assert cache.has("vision.json")
 
 def test_orchestrator_passes_vietnamese_source_options_to_ingest(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"

@@ -596,3 +596,48 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Added `config.vi.balanced.auto.yaml` for auto 100% local-first runs that fallback to OpenAI hybrid ASR only when G?1 timecode QA fails.
 - Orchestrator now writes `fallback_plan.json` / `fallback_summary.json` and updates `cost_summary.json` with fallback possible/triggered flags.
 - Fallback forces downstream selected stages after rerunning G?1 so stale story/review/TTS/match/render artifacts are not reused.
+
+### 2026-07-10 - GĐ4.5 visual index + GĐ5 visual rerank v1
+
+- Added optional `python -m visual_index` stage to build `shot_visual_index.json` plus keyframe/vector sidecars from `film.mp4` + `shots.json`.
+- Added optional `visual-index` dependency group and `config.movie.visual.yaml`; default/stable configs keep visual index disabled.
+- Extended `review_script.intent.json` with optional visual query/cue fields while keeping `review_script.json` unchanged.
+- Added GĐ5 `--visual-index`, `--visual-mode off|rerank`, `--w-visual`, `--visual-cache-dir`, and `edl.visual.qa.json`.
+- Visual score is a soft rerank inside the existing time-anchored candidate/widen flow; chronology remains the primary prior and missing visual index falls back to text-only matching.
+- Targeted validation: `python -m pytest tests/test_visual_index.py tests/test_match_visual.py tests/test_orchestrator_graph.py tests/test_orchestrator_runner.py tests/test_match_scoring.py tests/test_match_semantic.py tests/test_match_cli.py tests/test_match_review_html.py tests/test_review_intent.py -q` -> 40 passed.
+- Full validation: `python -m pytest -q` -> 198 passed.
+
+### 2026-07-10 - GĐ1 local ASR long-video smoke fix
+
+- While smoke testing `ngoai-vong-phap-luat.mp4`, fixed Vietnamese/offline ingest so `translate_mode=none` + `max_vision_frames=0` no longer requires `OPENAI_API_KEY`.
+- Local `faster-whisper` now passes `source_language` into Whisper and chunks long audio into `work/ingest/local_asr_chunks` to avoid whole-film FFT memory spikes on ~2h videos.
+- Targeted validation: `python -m pytest tests/test_cli.py tests/test_ingest_asr_cli.py tests/test_ingest_asr.py tests/test_ingest_whisperx.py -q` -> 29 passed.
+
+### 2026-07-11 - Ngoai vong phap luat visual smoke
+
+- Ran `ngoai-vong-phap-luat.mp4` through Vietnamese local ingest + ChatGPT Playwright review using `runs/_configs/ngoai-vong-phap-luat.vi.visual.yaml`.
+- GĐ1 completed with local chunked `faster-whisper` + `whisperx`; GĐ2 Playwright completed `review_script.json` and `review_script.intent.json`.
+- GĐ3 real AI33 TTS completed after runtime key was provided; final `voiceover.mp3` and real `beats_timing.json` were regenerated.
+- GĐ4 PySceneDetect on the full 1080p 1h55m video was too slow for smoke testing, so generated fixed-window `shots.json` over review source windows and documented it in `shots.smoke.note.txt`.
+- GĐ4.5 visual index completed with `google/siglip2-base-patch16-384` on CUDA: 1297 shots/keyframes, sidecar embeddings, no visual-index warnings.
+- GĐ5 visual rerank completed with real TTS timing and wrote `edl.json`, `edl.qa.json`, `edl.sync.qa.json`, `edl.visual.qa.json`, and `edl.review.html`; `visual_enabled=true`, 40 beats, 442 placements.
+- GĐ6 render completed: `recap.mp4` is 1920x1080 H.264, 1263.267s video / 1263.270s audio, `duration_match=true`.
+- Playwright localhost QA opened `edl.review.html` and `recap.preview.html`; browser video metadata loaded at 1920x1080 / 1263.267s and preview screenshot was nonblank.
+- Full validation after final smoke: `python -m pytest` -> 200 passed.
+
+### 2026-07-11 - GĐ4 production shot library for Ngoai vong phap luat
+
+- Added GĐ4 `--detector ffmpeg-scene` using ffmpeg scene score for long-video offline shot detection; PySceneDetect remains the default path.
+- Added GĐ4 `--max-shot-len` to split very long detected scenes into shorter virtual shots for GĐ5 while keeping the `shots.json` contract unchanged.
+- Updated `config.movie.visual.yaml` and the local run config to use `ffmpeg-scene` with `scene_threshold=0.3`, `scene_scale_width=640`, and `max_shot_len=8`.
+- Reran `ngoai-vong-phap-luat.mp4` from GĐ4 through GĐ6 with production shots: 1164 shots, 1114 usable, 1164 visual-index entries, 462 EDL placements.
+- GĐ5 warnings dropped from the coarse real-shot run's 30 warnings to 10 warnings; large `could not fill` / high-repeat warnings were removed except normal opening-order and pause-filler notes.
+- Final render stayed duration-matched at 1920x1080 H.264, 1263.270s video/audio; Playwright loaded `edl.review.html` with 307 QA images and no broken images, and loaded `recap.preview.html` video metadata.
+- Full validation: `python -m pytest` -> 203 passed.
+
+### 2026-07-11 - GĐ4 batch frame sampling
+
+- Added optional GĐ4 `--frame-sampling per-shot|batch`; default stays `per-shot`, while `batch` opens the video once, samples frames in timeline order, and reuses sampled frames for feature computation plus thumbnails.
+- Updated GĐ4 feature cache key/meta, orchestrator config/command wiring, README/AGENTS, and `config.movie.visual.yaml` to enable `frame_sampling: batch` for long-movie visual runs.
+- Smoke on `ngoai-vong-phap-luat.mp4`: `ffmpeg-scene + max_shot_len=8 + frame_sampling=batch` wrote 1164 shots and 1164 thumbnails; full detect+feature run took 422.68s, and cached-detection face-on feature/profile rerun took 211.9s.
+- Validation: `python -m pytest tests/test_shots_features.py tests/test_shots_cli.py tests/test_orchestrator_runner.py -q` -> 22 passed; `python -m pytest -q` -> 207 passed.

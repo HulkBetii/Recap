@@ -10,7 +10,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only without optional dep
     yaml = None  # type: ignore[assignment]
 
-STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "match", "render")
+STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "visual_index", "match", "render")
 TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -114,11 +114,25 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "detector": "adaptive",
         "min_shot_len": 0.4,
         "sample_frames": 5,
+        "frame_sampling": "per-shot",
         "face_detection": "on",
         "min_brightness": 0.06,
         "skip_intro": 0.0,
         "skip_outro": 0.0,
         "downscale": "auto",
+        "scene_threshold": 0.3,
+        "scene_scale_width": 640,
+        "scene_min_gap": 0.3,
+        "max_shot_len": 0.0,
+        "log_level": "INFO",
+    },
+    "visual_index": {
+        "enabled": False,
+        "embedding_mode": "siglip2",
+        "embedding_model": "google/siglip2-base-patch16-384",
+        "device": "auto",
+        "batch_size": 16,
+        "keyframes_per_shot": 2,
         "log_level": "INFO",
     },
     "match": {
@@ -154,6 +168,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "semantic_device": "auto",
         "semantic_batch_size": 16,
         "semantic_cache_dir": None,
+        "visual_mode": "off",
+        "visual_index": "auto",
+        "visual_cache_dir": None,
+        "w_visual": 0.20,
+        "output_visual_qa": None,
         "film_map": "auto",
         "output_qa": None,
         "output_review_html": None,

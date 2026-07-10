@@ -5,7 +5,7 @@ from pathlib import Path
 
 from shots.__main__ import run_shots
 from shots.detect import ShotSpan
-from shots.features import ShotFeatures
+from shots.features import SampledFrame, ShotFeatures
 
 
 def make_args(tmp_path, input_path, force=False):  # type: ignore[no-untyped-def]
@@ -99,3 +99,50 @@ def test_shots_cli_uses_cache_on_second_run(tmp_path, monkeypatch) -> None:  # t
 
     assert detect_calls["count"] == 1
     assert feature_calls["count"] == 1
+
+def test_shots_cli_batch_sampling_writes_thumbnails_from_samples(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    input_path = tmp_path / "film.mp4"
+    input_path.write_bytes(b"fake")
+    args = make_args(tmp_path, input_path)
+    args.frame_sampling = "batch"
+    monkeypatch.setattr("shots.__main__.require_ffmpeg", lambda: None)
+    spans = [ShotSpan(index=0, tc_start=0.0, tc_end=1.0), ShotSpan(index=1, tc_start=1.0, tc_end=2.0)]
+    monkeypatch.setattr("shots.__main__.detect_shots", lambda *args, **kwargs: (spans, 2.0))
+    monkeypatch.setattr("shots.__main__.create_face_detector", lambda mode: (object(), []))
+    per_shot_calls = {"count": 0}
+    batch_calls = {"count": 0}
+    thumb_calls: list[int] = []
+
+    def fake_sample_frames(*args, **kwargs):  # type: ignore[no-untyped-def]
+        per_shot_calls["count"] += 1
+        return []
+
+    def fake_batch_frames(input_path, spans, sample_count, max_width):  # type: ignore[no-untyped-def]
+        batch_calls["count"] += 1
+        for span in spans:
+            yield span, [SampledFrame(shot_index=span.index, timestamp=span.tc_start + 0.5, frame=object())]
+
+    def fake_features(frames, duration, config, face_detector):  # type: ignore[no-untyped-def]
+        return ShotFeatures(motion_score=0.2, face_count=0, face_area=0.0, brightness=0.4, is_usable=True)
+
+    def fake_thumb_from_frame(input_path, thumb_dir, index, frame):  # type: ignore[no-untyped-def]
+        thumb_calls.append(index)
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        path = thumb_dir / f"film-{index:03d}.jpg"
+        path.write_bytes(b"jpg")
+        return path
+
+    monkeypatch.setattr("shots.__main__.sample_frames", fake_sample_frames)
+    monkeypatch.setattr("shots.__main__.iter_batch_sampled_frames", fake_batch_frames)
+    monkeypatch.setattr("shots.__main__.compute_features_from_frames", fake_features)
+    monkeypatch.setattr("shots.__main__.write_thumbnail_from_frame", fake_thumb_from_frame)
+    monkeypatch.setattr("shots.__main__.write_thumbnail", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("per-shot thumbnail should not run")))
+
+    exit_code = run_shots(args)
+
+    assert exit_code == 0
+    assert per_shot_calls["count"] == 0
+    assert batch_calls["count"] == 1
+    assert thumb_calls == [0, 1]
+    meta = (tmp_path / "out" / "shots.meta.json").read_text(encoding="utf-8")
+    assert '"frame_sampling": "batch"' in meta

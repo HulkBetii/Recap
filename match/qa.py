@@ -6,6 +6,7 @@ from typing import Any
 from common.schema import EdlPlacement, ReviewBeat, ReviewIntent, Shot, StorySection
 from match.scoring import brightness_bonus, face_bonus, score_shot, ScoringWeights
 from match.semantic import SemanticResult
+from match.visual import VisualScoreResult
 
 
 def narration_preview(text: str, limit: int = 180) -> str:
@@ -20,7 +21,9 @@ def build_edl_qa(
     shots: list[Shot],
     semantic_scores: dict[tuple[int, int], float],
     weights: ScoringWeights,
+    visual_scores: dict[tuple[int, int], float] | None = None,
     semantic_result: SemanticResult | None = None,
+    visual_result: VisualScoreResult | None = None,
     min_semantic_score: float,
     warnings: list[str],
     max_repeat_ratio_per_beat: float = 0.35,
@@ -34,6 +37,7 @@ def build_edl_qa(
 ) -> dict[str, Any]:
     review_intents = review_intents or {}
     story_sections = story_sections or {}
+    visual_scores = visual_scores or {}
     shots_by_index = {shot.index: shot for shot in shots}
     placements_by_beat: dict[int, list[EdlPlacement]] = defaultdict(list)
     for placement in placements:
@@ -60,6 +64,7 @@ def build_edl_qa(
         for placement in beat_selected:
             shot = shots_by_index.get(placement.shot_index)
             semantic_score = semantic_scores.get((beat.beat_id, placement.shot_index), 0.0)
+            visual_score = visual_scores.get((beat.beat_id, placement.shot_index), 0.0)
             beat_semantic_values.append(semantic_score)
             tl_progress = min(1.0, max(0.0, (placement.tl_start - beat_tl_start) / beat_tl_span))
             expected_src_position = beat.src_tc_start + beat_src_span * tl_progress
@@ -80,6 +85,8 @@ def build_edl_qa(
                 "reused": placement.reused,
                 "semantic_score": round(semantic_score, 6),
                 "semantic_rank": semantic_result.ranks.get((beat.beat_id, placement.shot_index)) if semantic_result else None,
+                "visual_score": round(visual_score, 6),
+                "visual_rank": visual_result.ranks.get((beat.beat_id, placement.shot_index)) if visual_result else None,
             }
             if shot is not None:
                 entry.update({
@@ -89,7 +96,7 @@ def build_edl_qa(
                     "face_count": shot.face_count,
                     "face_area": shot.face_area,
                     "face_bonus": round(face_bonus(shot), 6),
-                    "total_score_no_reuse": round(score_shot(shot, 0, weights, semantic_score), 6),
+                    "total_score_no_reuse": round(score_shot(shot, 0, weights, semantic_score, visual_score), 6),
                     "is_story": shot.is_story,
                     "exclude_reason": shot.exclude_reason,
                     "selected_from_non_story": not shot.is_story,
@@ -144,6 +151,7 @@ def build_edl_qa(
             "story_section": {"id": intent.story_section_id, "type": intent.story_section_type} if intent else None,
             "visual_intent": intent.visual_intent if intent else None,
             "chronology_mode": intent.chronology_mode if intent else None,
+            "visual_queries": visual_result.queries.get(beat.beat_id, []) if visual_result else [],
             "ordered_fill_used": ordered_fill_used,
             "chronology_mismatch": chronology_mismatch,
             "intent_match_score": 1.0 if section is not None else 0.0,
@@ -160,6 +168,12 @@ def build_edl_qa(
         "semantic_model": semantic_result.model if semantic_result else None,
         "semantic_device": semantic_result.device if semantic_result else None,
         "semantic_cache_hits": semantic_result.cache_hits if semantic_result else [],
+        "visual_enabled": bool(visual_scores),
+        "visual_provider": visual_result.provider if visual_result else "off",
+        "visual_model": visual_result.model if visual_result else None,
+        "visual_device": visual_result.device if visual_result else None,
+        "visual_cache_hits": visual_result.cache_hits if visual_result else [],
+        "visual_warnings": visual_result.warnings if visual_result else [],
         "min_semantic_score": min_semantic_score,
         "n_intro_excluded": len(excluded_intro),
         "excluded_intro_candidates": excluded_intro[:200],

@@ -17,6 +17,8 @@ from match.scoring import ScoringWeights
 from match.semantic import DEFAULT_EMBEDDING_MODEL, SemanticConfig, SemanticError, compute_semantic_result
 from match.sync_qa import build_sync_qa
 from match.timing import average_clip_len, validate_timeline
+from match.visual import VisualMatchError, build_visual_qa, compute_visual_scores
+from visual_index.encoder import VisualEncoderError
 
 
 class MatchError(RuntimeError):
@@ -39,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--film-map", default=None, type=Path)
     parser.add_argument("--review-intent", default=None, type=Path)
     parser.add_argument("--story-map", default=None, type=Path)
+    parser.add_argument("--visual-index", default=None, type=Path)
+    parser.add_argument("--visual-mode", default="off", choices=["off", "rerank"])
+    parser.add_argument("--visual-cache-dir", default=None, type=Path)
+    parser.add_argument("--output-visual-qa", default=None, type=Path)
+    parser.add_argument("--w-visual", default=0.20, type=float)
     parser.add_argument("--semantic-mode", default="off", choices=["off", "tfidf", "bge-m3"])
     parser.add_argument("--semantic-model", default=DEFAULT_EMBEDDING_MODEL)
     parser.add_argument("--semantic-device", default="auto", choices=["auto", "cpu", "cuda"])
@@ -107,6 +114,10 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "semantic_device": args.semantic_device,
         "semantic_batch_size": args.semantic_batch_size,
         "semantic_cache_dir": str(args.semantic_cache_dir) if args.semantic_cache_dir else None,
+        "visual_index": file_hash(args.visual_index.expanduser().resolve()) if args.visual_index and args.visual_index.expanduser().resolve().is_file() else None,
+        "visual_mode": args.visual_mode,
+        "visual_cache_dir": str(args.visual_cache_dir) if args.visual_cache_dir else None,
+        "w_visual": args.w_visual,
         "min_semantic_score": args.min_semantic_score,
         "match_strategy": args.match_strategy,
         "chronology_weight": args.chronology_weight,
@@ -139,8 +150,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError(f"input file does not exist: {args.review_intent}")
     if args.story_map is not None and not args.story_map.expanduser().resolve().is_file():
         raise MatchError(f"input file does not exist: {args.story_map}")
+    if args.visual_index is not None and not args.visual_index.expanduser().resolve().is_file():
+        logging.getLogger("match").warning("visual index does not exist; falling back to text-only matching: %s", args.visual_index)
     if args.min_semantic_score < 0:
         raise MatchError("--min-semantic-score must be >= 0")
+    if args.w_visual < 0:
+        raise MatchError("--w-visual must be >= 0")
     if args.chronology_weight < 0:
         raise MatchError("--chronology-weight must be >= 0")
     if args.max_source_drift_s <= 0:
@@ -259,17 +274,28 @@ def run_match(args: argparse.Namespace) -> int:
         args.review_intent = None
     if not hasattr(args, "story_map"):
         args.story_map = None
+    if not hasattr(args, "visual_index"):
+        args.visual_index = None
+    if not hasattr(args, "visual_mode"):
+        args.visual_mode = "off"
+    if not hasattr(args, "visual_cache_dir"):
+        args.visual_cache_dir = None
+    if not hasattr(args, "output_visual_qa"):
+        args.output_visual_qa = None
+    if not hasattr(args, "w_visual"):
+        args.w_visual = 0.20
     validate_args(args)
     random.seed(args.seed)
     output_path = args.output.expanduser().resolve()
     qa_path = args.output_qa.expanduser().resolve() if args.output_qa else output_path.with_name("edl.qa.json")
     sync_qa_path = args.output_sync_qa.expanduser().resolve() if args.output_sync_qa else output_path.with_name("edl.sync.qa.json")
+    visual_qa_path = args.output_visual_qa.expanduser().resolve() if args.output_visual_qa else output_path.with_name("edl.visual.qa.json")
     review_html_path, _review_asset_dir = review_html_paths(args, output_path)
     cache = MatchCache(args.work_dir.expanduser().resolve(), force=args.force)
     cache.prepare()
     cache_key = make_cache_key(args)
     cached = cache.read_plan(cache_key)
-    if cached is not None and "qa" not in cached:
+    if cached is not None and ("qa" not in cached or "sync_qa" not in cached or "visual_qa" not in cached):
         cached = None
     if cached is not None:
         edl = [EdlPlacement.model_validate(item) for item in cached["edl"]]
@@ -282,6 +308,8 @@ def run_match(args: argparse.Namespace) -> int:
             maybe_write_review_html(args, output_path, cached["qa"])
         if "sync_qa" in cached:
             write_json(sync_qa_path, cached["sync_qa"])
+        if "visual_qa" in cached:
+            write_json(visual_qa_path, cached["visual_qa"])
         return 0
 
     review_beats = load_review_script(args.review_script.expanduser().resolve())
@@ -299,6 +327,9 @@ def run_match(args: argparse.Namespace) -> int:
     film_map = load_film_map(args.film_map.expanduser().resolve()) if args.film_map else []
     semantic_result = None
     semantic_scores: dict[tuple[int, int], float] = {}
+    visual_result = None
+    visual_scores: dict[tuple[int, int], float] = {}
+    warnings: list[str] = []
     if args.semantic_mode != "off":
         semantic_cache_dir = args.semantic_cache_dir.expanduser().resolve() if args.semantic_cache_dir else args.work_dir.expanduser().resolve() / "semantic"
         semantic_result = compute_semantic_result(
@@ -314,10 +345,28 @@ def run_match(args: argparse.Namespace) -> int:
             ),
         )
         semantic_scores = semantic_result.scores
-    weights = ScoringWeights(args.w_motion, args.w_face, args.w_bright, args.w_reuse, args.w_semantic)
+    if args.visual_mode != "off" and args.visual_index is not None and args.visual_index.expanduser().resolve().is_file():
+        try:
+            visual_cache_dir = args.visual_cache_dir.expanduser().resolve() if args.visual_cache_dir else args.work_dir.expanduser().resolve() / "visual"
+            visual_result = compute_visual_scores(
+                beats=review_beats,
+                shots=shots,
+                review_intents=review_intents,
+                index_path=args.visual_index.expanduser().resolve(),
+                cache_dir=visual_cache_dir,
+                device=args.semantic_device,
+                batch_size=args.semantic_batch_size,
+            )
+            visual_scores = visual_result.scores
+            warnings.extend(f"visual: {warning}" for warning in visual_result.warnings)
+        except (VisualMatchError, VisualEncoderError, ValueError, OSError) as exc:
+            warnings.append(f"visual matching disabled: {exc}")
+            logger.warning("Visual matching disabled: %s", exc)
+    elif args.visual_mode != "off":
+        warnings.append("visual matching requested but no usable visual index was provided")
+    weights = ScoringWeights(args.w_motion, args.w_face, args.w_bright, args.w_reuse, args.w_semantic, args.w_visual if visual_scores else 0.0)
     reuse_counts: dict[int, int] = {}
     placements: list[EdlPlacement] = []
-    warnings: list[str] = []
     n_beats_widened = 0
     n_reused = 0
     n_speedfit = 0
@@ -342,6 +391,7 @@ def run_match(args: argparse.Namespace) -> int:
             allow_repeat=args.allow_repeat and not (in_opening_guard and args.opening_allow_short_fill),
             allow_speedfit=args.allow_speedfit,
             semantic_scores=semantic_scores,
+            visual_scores=visual_scores,
             max_repeat_per_beat=args.opening_max_repeat_per_shot if in_opening_guard else args.max_repeat_per_beat,
             max_repeat_ratio_per_beat=args.opening_max_repeat_ratio if in_opening_guard else args.max_repeat_ratio_per_beat,
             min_repeat_alternative_score_ratio=args.min_repeat_alternative_score_ratio,
@@ -416,8 +466,10 @@ def run_match(args: argparse.Namespace) -> int:
         placements=placements,
         shots=all_shots,
         semantic_scores=semantic_scores,
+        visual_scores=visual_scores,
         weights=weights,
         semantic_result=semantic_result,
+        visual_result=visual_result,
         min_semantic_score=args.min_semantic_score,
         warnings=warnings,
         max_repeat_ratio_per_beat=args.max_repeat_ratio_per_beat,
@@ -430,12 +482,14 @@ def run_match(args: argparse.Namespace) -> int:
         max_source_drift_s=args.max_source_drift_s,
     )
     sync_qa = build_sync_qa(beats=review_beats, timings=timings, placements=placements, fps=None)
+    visual_qa = build_visual_qa(beats=review_beats, placements=placements, visual_result=visual_result, visual_mode=args.visual_mode)
     write_json(output_path, placements)
     write_json(output_path.with_name("edl.meta.json"), meta)
     write_json(qa_path, qa)
     write_json(sync_qa_path, sync_qa)
+    write_json(visual_qa_path, visual_qa)
     maybe_write_review_html(args, output_path, qa)
-    cache.write_plan(cache_key, [item.model_dump(mode="json") for item in placements], meta.model_dump(mode="json"), qa, sync_qa=sync_qa)
+    cache.write_plan(cache_key, [item.model_dump(mode="json") for item in placements], meta.model_dump(mode="json"), qa, sync_qa=sync_qa, visual_qa=visual_qa)
     return 0
 
 

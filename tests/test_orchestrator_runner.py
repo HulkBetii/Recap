@@ -90,7 +90,11 @@ def write_stage_outputs(command: list[str]) -> None:
         output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[]}), encoding="utf-8")
         output.with_name("edl.qa.json").write_text(json.dumps({"version":1,"semantic_enabled":True,"min_semantic_score":0.12,"beats":[]}), encoding="utf-8")
         flag(command, "--output-sync-qa").write_text(json.dumps({"version":1,"summary":{},"beats":[]}), encoding="utf-8")
+        flag(command, "--output-visual-qa").write_text(json.dumps({"version":1,"visual_mode":"off","visual_enabled":False,"beats":[]}), encoding="utf-8")
         flag(command, "--output-review-html").write_text("<html>review</html>", encoding="utf-8")
+    elif stage == "visual_index":
+        output = flag(command, "--output")
+        output.write_text(json.dumps({"meta":{"version":"1.0","src":"film.mp4","embedding_mode":"siglip2","embedding_model":"mock","device":"cpu","embedding_dim":2,"keyframes_per_shot":1,"n_shots":1,"created_at":NOW,"cache_hits":[],"warnings":[]},"shots":[{"shot_index":0,"tc_start":0,"tc_end":2,"duration":2,"is_story":True,"is_usable":True,"keyframes":[{"frame_path":"visual_index/frames/shot_000000_k0.jpg","tc":1,"role":"mid","embedding_ref":"visual_index/emb/shot_000000_k0.f16.npy"}],"shot_embedding_ref":"visual_index/emb/shot_000000_pool.f16.npy"}]}), encoding="utf-8")
     elif stage == "render":
         output = flag(command, "--output")
         output.write_bytes(b"recap")
@@ -198,6 +202,18 @@ def test_tts_command_passes_normalization_options(tmp_path: Path) -> None:
     assert command[command.index("--tts-normalized-script-output") + 1] == str(tmp_path / "custom_tts_script.json")
     assert command[command.index("--tts-normalization-report") + 1] == str(tmp_path / "custom_tts_report.json")
 
+def test_shots_command_passes_frame_sampling(tmp_path: Path) -> None:
+    from orchestrator.graph import build_paths
+    from orchestrator.runner import build_command
+
+    paths = build_paths(tmp_path / "run")
+    config = load_config(write_config(tmp_path))
+    config["shots"]["frame_sampling"] = "batch"
+
+    command = build_command("shots", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+
+    assert command[command.index("--frame-sampling") + 1] == "batch"
+
 def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None:
     from orchestrator.graph import build_paths
     from orchestrator.runner import build_command
@@ -210,6 +226,30 @@ def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None
     assert command[command.index("--max-source-drift-s") + 1] == "12.0"
     assert "--opening-story-visual-start" in command
     assert "--ordered-fill-by-audio-progress" in command
+    assert command[command.index("--visual-mode") + 1] == "off"
+
+def test_visual_config_runs_visual_index_and_passes_to_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    path = args.config
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["visual_index"] = {"enabled": True, "embedding_model": "mock", "device": "cpu"}
+    data["match"] = {"visual_mode": "rerank"}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        calls.append(stage_name(command))
+        if stage_name(command) == "match":
+            assert "--visual-index" in command
+            assert command[command.index("--visual-mode") + 1] == "rerank"
+        write_stage_outputs(command)
+
+    assert run_pipeline(args, executor=fake_executor) == 0
+    assert "visual_index" in calls
+    assert calls.index("visual_index") < calls.index("match")
 
 def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:
     args = argset(tmp_path)

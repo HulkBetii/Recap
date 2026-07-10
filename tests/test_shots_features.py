@@ -2,7 +2,8 @@
 
 import numpy as np
 
-from shots.features import FeatureConfig, compute_features_from_frames
+from shots.detect import ShotSpan
+from shots.features import FeatureConfig, build_frame_sample_requests, compute_features_from_frames, frame_index_for_timestamp, shot_sample_times
 
 
 class FakeFaceDetector:
@@ -36,3 +37,17 @@ def test_motion_score_increases_for_changed_frames() -> None:
 
     assert changed_features.motion_score > still_features.motion_score
     assert still_features.motion_score == 0.0
+
+def test_shot_sample_times_match_legacy_spacing() -> None:
+    shot = ShotSpan(index=7, tc_start=10.0, tc_end=12.0)
+
+    assert shot_sample_times(shot, 1) == [11.0]
+    assert shot_sample_times(shot, 3) == [10.05, 11.0, 11.95]
+
+def test_frame_sample_requests_are_sorted_and_clamped() -> None:
+    spans = [ShotSpan(index=1, tc_start=0.0, tc_end=1.0), ShotSpan(index=2, tc_start=1.0, tc_end=3.0)]
+
+    requests = build_frame_sample_requests(spans, 1, fps=10.0, frame_count=20)
+
+    assert [(request.shot_index, request.frame_index) for request in requests] == [(1, 5), (2, 19)]
+    assert frame_index_for_timestamp(9.0, fps=10.0, frame_count=20) == 19

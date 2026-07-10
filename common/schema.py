@@ -408,7 +408,118 @@ class ReviewIntent(BaseModel):
     story_section_type: StorySectionType | None = None
     visual_intent: VisualIntent = "dialogue"
     chronology_mode: ChronologyMode = "flexible"
+    visual_query_vi: str | None = None
+    visual_query_en: str | None = None
+    abstraction_class: str | None = None
+    visual_explicitness: float | None = Field(default=None, ge=0, le=1)
+    characters: list[dict[str, Any]] = Field(default_factory=list)
+    action_cues: list[str] = Field(default_factory=list)
+    emotion_cues: list[str] = Field(default_factory=list)
+    location_cues: list[str] = Field(default_factory=list)
+    object_cues: list[str] = Field(default_factory=list)
+    negative_visual_cues: list[str] = Field(default_factory=list)
+    preferred_shot_traits: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("visual_query_vi", "visual_query_en", "abstraction_class")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+class ShotKeyframe(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    frame_path: str
+    tc: float = Field(ge=0)
+    role: str
+    embedding_ref: str
+
+    @field_validator("frame_path", "role", "embedding_ref")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        normalized = value.strip().replace("\\", "/")
+        if not normalized:
+            raise ValueError("shot keyframe text fields cannot be empty")
+        return normalized
+
+class ShotVisualIndex(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shot_index: int = Field(ge=0)
+    tc_start: float = Field(ge=0)
+    tc_end: float = Field(gt=0)
+    duration: float = Field(gt=0)
+    is_story: bool = True
+    is_usable: bool = True
+    keyframes: list[ShotKeyframe] = Field(default_factory=list)
+    shot_embedding_ref: str
+    ocr_text: str | None = None
+    ocr_score: float = Field(default=0.0, ge=0, le=1)
+    title_like_prob: float = Field(default=0.0, ge=0, le=1)
+    credit_like_prob: float = Field(default=0.0, ge=0, le=1)
+    black_frame_ratio: float = Field(default=0.0, ge=0, le=1)
+    face_tracks: list[dict[str, Any]] = Field(default_factory=list)
+    visual_tags: list[str] = Field(default_factory=list)
+    caption: str | None = None
+    caption_confidence: float | None = Field(default=None, ge=0, le=1)
+
+    @field_validator("shot_embedding_ref")
+    @classmethod
+    def validate_embedding_ref(cls, value: str) -> str:
+        normalized = value.strip().replace("\\", "/")
+        if not normalized:
+            raise ValueError("shot_embedding_ref cannot be empty")
+        return normalized
+
+    @field_validator("ocr_text", "caption")
+    @classmethod
+    def normalize_optional_shot_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_visual_index(self) -> "ShotVisualIndex":
+        if self.tc_end <= self.tc_start:
+            raise ValueError("tc_end must be greater than tc_start")
+        if abs((self.tc_end - self.tc_start) - self.duration) > 1e-3:
+            raise ValueError("duration must equal tc_end - tc_start")
+        if not self.keyframes:
+            raise ValueError("shot visual index requires at least one keyframe")
+        return self
+
+class VisualIndexMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str = "1.0"
+    src: str
+    embedding_mode: str
+    embedding_model: str
+    device: str
+    embedding_dim: int = Field(ge=0)
+    keyframes_per_shot: int = Field(gt=0)
+    n_shots: int = Field(ge=0)
+    created_at: datetime
+    cache_hits: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @field_validator("src", "embedding_mode", "embedding_model", "device")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        normalized = value.strip().replace("\\", "/")
+        if not normalized:
+            raise ValueError("visual index meta text fields cannot be empty")
+        return normalized
+
+class ShotVisualIndexFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    meta: VisualIndexMeta
+    shots: list[ShotVisualIndex] = Field(default_factory=list)
 
 class TtsManifestEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -589,6 +700,17 @@ def validate_review_intents(intents: list[ReviewIntent], beats: list[ReviewBeat]
     if {item.beat_id for item in ordered} != beat_ids:
         raise ValueError("review intent beat ids must match review_script beat ids")
     return ordered
+
+def validate_shot_visual_index(index: ShotVisualIndexFile, shots: list[Shot] | None = None) -> ShotVisualIndexFile:
+    ordered = sorted(index.shots, key=lambda item: item.shot_index)
+    if index.meta.n_shots != len(ordered):
+        raise ValueError("visual index meta n_shots must match shots length")
+    if shots is not None:
+        shot_ids = {shot.index for shot in shots}
+        missing = sorted(item.shot_index for item in ordered if item.shot_index not in shot_ids)
+        if missing:
+            raise ValueError(f"visual index references unknown shot ids: {missing[:10]}")
+    return index.model_copy(update={"shots": ordered})
 
 def validate_review_script(beats: list[ReviewBeat], film_map: list[FilmMapSegment]) -> list[ReviewBeat]:
     ordered = sorted(beats, key=lambda item: item.beat_id)

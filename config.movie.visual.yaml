@@ -102,10 +102,10 @@ tts:
   log_level: INFO
 
 shots:
-  detector: adaptive
+  detector: ffmpeg-scene
   min_shot_len: 0.4
   sample_frames: 5
-  frame_sampling: per-shot
+  frame_sampling: batch
   face_detection: "on"
   min_brightness: 0.06
   skip_intro: 0
@@ -114,11 +114,11 @@ shots:
   scene_threshold: 0.3
   scene_scale_width: 640
   scene_min_gap: 0.3
-  max_shot_len: 0
+  max_shot_len: 8
   log_level: INFO
 
 visual_index:
-  enabled: false
+  enabled: true
   embedding_mode: siglip2
   embedding_model: google/siglip2-base-patch16-384
   device: auto
@@ -160,7 +160,7 @@ match:
   semantic_device: auto
   semantic_batch_size: 16
   semantic_cache_dir: null
-  visual_mode: off
+  visual_mode: rerank
   visual_index: auto
   visual_cache_dir: null
   output_visual_qa: null
@@ -186,4 +186,3 @@ render:
   concurrency: 4
   audio_delay_s: 0.0
   log_level: INFO
-

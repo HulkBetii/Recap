@@ -36,6 +36,9 @@ class StageCache:
             openai_chunks = self.work_dir / "openai_chunks"
             if openai_chunks.exists():
                 shutil.rmtree(openai_chunks)
+            local_asr_chunks = self.work_dir / "local_asr_chunks"
+            if local_asr_chunks.exists():
+                shutil.rmtree(local_asr_chunks)
             frames = self.work_dir / "frames"
             if frames.exists():
                 shutil.rmtree(frames)

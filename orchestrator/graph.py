@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-STAGES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "match", "render")
+STAGES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "visual_index", "match", "render")
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "preflight": (),
     "ingest": ("preflight",),
@@ -11,16 +11,18 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "review": ("storymap",),
     "tts": ("review",),
     "shots": ("preflight",),
+    "visual_index": ("shots",),
     "match": ("review", "tts", "shots"),
     "render": ("match", "tts"),
 }
 DOWNSTREAM: dict[str, tuple[str, ...]] = {
-    "preflight": ("ingest", "storymap", "review", "tts", "shots", "match", "render"),
+    "preflight": ("ingest", "storymap", "review", "tts", "shots", "visual_index", "match", "render"),
     "ingest": ("storymap", "review", "tts", "match", "render"),
     "storymap": ("review", "tts", "match", "render"),
     "review": ("tts", "match", "render"),
     "tts": ("match", "render"),
-    "shots": ("match", "render"),
+    "shots": ("visual_index", "match", "render"),
+    "visual_index": ("match", "render"),
     "match": ("render",),
     "render": (),
 }
@@ -45,10 +47,13 @@ class RunPaths:
     shots: Path
     shots_meta: Path
     shots_dir: Path
+    shot_visual_index: Path
+    visual_index_dir: Path
     edl: Path
     edl_meta: Path
     edl_qa: Path
     edl_sync_qa: Path
+    edl_visual_qa: Path
     edl_review_html: Path
     edl_review_dir: Path
     recap: Path
@@ -82,10 +87,13 @@ def build_paths(run_dir: Path) -> RunPaths:
         shots=run_dir / "shots.json",
         shots_meta=run_dir / "shots.meta.json",
         shots_dir=run_dir / "shots",
+        shot_visual_index=run_dir / "shot_visual_index.json",
+        visual_index_dir=run_dir / "visual_index",
         edl=run_dir / "edl.json",
         edl_meta=run_dir / "edl.meta.json",
         edl_qa=run_dir / "edl.qa.json",
         edl_sync_qa=run_dir / "edl.sync.qa.json",
+        edl_visual_qa=run_dir / "edl.visual.qa.json",
         edl_review_html=run_dir / "edl.review.html",
         edl_review_dir=run_dir / "edl.review",
         recap=run_dir / "recap.mp4",

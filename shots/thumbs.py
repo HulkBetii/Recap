@@ -25,3 +25,12 @@ def write_thumbnail(input_path: Path, shot: ShotSpan, thumb_dir: Path) -> Path:
     finally:
         cap.release()
     return output_path
+
+def write_thumbnail_from_frame(input_path: Path, thumb_dir: Path, index: int, frame) -> Path:  # type: ignore[no-untyped-def]
+    import cv2
+
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    output_path = thumbnail_path(input_path, thumb_dir, index)
+    if not cv2.imwrite(str(output_path), frame):
+        raise RuntimeError(f"Could not write thumbnail for shot #{index}")
+    return output_path

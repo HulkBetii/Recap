@@ -10,13 +10,26 @@ from common.media import MediaError, require_ffmpeg
 from common.schema import Shot, ShotsMeta, VideoProfile, validate_shots, write_json
 from shots.cache import ShotsCache, stable_hash
 from shots.detect import ShotSpan, detect_shots
-from shots.features import FeatureConfig, compute_features_from_frames, create_face_detector, sample_frames
+from shots.features import (
+    DEFAULT_FRAME_SAMPLE_WIDTH,
+    FaceDetector,
+    FeatureConfig,
+    SampledFrame,
+    compute_features_from_frames,
+    create_face_detector,
+    iter_batch_sampled_frames,
+    sample_frames,
+)
 from shots.profile import apply_video_profile_to_shots, profile_cache_key, video_profile_hash
-from shots.thumbs import write_thumbnail
+from shots.thumbs import thumbnail_path, write_thumbnail, write_thumbnail_from_frame
 
 DEFAULT_MIN_SHOT_LEN = 0.4
 DEFAULT_SAMPLE_FRAMES = 5
 DEFAULT_MIN_BRIGHTNESS = 0.06
+DEFAULT_SCENE_THRESHOLD = 0.3
+DEFAULT_SCENE_SCALE_WIDTH = 640
+DEFAULT_SCENE_MIN_GAP = 0.3
+DEFAULT_FRAME_SAMPLING = "per-shot"
 
 
 class ShotsError(RuntimeError):
@@ -37,11 +50,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--thumb-dir", default=Path("shots"), type=Path)
-    parser.add_argument("--detector", default="adaptive", choices=["adaptive", "content"])
+    parser.add_argument("--detector", default="adaptive", choices=["adaptive", "content", "ffmpeg-scene"])
     parser.add_argument("--min-shot-len", default=DEFAULT_MIN_SHOT_LEN, type=float)
     parser.add_argument("--sample-frames", default=DEFAULT_SAMPLE_FRAMES, type=int)
+    parser.add_argument("--frame-sampling", default=DEFAULT_FRAME_SAMPLING, choices=["per-shot", "batch"])
     parser.add_argument("--face-detection", default="on", choices=["on", "off"])
     parser.add_argument("--min-brightness", default=DEFAULT_MIN_BRIGHTNESS, type=float)
+    parser.add_argument("--scene-threshold", default=DEFAULT_SCENE_THRESHOLD, type=float, help="ffmpeg-scene detector threshold")
+    parser.add_argument("--scene-scale-width", default=DEFAULT_SCENE_SCALE_WIDTH, type=int, help="Scale width for ffmpeg-scene; 0 disables scaling")
+    parser.add_argument("--scene-min-gap", default=DEFAULT_SCENE_MIN_GAP, type=float, help="Minimum seconds between ffmpeg-scene boundaries")
+    parser.add_argument("--max-shot-len", default=0.0, type=float, help="Split detected scenes longer than this many seconds; 0 disables")
     parser.add_argument("--skip-intro", default=0.0, type=float, help="Debug override only; default pipeline should use --video-profile")
     parser.add_argument("--video-profile", default=None, type=Path)
     parser.add_argument("--skip-outro", default=0.0, type=float)
@@ -65,6 +83,10 @@ def detection_cache_key(input_path: Path, args: argparse.Namespace) -> str:
         "skip_intro": args.skip_intro,
         "skip_outro": args.skip_outro,
         "downscale": args.downscale,
+        "scene_threshold": args.scene_threshold,
+        "scene_scale_width": args.scene_scale_width,
+        "scene_min_gap": args.scene_min_gap,
+        "max_shot_len": args.max_shot_len,
     })
 
 
@@ -76,6 +98,10 @@ def legacy_detection_cache_key(input_path: Path, args: argparse.Namespace) -> st
         "skip_intro": args.skip_intro,
         "skip_outro": args.skip_outro,
         "downscale": args.downscale,
+        "scene_threshold": getattr(args, "scene_threshold", DEFAULT_SCENE_THRESHOLD),
+        "scene_scale_width": getattr(args, "scene_scale_width", DEFAULT_SCENE_SCALE_WIDTH),
+        "scene_min_gap": getattr(args, "scene_min_gap", DEFAULT_SCENE_MIN_GAP),
+        "max_shot_len": getattr(args, "max_shot_len", 0.0),
         "video_profile": str(args.video_profile) if args.video_profile else None,
     })
 
@@ -83,6 +109,7 @@ def feature_cache_key(spans: list[ShotSpan], args: argparse.Namespace) -> str:
     return stable_hash({
         "spans": [span.__dict__ for span in spans],
         "sample_frames": args.sample_frames,
+        "frame_sampling": args.frame_sampling,
         "face_detection": args.face_detection,
         "min_brightness": args.min_brightness,
         "min_shot_len": args.min_shot_len,
@@ -121,6 +148,46 @@ def features_to_shots(input_path: Path, output_path: Path, thumb_dir: Path, span
         )
     return shots
 
+def thumbnail_sample(span: ShotSpan, samples: list[SampledFrame]) -> SampledFrame | None:
+    if not samples:
+        return None
+    midpoint = span.tc_start + (span.duration / 2)
+    return min(samples, key=lambda sample: abs(sample.timestamp - midpoint))
+
+def compute_features_per_shot(
+    *,
+    input_path: Path,
+    thumb_dir: Path,
+    spans: list[ShotSpan],
+    args: argparse.Namespace,
+    config: FeatureConfig,
+    face_detector: FaceDetector,
+    logger: logging.Logger,
+) -> dict[int, dict]:
+    features_by_index: dict[int, dict] = {}
+    if args.frame_sampling == "batch":
+        total = len(spans)
+        for count, (span, samples) in enumerate(
+            iter_batch_sampled_frames(input_path, spans, args.sample_frames, max_width=DEFAULT_FRAME_SAMPLE_WIDTH),
+            start=1,
+        ):
+            frames = [sample.frame for sample in samples]
+            features = compute_features_from_frames(frames, duration=span.duration, config=config, face_detector=face_detector)
+            features_by_index[span.index] = features.__dict__
+            thumb = thumbnail_sample(span, samples)
+            thumb_output = thumbnail_path(input_path, thumb_dir, span.index)
+            if thumb is not None and not thumb_output.exists():
+                write_thumbnail_from_frame(input_path, thumb_dir, span.index, thumb.frame)
+            if count % 100 == 0 or count == total:
+                logger.info("[2/4] Batch sampled %s/%s shots", count, total)
+        return features_by_index
+
+    for span in spans:
+        frames = sample_frames(input_path, span, args.sample_frames)
+        features = compute_features_from_frames(frames, duration=span.duration, config=config, face_detector=face_detector)
+        features_by_index[span.index] = features.__dict__
+    return features_by_index
+
 
 def run_shots(args: argparse.Namespace) -> int:
     logger = logging.getLogger("shots")
@@ -128,6 +195,16 @@ def run_shots(args: argparse.Namespace) -> int:
         args.video_profile = None
     if not hasattr(args, "profile_only"):
         args.profile_only = False
+    if not hasattr(args, "scene_threshold"):
+        args.scene_threshold = DEFAULT_SCENE_THRESHOLD
+    if not hasattr(args, "scene_scale_width"):
+        args.scene_scale_width = DEFAULT_SCENE_SCALE_WIDTH
+    if not hasattr(args, "scene_min_gap"):
+        args.scene_min_gap = DEFAULT_SCENE_MIN_GAP
+    if not hasattr(args, "max_shot_len"):
+        args.max_shot_len = 0.0
+    if not hasattr(args, "frame_sampling"):
+        args.frame_sampling = DEFAULT_FRAME_SAMPLING
     input_path = args.input.expanduser().resolve()
     output_path = args.output.expanduser().resolve()
     thumb_dir = args.thumb_dir.expanduser().resolve()
@@ -138,8 +215,18 @@ def run_shots(args: argparse.Namespace) -> int:
         raise ShotsError("--min-shot-len must be > 0")
     if args.sample_frames <= 0:
         raise ShotsError("--sample-frames must be > 0")
+    if args.frame_sampling not in {"per-shot", "batch"}:
+        raise ShotsError("--frame-sampling must be per-shot or batch")
     if not 0 <= args.min_brightness <= 1:
         raise ShotsError("--min-brightness must be between 0 and 1")
+    if not 0 < args.scene_threshold < 1:
+        raise ShotsError("--scene-threshold must be between 0 and 1")
+    if args.scene_scale_width < 0:
+        raise ShotsError("--scene-scale-width must be >= 0")
+    if args.scene_min_gap < 0:
+        raise ShotsError("--scene-min-gap must be >= 0")
+    if args.max_shot_len < 0:
+        raise ShotsError("--max-shot-len must be >= 0")
     require_ffmpeg()
     profile = load_video_profile(args.video_profile)
     profile_hash = video_profile_hash(args.video_profile)
@@ -163,6 +250,10 @@ def run_shots(args: argparse.Namespace) -> int:
             skip_intro=args.skip_intro,
             skip_outro=args.skip_outro,
             downscale=args.downscale,
+            scene_threshold=args.scene_threshold,
+            scene_scale_width=args.scene_scale_width,
+            scene_min_gap=args.scene_min_gap,
+            max_shot_len=args.max_shot_len,
         )
         cache.write_cached("detection.json", detect_key, {"duration_s": duration_s, "spans": spans_to_json(spans)})
 
@@ -170,6 +261,7 @@ def run_shots(args: argparse.Namespace) -> int:
     warnings: list[str] = []
     face_detector, face_warnings = create_face_detector(args.face_detection)
     warnings.extend(face_warnings)
+    face_detector_version = "off" if args.face_detection == "off" or face_warnings else "opencv-haar-frontalface-default"
     config = FeatureConfig(
         sample_frames=args.sample_frames,
         face_detection=args.face_detection,
@@ -184,11 +276,15 @@ def run_shots(args: argparse.Namespace) -> int:
     else:
         if args.profile_only:
             raise ShotsError("profile-only requires existing features cache")
-        features_by_index = {}
-        for span in spans:
-            frames = sample_frames(input_path, span, args.sample_frames)
-            features = compute_features_from_frames(frames, duration=span.duration, config=config, face_detector=face_detector)
-            features_by_index[span.index] = features.__dict__
+        features_by_index = compute_features_per_shot(
+            input_path=input_path,
+            thumb_dir=thumb_dir,
+            spans=spans,
+            args=args,
+            config=config,
+            face_detector=face_detector,
+            logger=logger,
+        )
         cache.write_cached("features.json", feature_key, {str(key): value for key, value in features_by_index.items()})
 
     logger.info("[3/4] Applying video profile")
@@ -213,14 +309,19 @@ def run_shots(args: argparse.Namespace) -> int:
         detector=args.detector,
         feature_config={
             "sample_frames": args.sample_frames,
+            "frame_sampling": args.frame_sampling,
             "face_detection": args.face_detection,
             "min_brightness": args.min_brightness,
             "min_shot_len": args.min_shot_len,
             "skip_intro": args.skip_intro,
             "skip_outro": args.skip_outro,
             "downscale": args.downscale,
+            "scene_threshold": args.scene_threshold,
+            "scene_scale_width": args.scene_scale_width,
+            "scene_min_gap": args.scene_min_gap,
+            "max_shot_len": args.max_shot_len,
         },
-        model_versions={"face_detector": "opencv-haar-frontalface-default" if args.face_detection == "on" else "off"},
+        model_versions={"face_detector": face_detector_version},
         video_profile_path=str(args.video_profile.expanduser().resolve()) if args.video_profile else None,
         video_profile_hash=profile_hash,
         n_non_story=n_non_story,

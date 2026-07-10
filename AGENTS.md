@@ -191,7 +191,8 @@ repo/
 
 - GĐ4 là CLI local/offline, chạy bằng `python -m shots`.
 - GĐ4 không dùng API. Dependencies: `scenedetect`, `opencv-python-headless`, `numpy`, ffmpeg/ffprobe.
-- Shot detection dùng PySceneDetect `AdaptiveDetector` mặc định, có option `--detector content`.
+- Shot detection dùng PySceneDetect `AdaptiveDetector` mặc định, có option `--detector content`; phim dài có thể dùng `--detector ffmpeg-scene` để detect bằng ffmpeg scene score nhanh hơn.
+- GĐ4 có `--max-shot-len` để split scene/shot quá dài thành virtual shot ngắn hơn cho GĐ5; default `0` giữ behavior cũ, preset visual dùng giá trị ngắn hơn để đủ candidate 3-5s.
 - Feature pass tính sẵn `motion_score`, `brightness`, `face_count`, `face_area`, `is_usable` cho GĐ5.
 - Face detection v1 dùng Haar cascade bundled trong OpenCV; có thể tắt bằng `--face-detection off`.
 - Package thực tế:
@@ -201,6 +202,8 @@ repo/
 - `detection.json` và `features.json` không phụ thuộc `video_profile.json`; khi chỉ đổi profile, GĐ4 chỉ re-apply `profile_marking.json` để set `is_story=false` / `exclude_reason`.
 - CLI có `--profile-only` để debug re-apply profile từ cache; thiếu cache features thì fail-fast.
 - Test tự động dùng mock/frame synthetic; real clip smoke test sẽ chạy khi có video mẫu.
+- GĐ4 has `--frame-sampling per-shot|batch`; default `per-shot` keeps legacy behavior, while `batch` opens the video once, samples frames in timeline order, and reuses those frames for features + thumbnails. `config.movie.visual.yaml` enables `batch`.
+
 ## 14. GD5 IMPLEMENTATION HIEN TAI
 
 - GD5 la CLI local/offline, chay bang `python -m match`.
@@ -251,6 +254,8 @@ repo/
 - Preset tiếng Việt mặc định bật `aligner=whisperx` với `source_language=vi`; WhisperX phải dùng align model `vi`, không được hardcode `ko`.
 - ASR provider hi?n c?: `faster-whisper` default, `openai-gpt4o`, `openai-gpt4o-hybrid`, v? `manual` ?? import transcript Markdown/JSON.
 - Cache transcript m?i trong `--work-dir`: `transcript_text.json`, `transcript_aligned.json`, `transcript_quality.json`.
+- Local `faster-whisper` chunks long audio into `work/ingest/local_asr_chunks` to avoid whole-movie FFT memory spikes; it must pass `source_language` (`ko`/`vi`) into Whisper instead of hardcoding Korean.
+- Vietnamese/offline ingest with `translate_mode=none` and `max_vision_frames=0` must not require `OPENAI_API_KEY`; only translation, vision, OpenAI ASR, or OpenAI transcript correction require it.
 - Manual transcript d?ng `[MM:SS] text` ch? c? timestamp start; end-time ???c suy lu?n n?n lu?n ??nh d?u approximate n?u ch?a align.
 - `--aligner whisperx` ch?y WhisperX forced alignment th?t khi runtime `torch`/`whisperx` c? s?n; n?u l?i th? fallback timestamp hi?n t?i v? ghi warning. `qwen3` v?n l? placeholder an to?n.
 - Segment qu? d?i ???c split theo c?u/max duration ?? G?2/G?5 c? source windows m?n h?n.
@@ -410,3 +415,15 @@ repo/
 - Fallback ch? d?a tr?n `film_map.meta.json`: `timecode_quality != strict`, `approximate_timecodes=true`, ho?c warning alignment/timecode nghi?m tr?ng.
 - `fallback_plan.json` ghi trigger/block reason; `fallback_summary.json` ghi k?t qu? sau fallback; `cost_summary.json` c? `openai_fallback_possible` v? `openai_fallback_triggered`.
 - N?u `api_budget_guard=block`, fallback OpenAI ph?i b? ch?n r? r?ng thay v? ?m th?m t?n API.
+
+## 34. GĐ4.5 VISUAL INDEX / TIME-ANCHORED VISUAL MATCHING
+
+- GĐ4.5 là optional local/offline stage, chạy bằng `python -m visual_index`, nhận `film.mp4` + `shots.json` và sinh `shot_visual_index.json` + keyframes/vector sidecars trong `visual_index/`.
+- Default pipeline vẫn tắt GĐ4.5 (`visual_index.enabled=false`); preset thử nghiệm nằm ở `config.movie.visual.yaml`.
+- Optional dependency group: `visual-index` gồm `torch`, `transformers`, `Pillow`, `safetensors`; model mặc định là `google/siglip2-base-patch16-384`.
+- `shot_visual_index.json` không thay contract bắt buộc của `shots.json`; vector dài lưu sidecar `.npy` float16 qua `embedding_ref`/`shot_embedding_ref`.
+- GĐ2 `review_script.intent.json` có thêm optional visual query/cue fields (`visual_query_vi`, `visual_query_en`, `characters`, `action_cues`, `emotion_cues`, `location_cues`, `object_cues`, `negative_visual_cues`, `preferred_shot_traits`) nhưng `review_script.json` không đổi.
+- GĐ5 nhận optional `--visual-index`, `--visual-mode off|rerank`, `--w-visual`, `--visual-cache-dir`; visual score chỉ rerank candidates trong source window/widen hiện có, không semantic search tự do toàn phim.
+- GĐ5 luôn ghi `edl.visual.qa.json`; khi visual disabled/missing thì artifact ghi `visual_enabled=false` và matching fallback text-only.
+- GĐ5 `edl.qa.json` và `edl.review.html` hiển thị thêm visual score/rank/query để debug hình có khớp narration hay không.
+- V1 chưa làm VLM caption top-K, OCR đầy đủ, hoặc face/entity cluster; các hướng này là phase sau và vẫn phải giữ chronology/timecode là prior chính.

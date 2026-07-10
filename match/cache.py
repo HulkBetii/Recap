@@ -36,12 +36,14 @@ class MatchCache:
         self.cache_hits.append("plan.json")
         return payload
 
-    def write_plan(self, cache_key: str, edl: list[dict], meta: dict, qa: dict | None = None, sync_qa: dict | None = None) -> None:
+    def write_plan(self, cache_key: str, edl: list[dict], meta: dict, qa: dict | None = None, sync_qa: dict | None = None, visual_qa: dict | None = None) -> None:
         payload = {"cache_key": cache_key, "edl": edl, "meta": meta}
         if qa is not None:
             payload["qa"] = qa
         if sync_qa is not None:
             payload["sync_qa"] = sync_qa
+        if visual_qa is not None:
+            payload["visual_qa"] = visual_qa
         self.plan_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
