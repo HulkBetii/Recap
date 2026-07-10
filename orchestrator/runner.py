@@ -61,7 +61,7 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "tts_align": StageSpec("tts_align", ("micro_policy", "tts_align", "review_micro", "review_micro_meta"), "review_micro_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
     "match": StageSpec("match", ("edl", "edl_meta", "edl_qa", "edl_sync_qa", "edl_review_html"), "edl_meta"),
-    "broll": StageSpec("broll", ("broll_plan", "broll_prompts"), None),
+    "broll": StageSpec("broll", ("broll_plan",), None),
     "render": StageSpec("render", ("recap", "render_meta"), "render_meta"),
 }
 
@@ -71,8 +71,8 @@ def load_json(path: Path) -> Any:
 
 
 def output_paths(paths: RunPaths, stage: str, config: dict[str, Any] | None = None) -> list[Path]:
-    if stage == "broll" and config is not None and config.get("broll", {}).get("mode", "plan") == "apply":
-        return [paths.broll_plan, paths.broll_prompts, paths.edl_broll, paths.broll_manifest, paths.broll_qa]
+    if stage == "broll" and config is not None and config.get("broll", {}).get("mode", "apply") == "apply":
+        return [paths.broll_plan, paths.edl_broll, paths.broll_manifest, paths.broll_qa]
     return [getattr(paths, name) for name in STAGE_SPECS[stage].outputs]
 
 
@@ -284,8 +284,8 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--no-review-html")
     elif stage == "broll":
         broll = config.get("broll", {})
-        mode = broll.get("mode", "plan")
-        command += ["--mode", str(mode), "--edl", str(paths.edl), "--output-plan", str(paths.broll_plan), "--output-prompts", str(paths.broll_prompts)]
+        mode = broll.get("mode", "apply")
+        command += ["--mode", str(mode), "--film", str(film), "--shots", str(paths.shots), "--edl", str(paths.edl), "--output-plan", str(paths.broll_plan)]
         if paths.edl_qa.is_file() or mode == "plan":
             command += ["--edl-qa", str(paths.edl_qa)]
         if paths.edl_sync_qa.is_file() or mode == "plan":
@@ -295,12 +295,11 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         if paths.review_intent.is_file():
             command += ["--review-intent", str(paths.review_intent)]
         if mode == "apply":
-            asset_dir = broll.get("asset_dir") or paths.broll_assets_dir
-            command += ["--asset-dir", str(asset_dir), "--clip-dir", str(paths.broll_clips_dir), "--output-edl", str(paths.edl_broll), "--output-manifest", str(paths.broll_manifest), "--output-qa", str(paths.broll_qa)]
+            command += ["--frame-dir", str(broll.get("frame_dir") or paths.broll_frames_dir), "--clip-dir", str(broll.get("clip_dir") or paths.broll_clips_dir), "--output-edl", str(paths.edl_broll), "--output-manifest", str(paths.broll_manifest), "--output-qa", str(paths.broll_qa)]
             render_cfg = config.get("render", {})
             for key in ("width", "height", "fps", "crf", "preset"):
                 add_option(command, key, render_cfg.get(key))
-        for key in ("max_replacement_ratio", "max_broll_per_parent_beat", "exclude_opening_s", "log_level"):
+        for key in ("max_replacement_ratio", "max_broll_per_parent_beat", "exclude_opening_s", "min_broll_duration_s", "min_frame_shot_distance", "frame_reuse_window_s", "log_level"):
             add_option(command, key, broll.get(key))
     elif stage == "render":
         render_edl = paths.edl_broll if config.get("broll", {}).get("enabled", False) and paths.edl_broll.is_file() else paths.edl

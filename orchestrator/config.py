@@ -185,11 +185,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "broll": {
         "enabled": False,
-        "mode": "plan",
+        "mode": "apply",
         "max_replacement_ratio": 0.30,
         "max_broll_per_parent_beat": 1,
         "exclude_opening_s": 5.5,
-        "asset_dir": None,
+        "min_broll_duration_s": 1.0,
+        "min_frame_shot_distance": 3,
+        "frame_reuse_window_s": 20.0,
+        "frame_dir": None,
+        "clip_dir": None,
         "log_level": "INFO",
     },
     "render": {

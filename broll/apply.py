@@ -1,32 +1,30 @@
 ﻿from __future__ import annotations
 
 import shutil
+from collections import Counter
 from pathlib import Path
 
-from common.media import run_command
+from common.media import extract_frame, run_command
 from common.schema import EdlPlacement, validate_edl, write_json
 from broll.schema import BrollManifestItem, BrollPlan, BrollQa, read_json
 
-IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 MOTION_PRESETS = ("zoom_in", "zoom_out", "pan_left", "pan_right")
 
 
-def find_asset(asset_dir: Path, asset_id: str) -> Path | None:
-    for extension in IMAGE_EXTENSIONS:
-        path = asset_dir / f"{asset_id}{extension}"
-        if path.is_file():
-            return path
-    return None
-
-
-def motion_preset(asset_id: str) -> str:
-    return MOTION_PRESETS[sum(asset_id.encode("utf-8")) % len(MOTION_PRESETS)]
+def motion_preset(frame_id: str, duration_s: float | None = None) -> str:
+    if duration_s is not None and 1.0 <= duration_s <= 1.5:
+        return "still_soft_zoom"
+    return MOTION_PRESETS[sum(frame_id.encode("utf-8")) % len(MOTION_PRESETS)]
 
 
 def ken_burns_filter(*, width: int, height: int, fps: float, duration_s: float, preset: str) -> str:
     frames = max(1, round(duration_s * fps))
     base = f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,crop={width * 2}:{height * 2}"
-    if preset == "zoom_out":
+    if preset == "still_soft_zoom":
+        zoom = "z='min(1.025,1.0+0.025*on/{frames})'"
+        x = "x='iw/2-(iw/zoom/2)'"
+        y = "y='ih/2-(ih/zoom/2)'"
+    elif preset == "zoom_out":
         zoom = "z='max(1.0,1.10-0.10*on/{frames})'"
         x = "x='iw/2-(iw/zoom/2)'"
         y = "y='ih/2-(ih/zoom/2)'"
@@ -82,7 +80,8 @@ def apply_broll_plan(
     *,
     edl_path: Path,
     plan_path: Path,
-    asset_dir: Path,
+    film_path: Path,
+    frame_dir: Path,
     clip_dir: Path,
     output_edl_path: Path,
     output_manifest_path: Path,
@@ -94,15 +93,22 @@ def apply_broll_plan(
     encoder_preset: str = "medium",
     force: bool = False,
 ) -> BrollQa:
+    if not film_path.is_file():
+        raise FileNotFoundError(f"film file does not exist: {film_path}")
     placements = [EdlPlacement.model_validate(item) for item in read_json(edl_path)]
     plan = BrollPlan.model_validate(read_json(plan_path))
     if force and clip_dir.exists():
         shutil.rmtree(clip_dir)
+    if force and frame_dir.exists():
+        shutil.rmtree(frame_dir)
+    frame_dir.mkdir(parents=True, exist_ok=True)
     clip_dir.mkdir(parents=True, exist_ok=True)
     candidates = {(item.beat_id, round(item.tl_start, 3), round(item.tl_end, 3), item.shot_index): item for item in plan.candidates}
     manifest: list[BrollManifestItem] = []
     replaced = 0
-    missing = 0
+    extracted = 0
+    failed = 0
+    fallback = 0
     output: list[EdlPlacement] = []
     warnings: list[str] = []
     for placement in placements:
@@ -110,20 +116,25 @@ def apply_broll_plan(
         if candidate is None:
             output.append(placement)
             continue
-        asset = find_asset(asset_dir, candidate.asset_id)
-        preset_name = motion_preset(candidate.asset_id)
-        if asset is None:
-            missing += 1
-            warning = f"missing asset for {candidate.asset_id}"
+        preset_name = motion_preset(candidate.frame_id, candidate.duration_s)
+        frame_path = (frame_dir / f"{candidate.frame_id}.jpg").resolve()
+        clip_path = (clip_dir / f"{candidate.frame_id}.mp4").resolve()
+        try:
+            if force or not frame_path.is_file():
+                extract_frame(film_path, candidate.frame_tc, frame_path)
+            extracted += 1
+            if force or not clip_path.is_file():
+                render_ken_burns_clip(image_path=frame_path, output_path=clip_path, duration_s=candidate.duration_s, width=width, height=height, fps=fps, crf=crf, preset_name=preset_name, encoder_preset=encoder_preset)
+        except Exception as exc:
+            failed += 1
+            fallback += 1
+            warning = f"failed frame-from-film broll for {candidate.frame_id}: {exc}"
             warnings.append(warning)
-            manifest.append(BrollManifestItem(asset_id=candidate.asset_id, image_path=None, clip_path=None, status="missing_asset", duration_s=candidate.duration_s, motion_preset=preset_name, warnings=[warning]))
+            manifest.append(BrollManifestItem(frame_id=candidate.frame_id, frame_path=str(frame_path) if frame_path.is_file() else None, clip_path=None, source_tc=candidate.frame_tc, source_shot_index=candidate.frame_shot_index, status="failed", duration_s=candidate.duration_s, motion_preset=preset_name, warnings=[warning]))
             output.append(placement)
             continue
-        clip_path = (clip_dir / f"{candidate.asset_id}.mp4").resolve()
-        if force or not clip_path.is_file():
-            render_ken_burns_clip(image_path=asset, output_path=clip_path, duration_s=candidate.duration_s, width=width, height=height, fps=fps, crf=crf, preset_name=preset_name, encoder_preset=encoder_preset)
         replaced += 1
-        manifest.append(BrollManifestItem(asset_id=candidate.asset_id, image_path=str(asset), clip_path=str(clip_path), status="generated", duration_s=candidate.duration_s, motion_preset=preset_name))
+        manifest.append(BrollManifestItem(frame_id=candidate.frame_id, frame_path=str(frame_path), clip_path=str(clip_path), source_tc=candidate.frame_tc, source_shot_index=candidate.frame_shot_index, status="generated", duration_s=candidate.duration_s, motion_preset=preset_name))
         output.append(EdlPlacement(
             tl_start=placement.tl_start,
             tl_end=placement.tl_end,
@@ -138,6 +149,7 @@ def apply_broll_plan(
     validate_edl(output)
     write_json(output_edl_path, output)
     write_json(output_manifest_path, [item.model_dump() for item in manifest])
+    distance_distribution = Counter(str(candidate.frame_shot_distance_used) for candidate in plan.candidates)
     qa = BrollQa(
         enabled=True,
         source_edl=str(edl_path),
@@ -145,7 +157,12 @@ def apply_broll_plan(
         n_placements=len(placements),
         n_planned=len(plan.candidates),
         n_replaced=replaced,
-        n_missing_assets=missing,
+        n_skipped_short_duration=plan.n_skipped_short_duration,
+        n_frame_keep_original_no_alternative=plan.n_frame_keep_original_no_alternative,
+        frame_shot_distance_distribution=dict(sorted(distance_distribution.items())),
+        n_extracted_frames=extracted,
+        n_frame_fallbacks=fallback,
+        n_failed_frames=failed,
         replacement_ratio=round(replaced / len(placements), 4) if placements else 0.0,
         original_footage_ratio_estimate=round(1.0 - (replaced / len(placements) if placements else 0.0), 4),
         warnings=warnings,
@@ -153,4 +170,3 @@ def apply_broll_plan(
     )
     write_json(output_qa_path, qa)
     return qa
-

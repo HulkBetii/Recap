@@ -79,7 +79,7 @@ def test_render_cli_outputs_meta_and_uses_cache(tmp_path: Path, monkeypatch: pyt
     def fake_cut(**kwargs):  # type: ignore[no-untyped-def]
         kwargs["output_path"].write_bytes(b"temp")
 
-    def fake_concat(temp_paths, output_path, work_dir):  # type: ignore[no-untyped-def]
+    def fake_concat(temp_paths, output_path, work_dir, durations=None):  # type: ignore[no-untyped-def]
         output_path.write_bytes(b"video")
         return work_dir / "concat.txt"
 
@@ -92,6 +92,9 @@ def test_render_cli_outputs_meta_and_uses_cache(tmp_path: Path, monkeypatch: pyt
     assert run_render(args) == 0
     meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
     assert meta["duration_match"] is True
+    assert meta["video_only_duration_s"] == 2.0
+    assert meta["pre_pad_duration_delta_s"] == 0.0
+    assert meta["padded_video_s"] == 0.0
     assert meta["n_temp_clips"] == 2
 
     assert run_render(args) == 0
@@ -106,12 +109,41 @@ def test_render_cli_duration_warning(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("render.__main__.probe_duration", lambda path: 2.5 if Path(path).name == "recap.mp4" else 2.0)
     monkeypatch.setattr("render.__main__.has_audio_stream", lambda path: True)
     monkeypatch.setattr("render.__main__.cut_temp_clip", lambda **kwargs: kwargs["output_path"].write_bytes(b"temp"))
-    monkeypatch.setattr("render.__main__.concat_video", lambda temp_paths, output_path, work_dir: output_path.write_bytes(b"video"))
+    monkeypatch.setattr("render.__main__.concat_video", lambda temp_paths, output_path, work_dir, durations=None: output_path.write_bytes(b"video"))
     monkeypatch.setattr("render.__main__.mux_voiceover", lambda video_path, voiceover_path, output_path, audio_delay_s=0.0: output_path.write_bytes(b"recap"))
     assert run_render(args) == 0
     meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
     assert meta["duration_match"] is False
     assert meta["warnings"]
+
+
+def test_render_cli_pre_pad_mismatch_not_hidden_by_padding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    args = make_args(tmp_path)
+    monkeypatch.setattr("render.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("render.__main__.probe_video_stream", lambda path: {"width":1920,"height":1080,"codec":"h264","fps":30.0,"duration":10.0})
+
+    def fake_probe_duration(path):  # type: ignore[no-untyped-def]
+        name = Path(path).name
+        if name == "video_only.mp4":
+            return 1.0
+        if name == "recap.mp4":
+            return 2.0
+        return 2.0
+
+    monkeypatch.setattr("render.__main__.probe_duration", fake_probe_duration)
+    monkeypatch.setattr("render.__main__.has_audio_stream", lambda path: True)
+    monkeypatch.setattr("render.__main__.cut_temp_clip", lambda **kwargs: kwargs["output_path"].write_bytes(b"temp"))
+    monkeypatch.setattr("render.__main__.concat_video", lambda temp_paths, output_path, work_dir, durations=None: output_path.write_bytes(b"video"))
+    monkeypatch.setattr("render.__main__.pad_video_to_duration", lambda video_path, output_path, duration_s: output_path.write_bytes(b"padded"))
+    monkeypatch.setattr("render.__main__.mux_voiceover", lambda video_path, voiceover_path, output_path, audio_delay_s=0.0: output_path.write_bytes(b"recap"))
+    assert run_render(args) == 0
+    meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
+    assert meta["duration_match"] is False
+    assert meta["video_only_duration_s"] == 1.0
+    assert meta["pre_pad_duration_delta_s"] == -1.0
+    assert meta["padded_video_s"] == 1.0
+    assert any("pre-pad video/audio duration mismatch" in warning for warning in meta["warnings"])
+
 
 def test_render_cli_bgm_and_captions_use_final_mux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     args = make_args(tmp_path)
@@ -128,7 +160,7 @@ def test_render_cli_bgm_and_captions_use_final_mux(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr("render.__main__.probe_duration", lambda path: 2.0)
     monkeypatch.setattr("render.__main__.has_audio_stream", lambda path: True)
     monkeypatch.setattr("render.__main__.cut_temp_clip", lambda **kwargs: kwargs["output_path"].write_bytes(b"temp"))
-    monkeypatch.setattr("render.__main__.concat_video", lambda temp_paths, output_path, work_dir: output_path.write_bytes(b"video"))
+    monkeypatch.setattr("render.__main__.concat_video", lambda temp_paths, output_path, work_dir, durations=None: output_path.write_bytes(b"video"))
     calls = []
     monkeypatch.setattr("render.__main__.mux_final", lambda **kwargs: (calls.append(kwargs), kwargs["output_path"].write_bytes(b"recap")))
     assert run_render(args) == 0

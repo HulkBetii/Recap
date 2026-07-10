@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -21,7 +21,7 @@ def test_tts_align_builds_micro_with_proportional_fallback(tmp_path: Path, monke
     review = [
         {
             "beat_id": 0,
-            "narration": "Mở đầu có chuyện lớn xảy ra. Cảnh sát lập tức vào cuộc. Kẻ xấu bỏ chạy rất nhanh.",
+            "narration": "Má»Ÿ Ä‘áº§u cÃ³ chuyá»‡n lá»›n xáº£y ra. Cáº£nh sÃ¡t láº­p tá»©c vÃ o cuá»™c. Káº» xáº¥u bá» cháº¡y ráº¥t nhanh.",
             "from_seg_id": 0,
             "to_seg_id": 3,
             "src_tc_start": 0,
@@ -53,9 +53,52 @@ def test_tts_align_builds_micro_with_proportional_fallback(tmp_path: Path, monke
     assert tts_align_main() == 0
     micro = json.loads((tmp_path / "review_script.micro.json").read_text(encoding="utf-8"))
     meta = json.loads((tmp_path / "review_script.micro.meta.json").read_text(encoding="utf-8"))
-    assert len(micro) == 3
+    assert len(micro) == 2
     assert meta["enabled"] is True
-    assert meta["alignment_methods"] == {"proportional": 3}
+    assert meta["alignment_methods"] == {"proportional": 2}
     assert micro[0]["src_tc_start"] == 0
+    assert micro[0]["duration"] <= 12.0
     assert micro[-1]["src_tc_end"] == 210
     assert all(micro[index]["src_tc_end"] <= micro[index + 1]["src_tc_start"] + 0.001 for index in range(len(micro) - 1))
+
+
+def test_tts_align_splits_by_audio_duration_when_source_span_is_small(tmp_path: Path, monkeypatch) -> None:
+    film_map = [
+        {"id": 0, "type": "speech", "tc_start": 0, "tc_end": 10, "ko": "a", "en": "a", "scene_desc": None},
+        {"id": 1, "type": "speech", "tc_start": 10, "tc_end": 20, "ko": "b", "en": "b", "scene_desc": None},
+        {"id": 2, "type": "speech", "tc_start": 20, "tc_end": 30, "ko": "c", "en": "c", "scene_desc": None},
+    ]
+    review = [{
+        "beat_id": 0,
+        "narration": "Má»™t cÃ¢u má»Ÿ Ä‘áº§u. Má»™t cÃ¢u tiáº¿p theo. Má»™t cÃ¢u káº¿t láº¡i.",
+        "from_seg_id": 0,
+        "to_seg_id": 2,
+        "src_tc_start": 0,
+        "src_tc_end": 30,
+        "is_hook": True,
+    }]
+    timing = [{"beat_id": 0, "audio_path": "audio/0.mp3", "tl_start": 0, "tl_end": 18, "duration": 18}]
+    write_json(tmp_path / "film_map.json", film_map)
+    write_json(tmp_path / "review_script.json", review)
+    write_json(tmp_path / "beats_timing.json", timing)
+    monkeypatch.setattr("sys.argv", [
+        "tts_align",
+        "--review-script", str(tmp_path / "review_script.json"),
+        "--beats-timing", str(tmp_path / "beats_timing.json"),
+        "--film-map", str(tmp_path / "film_map.json"),
+        "--audio-dir", str(tmp_path / "audio"),
+        "--output-micro", str(tmp_path / "review_script.micro.json"),
+        "--output-policy", str(tmp_path / "micro_policy.json"),
+        "--output-align", str(tmp_path / "tts_align.json"),
+        "--output-meta", str(tmp_path / "review_script.micro.meta.json"),
+        "--mode", "auto",
+        "--aligner", "none",
+        "--max-source-span-s", "120",
+        "--max-narration-chars", "999",
+    ])
+    assert tts_align_main() == 0
+    micro = json.loads((tmp_path / "review_script.micro.json").read_text(encoding="utf-8"))
+    policy = json.loads((tmp_path / "micro_policy.json").read_text(encoding="utf-8"))
+    assert policy["enabled"] is True
+    assert len(micro) == 2
+    assert micro[0]["src_tc_end"] < micro[-1]["src_tc_end"]

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -88,6 +88,8 @@ def test_cover_filter_and_speed_setpts() -> None:
     assert "crop=1920:1080" in filter_text
     assert "fps=30" in filter_text
     assert "setpts=PTS/2.000000" in filter_text
+    assert "tpad=stop_mode=clone:stop_duration=0.066667" in filter_text
+    assert "trim=duration=3.000000" in filter_text
     assert "format=yuv420p" in filter_text
 
 
@@ -97,6 +99,9 @@ def test_concat_list_text_preserves_order(tmp_path: Path) -> None:
     text = concat_list_text([first, second])
     assert text.splitlines()[0].endswith("a.mp4'")
     assert text.splitlines()[1].endswith("b.mp4'")
+    timed = concat_list_text([first, second], [1.0, 2.5])
+    assert "duration 1.000000" in timed
+    assert "duration 2.500000" in timed
 
 
 def test_mux_voiceover_can_delay_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,10 +127,10 @@ def test_caption_source_prefers_micro_over_parent(tmp_path: Path) -> None:
 
 def test_write_ass_escapes_vietnamese_and_braces(tmp_path: Path) -> None:
     output = tmp_path / "captions.ass"
-    write_ass(output, events=[type("E", (), {"start": 0.0, "end": 1.25, "text": "Tiếng Việt {test}\\ok"})()], width=1920, height=1080, style=CaptionStyle())
+    write_ass(output, events=[type("E", (), {"start": 0.0, "end": 1.25, "text": "Tiáº¿ng Viá»‡t {test}\\ok"})()], width=1920, height=1080, style=CaptionStyle())
     text = output.read_text(encoding="utf-8")
     assert "Fontname" in text
-    assert r"Tiếng Việt \{test\}\\ok" in text
+    assert r"Tiáº¿ng Viá»‡t \{test\}\\ok" in text
 
 def test_escape_ass_filter_path_handles_windows_drive() -> None:
     escaped = escape_ass_filter_path(Path("D:/VibeCoding/Recap/runs/x/captions.ass"))
@@ -158,3 +163,17 @@ def test_mux_final_captions_reencodes_video(tmp_path: Path, monkeypatch: pytest.
     command = commands[0]
     assert command[command.index("-c:v") + 1] == "libx264"
     assert any("ass='" in item for item in command)
+
+
+def test_quantize_skips_subframe_placements() -> None:
+    from common.schema import EdlPlacement
+    from render.quantize import quantize_placements
+
+    placements = [
+        EdlPlacement(tl_start=0, tl_end=1, src="film.mp4", src_in=0, src_out=1, beat_id=0, shot_index=0, speed=1),
+        EdlPlacement(tl_start=1, tl_end=1.01, src="film.mp4", src_in=1, src_out=1.01, beat_id=1, shot_index=1, speed=1),
+        EdlPlacement(tl_start=1.01, tl_end=2, src="film.mp4", src_in=1.01, src_out=2, beat_id=2, shot_index=2, speed=1),
+    ]
+    frames = quantize_placements(placements, 30)
+    assert len(frames) == 2
+    assert frames[-1].f_end == 60

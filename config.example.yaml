@@ -176,11 +176,15 @@ match:
 
 broll:
   enabled: false
-  mode: plan  # plan|apply; plan exports prompts, apply consumes broll_assets
+  mode: apply  # plan|apply; frame-from-film broll, no AI image handoff
   max_replacement_ratio: 0.30
   max_broll_per_parent_beat: 1
   exclude_opening_s: 5.5
-  asset_dir: null
+  min_broll_duration_s: 1.0
+  min_frame_shot_distance: 3
+  frame_reuse_window_s: 20.0
+  frame_dir: null
+  clip_dir: null
   log_level: INFO
 
 render:

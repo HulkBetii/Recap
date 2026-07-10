@@ -62,6 +62,7 @@ class RunPaths:
     broll_plan: Path
     broll_prompts: Path
     broll_assets_dir: Path
+    broll_frames_dir: Path
     broll_clips_dir: Path
     broll_manifest: Path
     edl_broll: Path
@@ -110,6 +111,7 @@ def build_paths(run_dir: Path) -> RunPaths:
         broll_plan=run_dir / "broll_plan.json",
         broll_prompts=run_dir / "broll_prompts.jsonl",
         broll_assets_dir=run_dir / "broll_assets",
+        broll_frames_dir=run_dir / "broll_frames",
         broll_clips_dir=run_dir / "broll_clips",
         broll_manifest=run_dir / "broll_manifest.json",
         edl_broll=run_dir / "edl.broll.json",

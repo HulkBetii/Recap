@@ -384,6 +384,16 @@ def run_match(args: argparse.Namespace) -> int:
         if in_opening_guard and args.opening_ordered_fill:
             result.warnings.append(f"beat {beat.beat_id} opening_ordered_fill")
         if in_opening_guard:
+            if args.opening_allow_short_fill and avoid_recent_shots:
+                before_count = len(result.fragments)
+                before_duration = sum(fragment.duration for fragment in result.fragments)
+                result.fragments = [fragment for fragment in result.fragments if fragment.shot_index not in avoid_recent_shots]
+                after_duration = sum(fragment.duration for fragment in result.fragments)
+                if len(result.fragments) < before_count:
+                    result.warnings.append(
+                        f"beat {beat.beat_id} opening_same_shot_repeat filtered {before_count - len(result.fragments)} fragment(s) "
+                        f"{after_duration:.3f}/{before_duration:.3f}s"
+                    )
             unique_count = len({fragment.shot_index for fragment in result.fragments})
             if result.fragments and unique_count < args.opening_min_unique_shots:
                 result.warnings.append(f"beat {beat.beat_id} opening_low_unique_shots {unique_count} < {args.opening_min_unique_shots}")

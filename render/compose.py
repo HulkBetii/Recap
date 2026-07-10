@@ -12,17 +12,23 @@ def quote_concat_path(path: Path) -> str:
     return f"file '{escaped}'"
 
 
-def concat_list_text(paths: list[Path]) -> str:
+def concat_list_text(paths: list[Path], durations: list[float] | None = None) -> str:
     if not paths:
         raise ValueError("cannot concat empty temp clip list")
-    return "\n".join(quote_concat_path(path) for path in paths) + "\n"
+    if durations is not None and len(durations) != len(paths):
+        raise ValueError("duration count must match temp clip count")
+    lines: list[str] = []
+    for index, path in enumerate(paths):
+        lines.append(quote_concat_path(path))
+        if durations is not None:
+            lines.append(f"duration {durations[index]:.6f}")
+    return "\n".join(lines) + "\n"
 
-
-def concat_video(temp_paths: list[Path], output_path: Path, work_dir: Path) -> Path:
+def concat_video(temp_paths: list[Path], output_path: Path, work_dir: Path, durations: list[float] | None = None) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
     list_file = work_dir / "concat.txt"
-    list_file.write_text(concat_list_text(temp_paths), encoding="utf-8")
+    list_file.write_text(concat_list_text(temp_paths, durations), encoding="utf-8")
     run_command([
         "ffmpeg",
         "-y",

@@ -95,18 +95,19 @@ def resolve_audio_path(audio_dir: Path, timing: BeatTiming) -> Path:
             return candidate
     return candidates[0]
 
-def should_split(beat: ReviewBeat, sentences: list[str], args: argparse.Namespace) -> bool:
+def should_split(beat: ReviewBeat, sentences: list[str], args: argparse.Namespace, timing: BeatTiming | None = None) -> bool:
     if len(sentences) < args.min_sentences:
         return False
     if beat.is_hook and not args.split_hooks:
         return False
     span = beat.src_tc_end - beat.src_tc_start
-    return span > args.max_source_span_s or len(beat.narration) > args.max_narration_chars
+    duration = timing.duration if timing is not None else 0.0
+    return span > args.max_source_span_s or len(beat.narration) > args.max_narration_chars or duration > args.max_sub_beat_audio_s
 
-def build_policy(beats: list[ReviewBeat], args: argparse.Namespace) -> MicroPolicyMeta:
+def build_policy(beats: list[ReviewBeat], timings: dict[int, BeatTiming], args: argparse.Namespace) -> MicroPolicyMeta:
     spans = [beat.src_tc_end - beat.src_tc_start for beat in beats]
     max_chars = max((len(beat.narration) for beat in beats), default=0)
-    candidate_count = sum(1 for beat in beats if should_split(beat, split_sentences(beat.narration), args))
+    candidate_count = sum(1 for beat in beats if should_split(beat, split_sentences(beat.narration), args, timings.get(beat.beat_id)))
     if args.mode == "off":
         enabled = False
         reason = "mode=off"
@@ -131,6 +132,7 @@ def build_policy(beats: list[ReviewBeat], args: argparse.Namespace) -> MicroPoli
             "min_sentences": float(args.min_sentences),
             "target_sub_beat_audio_s": args.target_sub_beat_audio_s,
             "max_sub_beat_audio_s": args.max_sub_beat_audio_s,
+            "split_by_audio_duration": 1.0,
         },
     )
 
@@ -232,6 +234,45 @@ def align_sentences(beat: ReviewBeat, timing: BeatTiming, sentences: list[str], 
         warnings.append(f"beat {beat.beat_id}: audio file missing for whisperx ({audio_path}); using proportional fallback")
     return proportional_align(beat, timing, sentences)
 
+def group_sentence_alignments(alignments: list[TtsSentenceAlignment], args: argparse.Namespace) -> list[TtsSentenceAlignment]:
+    if len(alignments) <= 1:
+        return alignments
+    groups: list[list[TtsSentenceAlignment]] = []
+    current: list[TtsSentenceAlignment] = []
+    for alignment in alignments:
+        if not current:
+            current = [alignment]
+            continue
+        current_duration = current[-1].audio_end - current[0].audio_start
+        next_duration = alignment.audio_end - current[0].audio_start
+        if current_duration >= args.target_sub_beat_audio_s or next_duration > args.max_sub_beat_audio_s:
+            groups.append(current)
+            current = [alignment]
+        else:
+            current.append(alignment)
+    if current:
+        groups.append(current)
+    output: list[TtsSentenceAlignment] = []
+    for index, group in enumerate(groups):
+        first = group[0]
+        last = group[-1]
+        methods = {item.alignment_method for item in group}
+        method = methods.pop() if len(methods) == 1 else "mixed"
+        confidences = [item.confidence for item in group if item.confidence is not None]
+        output.append(TtsSentenceAlignment(
+            parent_beat_id=first.parent_beat_id,
+            sentence_index=index,
+            text=" ".join(item.text for item in group),
+            audio_start=first.audio_start,
+            audio_end=last.audio_end,
+            tl_start=first.tl_start,
+            tl_end=last.tl_end,
+            alignment_method=method,
+            confidence=round(sum(confidences) / len(confidences), 3) if confidences else None,
+        ))
+    return output
+
+
 def partition_source_by_alignment(beat: ReviewBeat, alignments: list[TtsSentenceAlignment], film_map: list[FilmMapSegment]) -> list[tuple[int, int, float, float]]:
     by_id = {segment.id: segment for segment in film_map}
     segment_ids = [sid for sid in range(beat.from_seg_id, beat.to_seg_id + 1) if sid in by_id]
@@ -266,7 +307,7 @@ def build_micro_beats(beats: list[ReviewBeat], timings: dict[int, BeatTiming], f
     for beat in beats:
         timing = timings[beat.beat_id]
         sentences = split_sentences(beat.narration)
-        split = policy.enabled and (args.mode == "on" or should_split(beat, sentences, args))
+        split = policy.enabled and (args.mode == "on" or should_split(beat, sentences, args, timing))
         if not split:
             sentences = [beat.narration]
         audio_path = resolve_audio_path(args.audio_dir.expanduser().resolve(), timing)
@@ -282,6 +323,9 @@ def build_micro_beats(beats: list[ReviewBeat], timings: dict[int, BeatTiming], f
                 alignment_method="parent",
             )
         ]
+        sentence_alignments = alignments
+        if split:
+            alignments = group_sentence_alignments(alignments, args)
         spans = partition_source_by_alignment(beat, alignments, film_map)
         for sub_id, (alignment, (from_seg_id, to_seg_id, src_start, src_end)) in enumerate(zip(alignments, spans)):
             micro.append(ReviewMicroBeat(
@@ -304,7 +348,8 @@ def build_micro_beats(beats: list[ReviewBeat], timings: dict[int, BeatTiming], f
             "parent_beat_id": beat.beat_id,
             "audio_path": str(audio_path),
             "split": split,
-            "sentences": [item.model_dump() for item in alignments],
+            "sentences": [item.model_dump() for item in sentence_alignments],
+            "micro_units": [item.model_dump() for item in alignments],
         })
     return micro, align_report, warnings
 
@@ -342,7 +387,7 @@ def run(args: argparse.Namespace) -> int:
     missing = [beat.beat_id for beat in beats if beat.beat_id not in timings_by_id]
     if missing:
         raise TtsAlignError(f"missing beat timing for beat ids: {missing[:10]}")
-    policy = build_policy(beats, args)
+    policy = build_policy(beats, timings_by_id, args)
     micro, align_report, warnings = build_micro_beats(beats, timings_by_id, film_map, policy, args)
     validate_micro_beats(micro, beats)
     spans = [item.src_tc_end - item.src_tc_start for item in micro]

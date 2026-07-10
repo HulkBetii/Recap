@@ -81,7 +81,7 @@ def resolve_source_path(placement: EdlPlacement, film_path: Path) -> Path:
 
 def render_temp_clips(*, film_path: Path, frames, params: RenderParams, cache: RenderCache, concurrency: int) -> tuple[list[Path], list[str]]:
     warnings: list[str] = []
-    temp_paths: list[Path | None] = [None] * len(frames)
+    temp_paths: dict[int, Path] = {}
     jobs = []
     duration_cache: dict[Path, float] = {}
     for frame in frames:
@@ -109,7 +109,7 @@ def render_temp_clips(*, film_path: Path, frames, params: RenderParams, cache: R
                 logging.info("cut temp clip %s/%s", completed, len(jobs))
                 future.result()
                 temp_paths[frame.index] = output_path
-    return [path for path in temp_paths if path is not None], warnings
+    return [temp_paths[frame.index] for frame in frames if frame.index in temp_paths], warnings
 
 
 def run_render(args: argparse.Namespace) -> int:
@@ -154,12 +154,16 @@ def run_render(args: argparse.Namespace) -> int:
         warnings.append(f"voiceover audio delayed by {args.audio_delay_s:.3f}s at mux")
     video_only = args.work_dir / "video_only.mp4"
     logging.info("concat %s temp clips", len(temp_paths))
-    concat_video(temp_paths, video_only, args.work_dir)
+    concat_video(temp_paths, video_only, args.work_dir, durations=[frame.duration_s for frame in frames])
     video_for_mux = video_only
     video_only_duration = probe_duration(video_only)
-    if video_only_duration + max(0.1, 2.0 / args.fps) < mux_audio_duration:
+    duration_tolerance = max(0.1, 2.0 / args.fps)
+    pre_pad_duration_delta = video_only_duration - mux_audio_duration
+    padded_video_s = 0.0
+    if video_only_duration + duration_tolerance < mux_audio_duration:
         padded_video = args.work_dir / "video_only_padded.mp4"
         target_label = "delayed audio duration" if args.audio_delay_s > 0 else "audio duration"
+        padded_video_s = round(mux_audio_duration - video_only_duration, 6)
         warnings.append(f"video-only concat was padded from {video_only_duration:.3f}s to {target_label} {mux_audio_duration:.3f}s")
         logging.info("pad video-only concat to voiceover duration")
         pad_video_to_duration(video_only, padded_video, mux_audio_duration)
@@ -217,10 +221,13 @@ def run_render(args: argparse.Namespace) -> int:
     video_duration = probe_duration(args.output)
     if not has_audio_stream(args.output):
         warnings.append("output has no audio stream")
-    duration_tolerance = max(0.1, 2.0 / args.fps)
-    duration_match = abs(video_duration - mux_audio_duration) <= duration_tolerance
-    if not duration_match:
+    output_duration_match = abs(video_duration - mux_audio_duration) <= duration_tolerance
+    pre_pad_duration_match = abs(pre_pad_duration_delta) <= duration_tolerance
+    duration_match = output_duration_match and pre_pad_duration_match
+    if not output_duration_match:
         warnings.append(f"video/audio duration mismatch: video={video_duration:.3f}s delayed_audio={mux_audio_duration:.3f}s")
+    if not pre_pad_duration_match:
+        warnings.append(f"pre-pad video/audio duration mismatch: video_only={video_only_duration:.3f}s delayed_audio={mux_audio_duration:.3f}s delta={pre_pad_duration_delta:.3f}s")
     if int(output_info["width"]) != args.width or int(output_info["height"]) != args.height:
         warnings.append("output resolution does not match requested size")
     if abs(float(output_info["fps"]) - args.fps) > 0.05:
@@ -232,6 +239,9 @@ def run_render(args: argparse.Namespace) -> int:
         codec=str(output_info.get("codec") or "h264"),
         video_duration_s=round(video_duration, 3),
         audio_duration_s=round(mux_audio_duration, 3),
+        video_only_duration_s=round(video_only_duration, 3),
+        pre_pad_duration_delta_s=round(pre_pad_duration_delta, 3),
+        padded_video_s=round(padded_video_s, 3),
         audio_delay_s=round(args.audio_delay_s, 3),
         duration_match=duration_match,
         n_placements=len(placements),

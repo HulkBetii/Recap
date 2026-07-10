@@ -52,6 +52,9 @@ def build_video_filter(*, params: RenderParams, frame_count: int, source_duratio
     elif abs(source_duration - target_duration) > 1e-3 and source_duration > 0:
         ratio = source_duration / target_duration
         filters.append(f"setpts=PTS/{ratio:.6f}")
+    # Some source spans end one frame short after fps/setpts, especially with non-keyframe seeks.
+    # Clone-pad before the final trim so every temp clip reaches its frame-locked duration.
+    filters.append(f"tpad=stop_mode=clone:stop_duration={2.0 / params.fps:.6f}")
     filters.extend([f"trim=duration={target_duration:.6f}", "setpts=PTS-STARTPTS", "format=yuv420p"])
     return ",".join(filters)
 
@@ -70,6 +73,7 @@ def temp_cache_key(*, film_path: Path, frame: FramePlacement, source: ClampedSou
         "fit": params.fit,
         "crf": params.crf,
         "preset": params.preset,
+        "duration_pad_version": 1,
     })
 
 

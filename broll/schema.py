@@ -17,7 +17,7 @@ def stable_id(value: object, prefix: str = "br") -> str:
 class BrollCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    asset_id: str
+    frame_id: str
     beat_id: int = Field(ge=0)
     shot_index: int = Field(ge=0)
     tl_start: float = Field(ge=0)
@@ -27,17 +27,21 @@ class BrollCandidate(BaseModel):
     src_out: float = Field(gt=0)
     duration_s: float = Field(gt=0)
     narration_preview: str
-    prompt: str
     reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     rank_score: float = Field(ge=0)
+    frame_src: str
+    frame_tc: float = Field(ge=0)
+    frame_shot_index: int = Field(ge=0)
+    frame_shot_distance_used: int = Field(default=0, ge=0)
+    frame_reason: str
 
-    @field_validator("asset_id")
+    @field_validator("frame_id")
     @classmethod
-    def validate_asset_id(cls, value: str) -> str:
+    def validate_frame_id(cls, value: str) -> str:
         normalized = value.strip().replace(" ", "_")
         if not normalized:
-            raise ValueError("asset_id cannot be empty")
+            raise ValueError("frame_id cannot be empty")
         return normalized
 
     @model_validator(mode="after")
@@ -48,6 +52,8 @@ class BrollCandidate(BaseModel):
             raise ValueError("src_out must be greater than src_in")
         if abs((self.tl_end - self.tl_start) - self.duration_s) > 0.05:
             raise ValueError("duration_s must match timeline span")
+        if self.frame_shot_index == self.shot_index:
+            raise ValueError("frame_shot_index must differ from replaced shot_index")
         return self
 
 
@@ -56,9 +62,15 @@ class BrollPlan(BaseModel):
 
     mode: Literal["plan"] = "plan"
     source_edl: str
+    source_shots: str
     max_replacement_ratio: float = Field(ge=0, le=1)
     max_broll_per_parent_beat: int = Field(ge=1)
     exclude_opening_s: float = Field(ge=0)
+    min_broll_duration_s: float = Field(default=1.0, ge=0)
+    min_frame_shot_distance: int = Field(default=3, ge=0)
+    frame_reuse_window_s: float = Field(default=20.0, ge=0)
+    n_skipped_short_duration: int = Field(default=0, ge=0)
+    n_frame_keep_original_no_alternative: int = Field(default=0, ge=0)
     n_placements: int = Field(ge=0)
     n_candidates: int = Field(ge=0)
     target_replacements: int = Field(ge=0)
@@ -70,10 +82,12 @@ class BrollPlan(BaseModel):
 class BrollManifestItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    asset_id: str
-    image_path: str | None = None
+    frame_id: str
+    frame_path: str | None = None
     clip_path: str | None = None
-    status: Literal["generated", "missing_asset", "failed"]
+    source_tc: float = Field(ge=0)
+    source_shot_index: int = Field(ge=0)
+    status: Literal["generated", "failed"]
     duration_s: float = Field(ge=0)
     motion_preset: str
     warnings: list[str] = Field(default_factory=list)
@@ -88,7 +102,12 @@ class BrollQa(BaseModel):
     n_placements: int = Field(ge=0)
     n_planned: int = Field(ge=0)
     n_replaced: int = Field(ge=0)
-    n_missing_assets: int = Field(ge=0)
+    n_skipped_short_duration: int = Field(default=0, ge=0)
+    n_frame_keep_original_no_alternative: int = Field(default=0, ge=0)
+    frame_shot_distance_distribution: dict[str, int] = Field(default_factory=dict)
+    n_extracted_frames: int = Field(ge=0)
+    n_frame_fallbacks: int = Field(ge=0)
+    n_failed_frames: int = Field(ge=0)
     replacement_ratio: float = Field(ge=0, le=1)
     original_footage_ratio_estimate: float = Field(ge=0, le=1)
     warnings: list[str] = Field(default_factory=list)

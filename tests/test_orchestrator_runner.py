@@ -368,8 +368,9 @@ def test_broll_enabled_plan_is_between_match_and_render(tmp_path: Path, monkeypa
     def fake_executor(command: list[str], log_path: Path) -> None:
         calls.append(stage_name(command))
         if stage_name(command) == "broll":
-            flag(command, "--output-plan").write_text(json.dumps({"mode":"plan","source_edl":"edl.json","max_replacement_ratio":0.3,"max_broll_per_parent_beat":1,"exclude_opening_s":5.5,"n_placements":1,"n_candidates":0,"target_replacements":0,"original_footage_ratio_estimate":1,"candidates":[],"warnings":["no broll candidates selected"]}), encoding="utf-8")
-            flag(command, "--output-prompts").write_text("", encoding="utf-8")
+            assert "--film" in command
+            assert "--shots" in command
+            flag(command, "--output-plan").write_text(json.dumps({"mode":"plan","source_edl":"edl.json","source_shots":"shots.json","max_replacement_ratio":0.3,"max_broll_per_parent_beat":1,"exclude_opening_s":5.5,"n_placements":1,"n_candidates":0,"target_replacements":0,"original_footage_ratio_estimate":1,"candidates":[],"warnings":["no broll candidates selected"]}), encoding="utf-8")
         else:
             write_stage_outputs(command)
 

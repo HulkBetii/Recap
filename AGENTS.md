@@ -425,13 +425,32 @@ repo/
 ## 31. OPTIONAL B-ROLL STAGE
 
 - `broll` is an optional GĐ5.5 stage after `match` and before `render`; default config keeps it disabled.
-- It is a file-based manual handoff for RUN VEO image mode: `plan` writes `broll_plan.json` and `broll_prompts.jsonl`; user puts generated images in `broll_assets/`; `apply` renders Ken Burns mp4 clips and writes `edl.broll.json`, `broll_manifest.json`, and `broll.qa.json`.
-- The stage must never call paid image-generation APIs automatically. All image spending is user-controlled outside this repo.
+- B-roll is frame-from-film only: `plan` selects weak/repeated placements and an alternate usable/story shot from `shots.json`; `apply` extracts a still frame from the original film and renders a Ken Burns mp4 clip.
+- The stage does not use RUN VEO, AI images, external assets, or paid image-generation APIs.
 - `edl.json` remains the canonical GĐ5 output and is not modified. `edl.broll.json` is additive and can be deleted/ignored to roll back.
-- GĐ6 resolves `placement.src` to an existing media file when present, so B-roll EDLs may mix original film footage and generated B-roll clips; original placements still fall back to `--film`.
+- GĐ6 resolves `placement.src` to an existing media file when present, so B-roll EDLs may mix original film footage and generated frame-from-film clips; original placements still fall back to `--film`.
 
-## 32. B-ROLL PROMPT LANGUAGE / QA
+## 32. B-ROLL SMOOTHNESS / QA
 
-- RUN VEO prompts exported by `broll` must be English-only plain text and must keep safety/compliance terms: no text, no logo, no watermark, no subtitles, no recognizable actor likeness, not a movie screenshot.
-- Vietnamese narration may be kept in `broll_plan.json` only as QA preview; if source artifacts contain common UTF-8/cp1252 mojibake, B-roll should repair it for preview rather than copying broken text into reports.
-- Candidate reason buckets include `high_reuse`, `source_order_mismatch`, `transition`, `ratio_fill`, `long_clip`, and `high_source_drift` for compliance reporting.
+- B-roll must prefer smoothness over replacement count: default `min_broll_duration_s=1.0` skips sub-second placements instead of creating jittery clips.
+- Frame selection treats `min_frame_shot_distance=3` as a soft preference: try distance 3 first, relax to 2/1 if needed, then keep original if no story/usable alternative exists. It also avoids reusing the same `frame_shot_index` within `frame_reuse_window_s=20`.
+- Short generated clips from 1.0–1.5s use the `still_soft_zoom` motion preset instead of stronger pan/zoom.
+- Candidate reason buckets include `high_reuse`, `source_order_mismatch`, `transition`, `ratio_fill`, `long_clip`, and `high_source_drift`; QA reports `frame_shot_distance_distribution` and keep-original counts.
+- GĐ5 opening guard should flag `opening_same_shot_repeat` and short-fill instead of silently repeating the same opening shot when alternatives are available.
+
+## 35. OPTIONAL B-ROLL STAGE
+
+- B-roll is optional frame-from-film Ken Burns after GĐ5 and before GĐ6. It does not use AI images or RUN VEO.
+
+## 36. GĐ6 TRUE DURATION QA
+
+- GĐ6 render duration QA must not treat a padded output as a true duration match when video-only concat is materially shorter than voiceover.
+- `render.meta.json` records `video_only_duration_s`, `pre_pad_duration_delta_s`, and `padded_video_s`.
+- `duration_match=true` is only valid when both final output duration and pre-pad video-only duration match delayed audio within tolerance (`max(0.1s, 2/fps)`).
+- Padding is acceptable only for tiny rounding/frame-lock differences; larger pre-pad mismatch should be investigated at source EDL/temp-clip/B-roll generation.
+
+## 37. TTS ALIGN MICRO-BEAT SPLITTING
+
+- TTS align micro-beats should split long audio beats by `max_sub_beat_audio_s` even if source span and narration length are below older thresholds.
+- Sentence alignments are grouped around `target_sub_beat_audio_s` and capped by `max_sub_beat_audio_s`; grouped micro units receive proportional source subspans before GĐ5 matching.
+- GĐ6 quantization may skip sub-frame placements that cannot render one output frame; timeline duration remains frame-locked through concat duration directives.

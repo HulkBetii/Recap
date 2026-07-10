@@ -626,3 +626,31 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - B-roll prompt export is now English-only/ASCII for RUN VEO; Vietnamese narration stays only in QA preview and is not inserted into the image-generation prompt.
 - Added lightweight mojibake repair for B-roll narration previews so QA reports do not copy broken Vietnamese text when source artifacts were decoded incorrectly.
 - Candidate reasons now include `transition` and `ratio_fill` buckets in addition to reuse/order/drift/long-clip reasons.
+
+### 2026-07-09 — B-roll Film-Matched Prompt Tone
+
+- Updated RUN VEO B-roll prompts from generic cinematic crime art to neutral film-matched inserts: natural low-contrast grade, practical available light, subtle grain, documentary-like framing, and explicit avoidance of glossy AI/poster/neon styling.
+
+### 2026-07-09 — B-roll Frame-from-Film Pivot
+
+- Replaced AI image/RUN VEO B-roll handoff with frame-from-film B-roll: plan selects alternate usable/story shots from `shots.json`; apply extracts still frames from the original film and renders Ken Burns clips.
+- `edl.json` remains unchanged; additive outputs remain `broll_plan.json`, `broll_manifest.json`, `edl.broll.json`, and `broll.qa.json`.
+- Removed prompt/asset dependency from the Recap pipeline because generated AI images did not match film tone.
+
+### 2026-07-09 — B-roll Smoothness Guards
+
+- Added `min_broll_duration_s` (default `1.0`) so frame-from-film B-roll skips sub-second placements that caused jitter at joins.
+- Added frame anti-repeat guards: `min_frame_shot_distance=3` is now a soft preference that relaxes to 2/1 before keep-original, and `frame_reuse_window_s=20` avoids selecting repeated frame shots near each other.
+- Added `still_soft_zoom` for 1.0–1.5s B-roll clips, QA metric `n_skipped_short_duration`, `frame_shot_distance_distribution`, and keep-original-no-alternative counts.
+- GĐ5 opening guard now flags/filters `opening_same_shot_repeat` during opening short-fill mode instead of silently extending repeated opening shots.
+
+### 2026-07-09 — Render True Duration QA
+
+- True duration QA now records pre-pad video-only duration, pre-pad delta, and padded seconds in `render.meta.json`.
+- `duration_match` no longer becomes true solely because GĐ6 padded video-only concat to the voiceover duration; large pre-pad mismatch remains a warning/fail signal.
+
+### 2026-07-09 — TTS Align Micro Split by Audio Duration
+
+- `tts_align` auto policy now treats parent beat audio duration above `max_sub_beat_audio_s` as a split trigger, even when source span/character count are below older thresholds.
+- Sentence alignments are grouped into sub-beats around `target_sub_beat_audio_s` and capped by `max_sub_beat_audio_s`, then source spans are repartitioned proportionally per group.
+- Render quantization skips sub-frame placements that cannot produce one output frame; concat uses frame-lock duration directives so pre-pad duration QA stays truthful.

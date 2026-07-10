@@ -30,7 +30,9 @@ def quantize_placements(placements: list[EdlPlacement], fps: float) -> list[Fram
                 raise QuantizeError(f"timeline has frame gap or overlap before placement #{index}")
             f_start = previous_end
         if f_end <= f_start:
-            raise QuantizeError(f"placement #{index} has zero frames after quantization")
+            # Timeline fragments shorter than one output frame cannot be rendered as standalone clips.
+            # Drop them here; the following placement starts from previous_end and absorbs the frame time.
+            continue
         frame_count = f_end - f_start
         frame_placements.append(FramePlacement(
             placement=placement,
@@ -41,6 +43,8 @@ def quantize_placements(placements: list[EdlPlacement], fps: float) -> list[Fram
             duration_s=frame_count / fps,
         ))
         previous_end = f_end
+    if not frame_placements and ordered:
+        raise QuantizeError("all placements have zero frames after quantization")
     if frame_placements:
         total_frames = round(ordered[-1].tl_end * fps)
         if frame_placements[-1].f_end != total_frames:
