@@ -210,6 +210,10 @@ repo/
 - GD5 la CLI local/offline, chay bang `python -m match`.
 - GD5 doc `review_script.json`, `beats_timing.json`, `shots.json` va optional `film_map.json`; sinh `edl.json` + `edl.meta.json` + `edl.qa.json` + `edl.review.html`; khong decode video, khong dung API.
 - Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding qua optional deps `semantic-embed`; `tfidf` van la fallback nhe. Semantic la soft bonus, khong hard filter.
+- `content_anchors=true` uses narration-only beat-to-segment semantic scores for beats whose source span is at least 4x the audio duration. G5 restricts fill/chronology to the relevant timecode clusters; compact beats and failed anchors keep legacy matching.
+- Content anchors require strict timecodes; G5 disables them automatically when sibling `film_map.meta.json` has `approximate_timecodes=true`.
+- `opening_intra_beat_align` is experimental and enabled only by `config.movie.visual.yaml`. For the first eligible non-hook opening beat, G5 estimates sentence timing from real TTS duration, scores sentence-to-shot contexts with BGE-M3, chooses monotonic anchors, and splices only confident local ranges into the baseline EDL.
+- Opening intra-beat alignment requires strict timecodes, `semantic_mode=bge-m3`, audio at least 45s, and source/audio ratio at least 3. It analyzes at most the first 30s, keeps stable presets disabled, never widens local anchor windows, and preserves baseline placements outside replaced ranges.
 - Movie matching mac dinh dung `match_strategy=chronological`: bam source timecode/chronology truoc; semantic/story/intent chi la soft tie-breaker de tranh audio mot noi hinh mot noi. `semantic` strategy chi dung cho debug/experiment.
 - `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse, `expected_src_position`, `source_drift_s`, `chronology_score` va warnings `low semantic match`/`high source drift` theo beat.
 - `edl.review.html` la QA artifact truc quan tu `match/review_html.py`, dung thumbnails san co trong `shots.json`, hien narration/source span/selected clip metrics/drift/warnings de review nhanh bang browser.
@@ -224,6 +228,7 @@ repo/
 - Repeat fallback dùng phần source chưa dùng trong shot trước, sau đó mới chọn span overlap thấp nhất; tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier.
 - `edl.meta.json` ghi `algorithm_version` và counters dark/capacity/reuse; orchestrator buộc rerun GĐ5 + downstream khi version cũ.
 - Cache GD5 nam trong `--work-dir/plan.json`; embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
+- Match `algorithm_version=3` invalidates artifacts created before content-anchor matching; QA/HTML record anchor intervals, segment ids, threshold and capacity.
 - Test tu dong dung JSON fixtures/mock; khong dung video/ffmpeg/API.
 
 

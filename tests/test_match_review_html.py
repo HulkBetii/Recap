@@ -16,7 +16,7 @@ def test_write_review_html_contains_summary_and_escapes_text(tmp_path: Path) -> 
     beat = ReviewBeat(beat_id=0, narration="Cô ấy <ngạc nhiên> & bỏ chạy.", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=2, is_hook=True)
     shot = Shot(src="film.mp4", index=0, tc_start=0, tc_end=2, duration=2, thumb="shots/film-000.jpg", motion_score=0.5, face_count=1, face_area=0.2, brightness=0.6, is_usable=True)
     placement = EdlPlacement(tl_start=0, tl_end=2, src="film.mp4", src_in=0, src_out=2, beat_id=0, shot_index=0, reused=False, speed=1)
-    qa = {"n_intro_excluded": 0, "selected_from_non_story": False, "beats": [{"beat_id": 0, "avg_semantic_score": 0.5, "candidate_capacity_s": 2.0, "required_duration_s": 2.0, "dark_selected_ids": [0], "overlapping_repeat_count": 0, "warnings": ["low semantic"], "selected": [{"semantic_score": 0.5, "semantic_rank": 1, "dark_fallback": True}]}]}
+    qa = {"n_intro_excluded": 0, "selected_from_non_story": False, "beats": [{"beat_id": 0, "avg_semantic_score": 0.5, "candidate_capacity_s": 2.0, "required_duration_s": 2.0, "dark_selected_ids": [0], "overlapping_repeat_count": 0, "content_anchor_used": True, "content_anchor_intervals": [[0.0, 2.0]], "opening_intra_beat_align_used": True, "opening_intra_beat_replaced_ranges": [[0.0, 2.0]], "opening_intra_beat_chunks": [{"tl_start": 0.0, "tl_end": 2.0, "text": "Cô ấy xuất hiện", "anchor_shot_index": 0, "anchor_source_s": 1.0, "semantic_score": 0.8, "baseline_shift_s": 8.0, "source_window": [0.0, 2.0], "selected_shot_ids": [0], "replaced": True}], "warnings": ["low semantic"], "selected": [{"semantic_score": 0.5, "semantic_rank": 1, "dark_fallback": True}]}]}
 
     output = tmp_path / "edl.review.html"
     write_review_html(output_path=output, asset_dir=tmp_path / "edl.review", shots_path=shots_path, beats=[beat], placements=[placement], shots=[shot], qa=qa, thumbs_per_beat=8)
@@ -27,6 +27,9 @@ def test_write_review_html_contains_summary_and_escapes_text(tmp_path: Path) -> 
     assert "low semantic" in html
     assert "Dark selected: 1" in html
     assert "dark fallback=True" in html
+    assert "Content anchor: 0.000-2.000s" in html
+    assert "Opening intra-beat alignment" in html
+    assert "Cô ấy xuất hiện" in html
     assert (tmp_path / "edl.review" / "beat-000-00-shot-0000.jpg").exists()
 
 

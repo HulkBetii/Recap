@@ -44,6 +44,8 @@ class FillResult:
     dark_selected_ids: list[int]
     unused_source_reuse_count: int
     overlapping_repeat_count: int
+    source_intervals: list[tuple[float, float]]
+    source_interval_weights: list[float]
 
 
 def fill_beat(
@@ -74,6 +76,9 @@ def fill_beat(
     min_visual_clip: float = 0.0,
     strict_ordered_fill: bool = False,
     allow_dark_fallback: bool = True,
+    candidate_filter_ids: set[int] | None = None,
+    dark_candidate_ids: set[int] | None = None,
+    source_intervals: list[tuple[float, float]] | None = None,
 ) -> FillResult:
     warnings: list[str] = []
     effective_start = max(beat.src_tc_start, source_start_override) if source_start_override is not None else beat.src_tc_start
@@ -88,16 +93,51 @@ def fill_beat(
         min_visual_clip=min_visual_clip,
         allow_dark_fallback=allow_dark_fallback,
     )
-    window_start = candidate_plan.window_start
-    window_end = candidate_plan.window_end
-    candidates = candidate_plan.candidates
+    active_intervals = normalize_source_intervals(
+        source_intervals or [(candidate_plan.window_start, candidate_plan.window_end)],
+        window_start=candidate_plan.window_start,
+        window_end=candidate_plan.window_end,
+    )
+    window_start = active_intervals[0][0]
+    window_end = active_intervals[-1][1]
+    if candidate_filter_ids is None:
+        candidates = candidate_plan.candidates
+        effective_dark_ids = set(candidate_plan.dark_candidate_ids)
+    else:
+        allowed_ids = set(candidate_filter_ids)
+        effective_dark_ids = set(dark_candidate_ids or set()) & allowed_ids
+        candidates = [
+            shot
+            for shot in shots
+            if shot.index in allowed_ids
+            and (shot.is_usable or shot.index in effective_dark_ids)
+            and shot_source_ranges(shot, active_intervals)
+        ]
+    primary_capacity = candidate_capacity(
+        [shot for shot in candidates if shot.index not in effective_dark_ids],
+        active_intervals,
+        max_clip=max_clip,
+        min_visual_clip=min_visual_clip,
+    )
+    dark_capacity = candidate_capacity(
+        [shot for shot in candidates if shot.index in effective_dark_ids],
+        active_intervals,
+        max_clip=max_clip,
+        min_visual_clip=min_visual_clip,
+    )
+    total_capacity = primary_capacity + dark_capacity
+    capacity_exhausted = total_capacity + 1e-6 < timing.duration
+    source_interval_weights = [
+        candidate_capacity(candidates, [interval], max_clip=max_clip, min_visual_clip=min_visual_clip)
+        for interval in active_intervals
+    ]
     widen_count = candidate_plan.widen_count
     if widen_count > 0:
         warnings.append(f"beat {beat.beat_id} widened source window {widen_count} time(s)")
-    if candidate_plan.capacity_exhausted:
+    if capacity_exhausted:
         warnings.append(
             f"beat {beat.beat_id} candidate capacity exhausted "
-            f"{candidate_plan.total_capacity_s:.3f}/{timing.duration:.3f}s"
+            f"{total_capacity:.3f}/{timing.duration:.3f}s"
         )
     fragments: list[Fragment] = []
     remaining = timing.duration
@@ -110,16 +150,19 @@ def fill_beat(
     unused_source_reuse_count = 0
     overlapping_repeat_count = 0
     previous_shot_index: int | None = None
-    source_cursor = min(window_end, max(window_start, effective_start))
+    source_cursor = source_position_for_progress(active_intervals, 0.0, weights=source_interval_weights)
     source_anchor = source_cursor
-    source_span = max(0.001, window_end - source_anchor)
 
     while remaining > 1e-6:
         if min_visual_clip > 0 and remaining < min_visual_clip - 1e-6 and fragments:
             break
         available = [shot for shot in candidates if shot.index not in used_in_beat]
         if min_visual_clip > 0:
-            long_enough = [shot for shot in available if min(shot.tc_end, window_end) - max(shot.tc_start, window_start) >= min_visual_clip]
+            long_enough = [
+                shot
+                for shot in available
+                if any(end - start + 1e-6 >= min_visual_clip for start, end in shot_source_ranges(shot, active_intervals))
+            ]
             available = long_enough
         if not available:
             break
@@ -152,10 +195,13 @@ def fill_beat(
             max_source_drift_s=max_source_drift_s,
             enforce_chronology_tier=ordered_fill or match_strategy == "chronological",
         )
-        src_start = max(window_start, shot.tc_start)
-        if match_strategy == "chronological" and shot.tc_start < source_cursor < shot.tc_end:
+        selected_range = choose_source_range(shot_source_ranges(shot, active_intervals), source_cursor)
+        if selected_range is None:
+            used_in_beat.add(shot.index)
+            continue
+        src_start, src_end = selected_range
+        if match_strategy == "chronological" and src_start < source_cursor < src_end:
             src_start = max(src_start, source_cursor)
-        src_end = min(window_end, shot.tc_end)
         usable_len = max(0.0, src_end - src_start)
         if usable_len <= 0 or (min_visual_clip > 0 and usable_len + 1e-6 < min_visual_clip):
             used_in_beat.add(shot.index)
@@ -183,7 +229,7 @@ def fill_beat(
         )
         fragments.append(fragment)
         used_ranges_by_shot.setdefault(shot.index, []).append((fragment.src_in, fragment.src_out))
-        if shot.index in candidate_plan.dark_candidate_ids:
+        if shot.index in effective_dark_ids:
             dark_selected_ids.add(shot.index)
         if reuse_counts.get(shot.index, 0) > 0:
             reuse_count += 1
@@ -194,7 +240,7 @@ def fill_beat(
         remaining = round(remaining - clip_len, 6)
         if ordered_fill_by_audio_progress and timing.duration > 0:
             progress = min(1.0, max(0.0, (timing.duration - remaining) / timing.duration))
-            source_cursor = min(window_end, source_anchor + source_span * progress)
+            source_cursor = source_position_for_progress(active_intervals, progress, weights=source_interval_weights)
 
     if remaining > 0.02:
         if allow_repeat and candidates:
@@ -243,6 +289,7 @@ def fill_beat(
                             window_start,
                             window_end,
                             used_ranges_by_shot.get(shot.index, []),
+                            source_intervals=active_intervals,
                         )
                     )
                 ]
@@ -268,23 +315,32 @@ def fill_beat(
                     enforce_chronology_tier=ordered_fill or match_strategy == "chronological",
                 )
                 used_ranges = used_ranges_by_shot.get(shot.index, [])
-                uncovered = uncovered_source_ranges(shot, window_start, window_end, used_ranges)
+                uncovered = uncovered_source_ranges(
+                    shot,
+                    window_start,
+                    window_end,
+                    used_ranges,
+                    source_intervals=active_intervals,
+                )
                 selected_range = choose_uncovered_range(uncovered, source_cursor) if unused_ranked else None
                 if selected_range is not None:
                     src_start, range_end = selected_range
                     usable_len = range_end - src_start
                     unused_source_reuse_count += 1
                 else:
-                    usable_len = min(window_end, shot.tc_end) - max(window_start, shot.tc_start)
-                    clip_probe = min(max_clip, remaining, usable_len)
-                    src_start = least_overlap_start(
+                    overlap_range = least_overlap_range(
                         shot,
                         window_start,
                         window_end,
-                        clip_probe,
+                        min(max_clip, remaining),
                         used_ranges,
                         source_cursor,
+                        source_intervals=active_intervals,
                     )
+                    if overlap_range is None:
+                        break
+                    src_start, range_end = overlap_range
+                    usable_len = range_end - src_start
                     overlapping_repeat_count += 1
                 clip_len = min(max_clip, remaining, usable_len)
                 remainder = remaining - clip_len
@@ -304,7 +360,7 @@ def fill_beat(
                 )
                 fragments.append(fragment)
                 used_ranges_by_shot.setdefault(shot.index, []).append((fragment.src_in, fragment.src_out))
-                if shot.index in candidate_plan.dark_candidate_ids:
+                if shot.index in effective_dark_ids:
                     dark_selected_ids.add(shot.index)
                 reuse_count += 1
                 repeat_by_shot[shot.index] = repeat_by_shot.get(shot.index, 0) + 1
@@ -313,7 +369,7 @@ def fill_beat(
                 remaining = round(remaining - clip_len, 6)
                 if ordered_fill_by_audio_progress and timing.duration > 0:
                     progress = min(1.0, max(0.0, (timing.duration - remaining) / timing.duration))
-                    source_cursor = min(window_end, source_anchor + source_span * progress)
+                    source_cursor = source_position_for_progress(active_intervals, progress, weights=source_interval_weights)
         elif allow_speedfit and fragments:
             warnings.append(f"beat {beat.beat_id} would require speedfit; not applied to existing fragments")
             speedfit_count += 1
@@ -350,14 +406,98 @@ def fill_beat(
         source_cursor_start=source_anchor,
         widen_count=widen_count,
         required_duration_s=timing.duration,
-        primary_capacity_s=candidate_plan.primary_capacity_s,
-        dark_capacity_s=candidate_plan.dark_capacity_s,
-        total_capacity_s=candidate_plan.total_capacity_s,
-        capacity_exhausted=candidate_plan.capacity_exhausted,
-        dark_candidate_ids=sorted(candidate_plan.dark_candidate_ids),
+        primary_capacity_s=primary_capacity,
+        dark_capacity_s=dark_capacity,
+        total_capacity_s=total_capacity,
+        capacity_exhausted=capacity_exhausted,
+        dark_candidate_ids=sorted(effective_dark_ids),
         dark_selected_ids=sorted(dark_selected_ids),
         unused_source_reuse_count=unused_source_reuse_count,
         overlapping_repeat_count=overlapping_repeat_count,
+        source_intervals=active_intervals,
+        source_interval_weights=source_interval_weights,
+    )
+
+
+def normalize_source_intervals(
+    intervals: list[tuple[float, float]],
+    *,
+    window_start: float,
+    window_end: float,
+) -> list[tuple[float, float]]:
+    normalized: list[tuple[float, float]] = []
+    for start, end in sorted(intervals):
+        clipped_start = max(window_start, start)
+        clipped_end = min(window_end, end)
+        if clipped_end <= clipped_start + 1e-6:
+            continue
+        if normalized and clipped_start <= normalized[-1][1] + 1e-6:
+            normalized[-1] = (normalized[-1][0], max(normalized[-1][1], clipped_end))
+        else:
+            normalized.append((clipped_start, clipped_end))
+    return normalized or [(window_start, window_end)]
+
+
+def shot_source_ranges(shot: Shot, source_intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    return [
+        (max(shot.tc_start, start), min(shot.tc_end, end))
+        for start, end in source_intervals
+        if min(shot.tc_end, end) > max(shot.tc_start, start) + 1e-6
+    ]
+
+
+def candidate_capacity(
+    shots: list[Shot],
+    source_intervals: list[tuple[float, float]],
+    *,
+    max_clip: float,
+    min_visual_clip: float,
+) -> float:
+    total = 0.0
+    for shot in shots:
+        duration = sum(end - start for start, end in shot_source_ranges(shot, source_intervals))
+        if duration <= 1e-6 or duration + 1e-6 < min_visual_clip:
+            continue
+        total += min(max_clip, duration)
+    return total
+
+
+def source_position_for_progress(
+    intervals: list[tuple[float, float]],
+    progress: float,
+    *,
+    weights: list[float] | None = None,
+) -> float:
+    if not intervals:
+        raise ValueError("source intervals cannot be empty")
+    clamped = min(1.0, max(0.0, progress))
+    durations = [max(0.0, end - start) for start, end in intervals]
+    effective_weights = weights if weights is not None and len(weights) == len(intervals) and sum(weights) > 1e-6 else durations
+    total = sum(effective_weights)
+    if total <= 1e-6:
+        return intervals[0][0]
+    offset = total * clamped
+    for (start, end), duration, weight in zip(intervals, durations, effective_weights):
+        if offset <= weight + 1e-6:
+            interval_progress = 0.0 if weight <= 1e-6 else min(1.0, max(0.0, offset / weight))
+            return min(end, start + duration * interval_progress)
+        offset -= weight
+    return intervals[-1][1]
+
+
+def choose_source_range(
+    ranges: list[tuple[float, float]],
+    source_cursor: float,
+) -> tuple[float, float] | None:
+    if not ranges:
+        return None
+    return min(
+        ranges,
+        key=lambda item: (
+            0 if item[0] <= source_cursor < item[1] else 1 if item[0] >= source_cursor else 2,
+            0.0 if item[0] <= source_cursor < item[1] else abs(item[0] - source_cursor),
+            item[0],
+        ),
     )
 
 
@@ -366,24 +506,24 @@ def uncovered_source_ranges(
     window_start: float,
     window_end: float,
     used_ranges: list[tuple[float, float]],
+    *,
+    source_intervals: list[tuple[float, float]] | None = None,
 ) -> list[tuple[float, float]]:
-    start = max(window_start, shot.tc_start)
-    end = min(window_end, shot.tc_end)
-    if end <= start:
-        return []
-    clipped = sorted(
-        (max(start, used_start), min(end, used_end))
-        for used_start, used_end in used_ranges
-        if used_end > start and used_start < end
-    )
     output: list[tuple[float, float]] = []
-    cursor = start
-    for used_start, used_end in clipped:
-        if used_start > cursor + 1e-6:
-            output.append((cursor, used_start))
-        cursor = max(cursor, used_end)
-    if cursor < end - 1e-6:
-        output.append((cursor, end))
+    intervals = source_intervals or [(window_start, window_end)]
+    for start, end in shot_source_ranges(shot, intervals):
+        clipped = sorted(
+            (max(start, used_start), min(end, used_end))
+            for used_start, used_end in used_ranges
+            if used_end > start and used_start < end
+        )
+        cursor = start
+        for used_start, used_end in clipped:
+            if used_start > cursor + 1e-6:
+                output.append((cursor, used_start))
+            cursor = max(cursor, used_end)
+        if cursor < end - 1e-6:
+            output.append((cursor, end))
     return output
 
 
@@ -410,27 +550,37 @@ def source_overlap_duration(
     return sum(max(0.0, min(end, used_end) - max(start, used_start)) for used_start, used_end in used_ranges)
 
 
-def least_overlap_start(
+def least_overlap_range(
     shot: Shot,
     window_start: float,
     window_end: float,
     clip_len: float,
     used_ranges: list[tuple[float, float]],
     source_cursor: float,
-) -> float:
-    start = max(window_start, shot.tc_start)
-    end = min(window_end, shot.tc_end)
-    latest_start = max(start, end - clip_len)
-    candidate_starts = {start, latest_start}
-    for used_start, used_end in used_ranges:
-        candidate_starts.add(min(latest_start, max(start, used_end)))
-        candidate_starts.add(min(latest_start, max(start, used_start - clip_len)))
+    *,
+    source_intervals: list[tuple[float, float]] | None = None,
+) -> tuple[float, float] | None:
+    intervals = source_intervals or [(window_start, window_end)]
+    candidates: list[tuple[float, float]] = []
+    for start, end in shot_source_ranges(shot, intervals):
+        range_clip_len = min(clip_len, end - start)
+        if range_clip_len <= 1e-6:
+            continue
+        latest_start = max(start, end - range_clip_len)
+        candidate_starts = {start, latest_start}
+        for used_start, used_end in used_ranges:
+            candidate_starts.add(min(latest_start, max(start, used_end)))
+            candidate_starts.add(min(latest_start, max(start, used_start - range_clip_len)))
+        for candidate in candidate_starts:
+            candidates.append((candidate, min(end, candidate + range_clip_len)))
+    if not candidates:
+        return None
     return min(
-        candidate_starts,
-        key=lambda candidate: (
-            source_overlap_duration(candidate, candidate + clip_len, used_ranges),
-            abs(candidate - source_cursor),
-            candidate,
+        candidates,
+        key=lambda item: (
+            source_overlap_duration(item[0], item[1], used_ranges),
+            abs(item[0] - source_cursor),
+            item[0],
         ),
     )
 

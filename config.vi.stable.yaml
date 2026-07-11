@@ -111,6 +111,7 @@ match:
   min_visual_clip: 0.6
   widen_margin: 15
   max_widen: 3
+  content_anchors: true
   allow_repeat: true
   allow_speedfit: false
   exclude_non_story: true
@@ -147,6 +148,7 @@ match:
   review_intent: auto
   story_map: auto
   opening_ordered_fill: true
+  opening_intra_beat_align: false
   ordered_fill_by_audio_progress: true
   review_html: true
   log_level: INFO

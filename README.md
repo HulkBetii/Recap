@@ -312,6 +312,7 @@ python -m match `
   --semantic-device auto `
   --semantic-batch-size 16 `
   --semantic-cache-dir work\match\semantic `
+  --content-anchors `
   --match-strategy chronological `
   --chronology-weight 0.70 `
   --max-source-drift-s 12 `
@@ -332,6 +333,8 @@ Nguyên tắc GĐ5:
 
 - Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding; `tfidf` van giu lam fallback khong can dependency nang.
 - Movie matching mac dinh la `chronological`: bam timecode/source chronology truoc, semantic/story/intent chi lam soft tie-breaker de tranh audio mot noi hinh mot noi.
+- Beat co source span rat rong dung narration-only semantic de tao content timecode anchors. Candidate fill va chronology chi chay trong cac anchor interval; beat compact hoac anchor khong du capacity se fallback behavior cu.
+- Content anchors tu dong tat khi `film_map.meta.json` ghi `approximate_timecodes=true`, vi anchor hep khong an toan khi segment timecode con tho.
 - Cai embedding deps khi dung `bge-m3`: `pip install -e ".[semantic-embed]"`.
 - `edl.qa.json` ghi provider/model/device/cache hits, từng beat chọn shot nào, semantic rank/score, `expected_src_position`, `source_drift_s`, `chronology_score` và warning `low semantic match`/`high source drift`.
 - `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse/drift và warnings theo beat.
@@ -341,7 +344,8 @@ Nguyên tắc GĐ5:
 - Khi thiếu footage, GĐ5 tính diversity capacity theo tối đa một clip `max_clip` cho mỗi shot. Nó thử shot usable rồi shot story chỉ bị loại vì tối trong cùng source window trước khi widen, và không vượt quá `max_widen`.
 - Repeat fallback ưu tiên phần source chưa dùng của các shot đã chọn, tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier, rồi mới dùng span có overlap thấp nhất.
 - `edl.qa.json`/HTML hiển thị capacity, widen count, dark fallback, unused-source reuse và overlapping repeat; `edl.meta.json.algorithm_version` làm stale artifact tự rebuild qua orchestrator.
-- Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
+- Visual preset bật `opening_intra_beat_align`: GĐ5 chỉ xét non-hook opening beat đầu tiên đủ dài, ước lượng timeline từng câu theo TTS thật, dùng BGE-M3 + monotonic DP để tìm anchor và splice cục bộ. Stable preset giữ tắt; timecode approximate, TF-IDF/off, confidence thấp hoặc local window thiếu footage đều giữ nguyên EDL baseline.
+- Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic, `content_anchors`, `opening_intra_beat_align` và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
 
 ## Chạy GĐ6
 

@@ -7,7 +7,7 @@ from common.schema import EdlPlacement, ReviewBeat, ReviewIntent, Shot, StorySec
 from match.scoring import brightness_bonus, face_bonus, score_shot, ScoringWeights
 from match.semantic import SemanticResult
 from match.visual import VisualScoreResult
-from match.fill import chronology_tier
+from match.fill import chronology_tier, source_position_for_progress
 
 
 def narration_preview(text: str, limit: int = 180) -> str:
@@ -69,6 +69,17 @@ def build_edl_qa(
         beat_tl_end = max((placement.tl_end for placement in beat_selected), default=0.0)
         beat_tl_span = max(0.001, beat_tl_end - beat_tl_start)
         beat_src_span = max(0.001, beat.src_tc_end - beat.src_tc_start)
+        anchor_intervals = [
+            (float(item[0]), float(item[1]))
+            for item in candidate_info.get("content_anchor_intervals", [])
+            if isinstance(item, (list, tuple)) and len(item) == 2 and float(item[1]) > float(item[0])
+        ]
+        anchor_interval_weights = [float(item) for item in candidate_info.get("content_anchor_interval_weights", [])]
+        intra_beat_chunks = [
+            item
+            for item in candidate_info.get("opening_intra_beat_chunks", [])
+            if isinstance(item, dict) and item.get("replaced")
+        ]
         beat_drifts: list[float] = []
         semantic_override = False
         for placement in beat_selected:
@@ -77,7 +88,35 @@ def build_edl_qa(
             visual_score = visual_scores.get((beat.beat_id, placement.shot_index), 0.0)
             beat_semantic_values.append(semantic_score)
             tl_progress = min(1.0, max(0.0, (placement.tl_start - beat_tl_start) / beat_tl_span))
-            expected_src_position = beat.src_tc_start + beat_src_span * tl_progress
+            placement_midpoint = (placement.tl_start + placement.tl_end) / 2
+            intra_beat_chunk = next(
+                (
+                    item
+                    for item in intra_beat_chunks
+                    if (
+                        float((item.get("replacement_range") or [item.get("tl_start", 0.0), item.get("tl_end", 0.0)])[0]) - 1e-6
+                        <= placement_midpoint
+                        <= float((item.get("replacement_range") or [item.get("tl_start", 0.0), item.get("tl_end", 0.0)])[1]) + 1e-6
+                    )
+                ),
+                None,
+            )
+            if intra_beat_chunk is not None:
+                replacement_range = intra_beat_chunk.get("replacement_range") or [intra_beat_chunk["tl_start"], intra_beat_chunk["tl_end"]]
+                chunk_tl_start = float(replacement_range[0])
+                chunk_tl_end = float(replacement_range[1])
+                source_window = intra_beat_chunk.get("source_window", [])
+                chunk_progress = min(1.0, max(0.0, (placement.tl_start - chunk_tl_start) / max(chunk_tl_end - chunk_tl_start, 0.001)))
+                expected_src_position = source_position_for_progress(
+                    [(float(source_window[0]), float(source_window[1]))],
+                    chunk_progress,
+                )
+            else:
+                expected_src_position = (
+                    source_position_for_progress(anchor_intervals, tl_progress, weights=anchor_interval_weights)
+                    if anchor_intervals
+                    else beat.src_tc_start + beat_src_span * tl_progress
+                )
             source_drift_s = source_drift(placement, expected_src_position)
             beat_drifts.append(source_drift_s)
             chronology_score = max(0.0, 1.0 - source_drift_s / max(max_source_drift_s, 0.001))
@@ -102,6 +141,7 @@ def build_edl_qa(
                 "selected_keyframe": visual_result.selected_keyframes.get((beat.beat_id, placement.shot_index)) if visual_result else None,
                 "drift_tier": chronology_tier(shot, expected_src_position, max_source_drift_s=max_source_drift_s)[0] if shot else None,
                 "dark_fallback": placement.shot_index in dark_candidate_ids,
+                "opening_intra_beat_chunk": intra_beat_chunk,
             }
             if shot is not None:
                 entry.update({
@@ -220,6 +260,15 @@ def build_edl_qa(
             "dark_selected_ids": candidate_info.get("dark_selected_ids", []),
             "unused_source_reuse_count": candidate_info.get("unused_source_reuse_count", 0),
             "overlapping_repeat_count": candidate_info.get("overlapping_repeat_count", 0),
+            "content_anchor_used": bool(candidate_info.get("content_anchor_used", False)),
+            "content_anchor_intervals": candidate_info.get("content_anchor_intervals", []),
+            "content_anchor_interval_weights": candidate_info.get("content_anchor_interval_weights", []),
+            "content_anchor_segment_ids": candidate_info.get("content_anchor_segment_ids", []),
+            "content_anchor_threshold": candidate_info.get("content_anchor_threshold"),
+            "content_anchor_capacity_s": candidate_info.get("content_anchor_capacity_s"),
+            "opening_intra_beat_align_used": bool(candidate_info.get("opening_intra_beat_align_used", False)),
+            "opening_intra_beat_chunks": candidate_info.get("opening_intra_beat_chunks", []),
+            "opening_intra_beat_replaced_ranges": candidate_info.get("opening_intra_beat_replaced_ranges", []),
             "ordered_fill_used": ordered_fill_used,
             "chronology_mismatch": chronology_mismatch,
             "intent_match_score": 1.0 if section is not None else 0.0,
@@ -228,7 +277,7 @@ def build_edl_qa(
         })
     excluded_intro = [shot.index for shot in shots if not shot.is_story]
     return {
-        "version": 7,
+        "version": 9,
         "match_strategy": match_strategy,
         "max_source_drift_s": max_source_drift_s,
         "semantic_enabled": bool(semantic_scores),

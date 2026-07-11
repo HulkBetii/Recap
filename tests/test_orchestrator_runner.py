@@ -89,7 +89,7 @@ def write_stage_outputs(command: list[str]) -> None:
     elif stage == "match":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")
-        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[],"algorithm_version":"2"}), encoding="utf-8")
+        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[],"algorithm_version":"4"}), encoding="utf-8")
         output.with_name("edl.qa.json").write_text(json.dumps({"version":1,"semantic_enabled":True,"min_semantic_score":0.12,"beats":[]}), encoding="utf-8")
         flag(command, "--output-sync-qa").write_text(json.dumps({"version":1,"summary":{},"beats":[]}), encoding="utf-8")
         flag(command, "--output-visual-qa").write_text(json.dumps({"version":1,"visual_mode":"off","visual_enabled":False,"beats":[]}), encoding="utf-8")
@@ -271,7 +271,21 @@ def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None
     assert command[command.index("--max-source-drift-s") + 1] == "12.0"
     assert "--opening-story-visual-start" in command
     assert "--ordered-fill-by-audio-progress" in command
+    assert "--no-opening-intra-beat-align" in command
     assert command[command.index("--visual-mode") + 1] == "off"
+
+
+def test_match_command_enables_opening_intra_beat_alignment_when_configured(tmp_path: Path) -> None:
+    from orchestrator.graph import build_paths
+    from orchestrator.runner import build_command
+
+    paths = build_paths(tmp_path / "run")
+    config = load_config(write_config(tmp_path))
+    config["match"]["opening_intra_beat_align"] = True
+
+    command = build_command("match", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+
+    assert "--opening-intra-beat-align" in command
 
 def test_visual_config_runs_visual_index_and_passes_to_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "x")

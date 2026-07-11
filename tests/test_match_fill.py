@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
-from match.fill import Fragment, assign_timeline, avoid_adjacent_repeat_in_tier, fill_beat, fill_timeline_gaps, split_long_placements, trim_fragments_to_duration
+from match.fill import Fragment, assign_timeline, avoid_adjacent_repeat_in_tier, fill_beat, fill_timeline_gaps, source_position_for_progress, split_long_placements, trim_fragments_to_duration
 from match.scoring import ScoringWeights
 from match.timing import validate_source_bounds
 
@@ -97,6 +97,42 @@ def test_repeat_overlaps_only_after_source_is_exhausted() -> None:
     assert result.overlapping_repeat_count == 1
     placements = assign_timeline(result.fragments, timing)
     validate_source_bounds(placements, source_shots)
+
+
+def test_fill_stays_inside_disjoint_content_anchor_intervals() -> None:
+    source_shots = [shot(0, 0, 5), shot(1, 45, 50), shot(2, 90, 95)]
+    content_intervals = [(0.0, 10.0), (90.0, 100.0)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=100, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=8, duration=8)
+
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=3,
+        max_clip=5,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=False,
+        allow_speedfit=False,
+        match_strategy="chronological",
+        ordered_fill=True,
+        candidate_filter_ids={0, 2},
+        dark_candidate_ids=set(),
+        source_intervals=content_intervals,
+    )
+
+    assert result.source_intervals == content_intervals
+    assert {fragment.shot_index for fragment in result.fragments} == {0, 2}
+    assert all(
+        any(start <= fragment.src_in < fragment.src_out <= end for start, end in content_intervals)
+        for fragment in result.fragments
+    )
+    assert source_position_for_progress(content_intervals, 0.75) == 95.0
+    assert source_position_for_progress(content_intervals, 0.5, weights=[5.0, 15.0]) == 93.33333333333333
 
 
 def test_repeat_avoids_adjacent_shot_when_same_tier_alternative_exists() -> None:

@@ -105,9 +105,49 @@ def write_review_html(
                 f" | Dark selected: {len(qa_beat.get('dark_selected_ids', []))}"
                 f" | Overlap repeats: {escape(_fmt(qa_beat.get('overlapping_repeat_count')))}"
             )
-        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}{visual_query}{capacity_info}</div>")
+        anchor_info = ""
+        if isinstance(qa_beat, dict) and qa_beat.get("content_anchor_used"):
+            intervals = ", ".join(
+                f"{float(item[0]):.3f}-{float(item[1]):.3f}s"
+                for item in qa_beat.get("content_anchor_intervals", [])
+                if isinstance(item, (list, tuple)) and len(item) == 2
+            )
+            anchor_info = f" | Content anchor: {escape(intervals)}"
+        intra_beat_info = ""
+        if isinstance(qa_beat, dict) and qa_beat.get("opening_intra_beat_align_used"):
+            intra_beat_info = f" | Intra-beat aligned: {len(qa_beat.get('opening_intra_beat_replaced_ranges', []))} range(s)"
+        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}{visual_query}{capacity_info}{anchor_info}{intra_beat_info}</div>")
         if beat_warnings:
             parts.append("<ul class=\"warn\">" + "".join(f"<li>{escape(str(warning))}</li>" for warning in beat_warnings) + "</ul>")
+        intra_beat_chunks = qa_beat.get("opening_intra_beat_chunks", []) if isinstance(qa_beat, dict) else []
+        if intra_beat_chunks:
+            parts.append("<h3>Opening intra-beat alignment</h3><div class=\"grid\">")
+            for chunk in intra_beat_chunks:
+                if not isinstance(chunk, dict):
+                    continue
+                source_window = chunk.get("source_window", [])
+                window_text = (
+                    f"{float(source_window[0]):.3f}-{float(source_window[1]):.3f}s"
+                    if isinstance(source_window, (list, tuple)) and len(source_window) == 2
+                    else "-"
+                )
+                status = "replaced" if chunk.get("replaced") else f"skipped: {chunk.get('skip_reason', 'not eligible')}"
+                replacement_range = chunk.get("replacement_range", [])
+                replacement_text = (
+                    f"{float(replacement_range[0]):.3f}-{float(replacement_range[1]):.3f}"
+                    if isinstance(replacement_range, (list, tuple)) and len(replacement_range) == 2
+                    else "-"
+                )
+                parts.append(
+                    "<article class=\"clip\"><div class=\"meta\">"
+                    + f"TL {escape(_fmt(chunk.get('tl_start')))}-{escape(_fmt(chunk.get('tl_end')))}<br>"
+                    + f"replace {escape(replacement_text)}<br>"
+                    + f"anchor shot {escape(_fmt(chunk.get('anchor_shot_index')))} @ {escape(_fmt(chunk.get('anchor_source_s')))}s<br>"
+                    + f"semantic={escape(_fmt(chunk.get('semantic_score')))} shift={escape(_fmt(chunk.get('baseline_shift_s')))}s<br>"
+                    + f"window={escape(window_text)} | selected={escape(str(chunk.get('selected_shot_ids', [])))}<br>"
+                    + f"{escape(status)}</div><p>{escape(str(chunk.get('text', '')))}</p></article>"
+                )
+            parts.append("</div>")
         parts.append("<div class=\"grid\">")
         for ordinal, placement in enumerate(placements_by_beat.get(beat.beat_id, [])[: max(0, thumbs_per_beat)]):
             shot = shots_by_index.get(placement.shot_index)

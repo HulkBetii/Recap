@@ -3,7 +3,7 @@
 import argparse
 import json
 
-from match.__main__ import run_match
+from match.__main__ import content_anchors_allowed, run_match
 
 
 def write_inputs(tmp_path):  # type: ignore[no-untyped-def]
@@ -69,7 +69,7 @@ def test_match_cli_outputs_valid_edl_and_meta(tmp_path) -> None:
     meta = json.loads((tmp_path / "edl.meta.json").read_text(encoding="utf-8"))
     assert meta["n_beats_widened"] >= 1
     assert meta["n_placements"] > 0
-    assert meta["algorithm_version"] == "2"
+    assert meta["algorithm_version"] == "4"
     qa = json.loads((tmp_path / "edl.qa.json").read_text(encoding="utf-8"))
     assert "candidate_capacity_s" in qa["beats"][0]
     edl = json.loads((tmp_path / "edl.json").read_text(encoding="utf-8"))
@@ -92,3 +92,19 @@ def test_match_cli_deterministic(tmp_path) -> None:
     run_match(make_args(tmp_path, paths, force=True))
     second = (tmp_path / "edl.json").read_text(encoding="utf-8")
     assert first == second
+
+
+def test_content_anchors_are_disabled_for_approximate_timecodes(tmp_path) -> None:
+    film_map = tmp_path / "film_map.json"
+    film_map.write_text("[]", encoding="utf-8")
+    film_map.with_name("film_map.meta.json").write_text(json.dumps({"approximate_timecodes": True}), encoding="utf-8")
+
+    assert content_anchors_allowed(film_map) is False
+
+
+def test_content_anchors_are_disabled_for_corrupt_timecode_meta(tmp_path) -> None:
+    film_map = tmp_path / "film_map.json"
+    film_map.write_text("[]", encoding="utf-8")
+    film_map.with_name("film_map.meta.json").write_text("{broken", encoding="utf-8")
+
+    assert content_anchors_allowed(film_map) is False

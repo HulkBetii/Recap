@@ -1,5 +1,27 @@
 # PROJECT_LOG.md
 
+## 2026-07-11 - GĐ5 opening intra-beat alignment
+
+- Added opt-in `opening_intra_beat_align` for `config.movie.visual.yaml`; stable and Vietnamese presets remain disabled.
+- The first eligible non-hook opening beat is split into character-weighted sentence timings over real TTS duration. BGE-M3 scores sentence queries against shot contexts, then monotonic DP selects nondecreasing anchors with a light chronology prior.
+- Only confident chunks in the first 30 seconds are replaced. Local fill stays inside the current and next anchor window, uses continuous source without repeat, snaps back to an already-correct baseline anchor when possible, and preserves every untouched placement outside the replacement range.
+- QA v9 and HTML now expose sentence text/timeline, raw semantic score, anchor score, source window, selected shots, replacement range, and skip reason. Match algorithm version is now `4`.
+- Real `Toan-Tri-Doc-Gia` validation replaced only TL `20.332-40.716s`: shots `51-52` cover Yoo Sang-ah/job status, shot `54` covers design/brand, and shots `55-56` introduce Han Myung-oh with a source-continuous handoff into the unchanged baseline.
+- Final G5 invariants: all baseline placements outside the replaced interval remain byte-equivalent; no timeline gap/overlap, short clip, source-order mismatch, or shot-bound violation. Final cached G6 rerender encoded only 3 new clips, stayed `1920x1080`/30fps with `duration_match=true`, and black-frame detection found no black interval in TL `20-43s`.
+- Contact sheet `runs/toan-tri-doc-gia.visual-v1/qa_frames/beat-1-21-42.after-intra.jpg` confirms Sang-ah in the job/design section and Han Myung-oh at the manager introduction. Playwright loaded the QA HTML and verified anchors `51`, `54`, `56` plus replacement range `20.332-40.716s`.
+- Validation: targeted tests `46 passed`; full `python -m pytest -q` -> `283 passed`; compileall and `git diff --check` completed without code errors. `Ngoai-Vong-Phap-Luat` and `Gang-To-Tai-Xuat` selected no intra-beat overlay, with zero sync gaps/overlaps/short-clip warnings.
+
+## 2026-07-11 - G5 content anchors for wide beats
+
+- Added narration-only beat-to-segment semantic scoring and deterministic timecode cluster selection for source spans at least 4x longer than beat audio.
+- Candidate fill, dark fallback, repeat ranges, chronology cursor and drift QA now stay inside selected content intervals; compact beats retain legacy behavior.
+- Added `content_anchors=true`, QA/HTML diagnostics and `algorithm_version=3` so stale match/render artifacts rerun automatically.
+- Approximate or invalid timecode metadata disables anchors automatically and `film_map.meta.json` participates in the match cache key; strict-timecode runs keep anchors enabled.
+- Semantic scorers skip narration-to-segment encoding when anchors are disabled, preserving legacy shot scoring and avoiding unnecessary runtime on approximate-timecode runs.
+- Real validation: `Toan-Tri-Doc-Gia` beat 27 selects planning shots `1042-1047`; beat 28 selects battle/reward/revive shots `1089-1092,1126-1128`, with no widen/repeat/overlap and max drift `0.917s`. Beat 23 stays at baseline max drift `11.469s`.
+- Acceptance: `Ngoai-Vong-Phap-Luat` keeps 4 high-drift beats and `Gang-To-Tai-Xuat` returns to 4 after the approximate-timecode guard; both keep high-repeat, overlap and short-clip counts at 0.
+- Root cause found on `Toan-Tri-Doc-Gia` beats 27-28: shot semantic included the full source transcript, causing unrelated later events and repeated subscribe text to steer footage selection.
+
 ## 2026-07-11 - GĐ5 hardening beat thiếu footage
 
 - GĐ4 thêm optional `Shot.unusable_reasons` và feature cache schema v2 để phân biệt `too_dark`, `too_short`, `transition_spike`, `no_frames`; legacy `shots.json` vẫn parse được.

@@ -8,9 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.schema import BeatTiming, EdlMeta, EdlPlacement, FilmMapSegment, ReviewBeat, ReviewIntent, Shot, StorySection, validate_edl, validate_review_intents, validate_story_map, write_json
+from match.anchors import plan_content_anchors
 from match.cache import MatchCache, file_hash, stable_hash
 from match.fill import assign_timeline, chronology_tier, fill_beat, fill_timeline_gaps, split_long_placements
 from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
+from match.intra_beat import alignment_queries, apply_opening_intra_beat_alignment, prepare_opening_alignment_sentences, update_reuse_counts
 from match.qa import build_edl_qa
 from match.review_html import write_review_html
 from match.scoring import ScoringWeights, score_shot
@@ -55,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic-device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--semantic-batch-size", default=16, type=int)
     parser.add_argument("--semantic-cache-dir", default=None, type=Path)
+    parser.add_argument("--content-anchors", action="store_true", default=True)
+    parser.add_argument("--no-content-anchors", dest="content_anchors", action="store_false")
     parser.add_argument("--min-clip", default=3.0, type=float)
     parser.add_argument("--max-clip", default=5.0, type=float)
     parser.add_argument("--min-visual-clip", default=0.6, type=float)
@@ -93,6 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-opening-allow-short-fill", dest="opening_allow_short_fill", action="store_false")
     parser.add_argument("--opening-ordered-fill", action="store_true", default=True)
     parser.add_argument("--no-opening-ordered-fill", dest="opening_ordered_fill", action="store_false")
+    parser.add_argument("--opening-intra-beat-align", action="store_true", default=False)
+    parser.add_argument("--no-opening-intra-beat-align", dest="opening_intra_beat_align", action="store_false")
     parser.add_argument("--ordered-fill-by-audio-progress", action="store_true", default=True)
     parser.add_argument("--no-ordered-fill-by-audio-progress", dest="ordered_fill_by_audio_progress", action="store_false")
     parser.add_argument("--no-exclude-non-story", dest="exclude_non_story", action="store_false")
@@ -101,6 +107,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def make_cache_key(args: argparse.Namespace) -> str:
+    film_map_path = args.film_map.expanduser().resolve() if args.film_map else None
+    film_map_meta = film_map_path.with_name("film_map.meta.json") if film_map_path else None
     return stable_hash({
         "algorithm_version": MATCH_ALGORITHM_VERSION,
         "review_script": file_hash(args.review_script.expanduser().resolve()),
@@ -116,7 +124,8 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "allow_speedfit": args.allow_speedfit,
         "seed": args.seed,
         "weights": [args.w_motion, args.w_face, args.w_bright, args.w_reuse, args.w_semantic],
-        "film_map": file_hash(args.film_map.expanduser().resolve()) if args.film_map else None,
+        "film_map": file_hash(film_map_path) if film_map_path else None,
+        "film_map_meta": file_hash(film_map_meta) if film_map_meta and film_map_meta.is_file() else None,
         "review_intent": file_hash(args.review_intent.expanduser().resolve()) if args.review_intent else None,
         "story_map": file_hash(args.story_map.expanduser().resolve()) if args.story_map else None,
         "semantic_mode": args.semantic_mode,
@@ -124,6 +133,8 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "semantic_device": args.semantic_device,
         "semantic_batch_size": args.semantic_batch_size,
         "semantic_cache_dir": str(args.semantic_cache_dir) if args.semantic_cache_dir else None,
+        "content_anchors": args.content_anchors,
+        "opening_intra_beat_align": args.opening_intra_beat_align,
         "visual_index": visual_index_artifact_hash(args.visual_index.expanduser().resolve()) if args.visual_index and args.visual_index.expanduser().resolve().is_file() else None,
         "visual_mode": args.visual_mode,
         "visual_cache_dir": str(args.visual_cache_dir) if args.visual_cache_dir else None,
@@ -259,6 +270,19 @@ def is_opening_non_story_description(text: str) -> bool:
     markers = ("logo", "title card", "opening credits", "credits", "black screen", "white text", "production", "studio")
     return any(marker in lowered for marker in markers)
 
+
+def content_anchors_allowed(film_map_path: Path | None) -> bool:
+    if film_map_path is None:
+        return False
+    meta_path = film_map_path.expanduser().resolve().with_name("film_map.meta.json")
+    if not meta_path.is_file():
+        return True
+    try:
+        raw = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return isinstance(raw, dict) and not bool(raw.get("approximate_timecodes", False))
+
 def run_match(args: argparse.Namespace) -> int:
     logger = logging.getLogger("match")
     if not hasattr(args, "exclude_non_story"):
@@ -274,6 +298,8 @@ def run_match(args: argparse.Namespace) -> int:
         args.opening_allow_short_fill = True
     if not hasattr(args, "opening_ordered_fill"):
         args.opening_ordered_fill = True
+    if not hasattr(args, "opening_intra_beat_align"):
+        args.opening_intra_beat_align = False
     if not hasattr(args, "ordered_fill_by_audio_progress"):
         args.ordered_fill_by_audio_progress = True
     if not hasattr(args, "opening_story_visual_start"):
@@ -308,6 +334,8 @@ def run_match(args: argparse.Namespace) -> int:
         args.output_visual_qa = None
     if not hasattr(args, "w_visual"):
         args.w_visual = 0.20
+    if not hasattr(args, "content_anchors"):
+        args.content_anchors = True
     validate_args(args)
     random.seed(args.seed)
     output_path = args.output.expanduser().resolve()
@@ -354,6 +382,20 @@ def run_match(args: argparse.Namespace) -> int:
     visual_result = None
     visual_scores: dict[tuple[int, int], float] = {}
     warnings: list[str] = []
+    strict_timecodes = content_anchors_allowed(args.film_map)
+    use_content_anchors = args.content_anchors and strict_timecodes
+    if args.content_anchors and args.film_map is not None and not use_content_anchors:
+        warnings.append("content anchors disabled because film_map timecodes are not strict")
+    opening_alignment_sentences = prepare_opening_alignment_sentences(
+        beats=review_beats,
+        timings=timings,
+        enabled=args.opening_intra_beat_align,
+        semantic_mode=args.semantic_mode,
+        strict_timecodes=strict_timecodes,
+        opening_guard_s=args.opening_guard_s,
+    )
+    if args.opening_intra_beat_align and not strict_timecodes:
+        warnings.append("opening intra-beat alignment disabled because film_map timecodes are not strict")
     if args.semantic_mode != "off":
         semantic_cache_dir = args.semantic_cache_dir.expanduser().resolve() if args.semantic_cache_dir else args.work_dir.expanduser().resolve() / "semantic"
         semantic_result = compute_semantic_result(
@@ -366,7 +408,9 @@ def run_match(args: argparse.Namespace) -> int:
                 device=args.semantic_device,
                 batch_size=args.semantic_batch_size,
                 cache_dir=semantic_cache_dir,
+                score_segments=use_content_anchors,
             ),
+            alignment_queries=alignment_queries(opening_alignment_sentences),
         )
         semantic_scores = semantic_result.scores
     if args.visual_mode != "off" and args.visual_index is not None and args.visual_index.expanduser().resolve().is_file():
@@ -405,10 +449,29 @@ def run_match(args: argparse.Namespace) -> int:
     logger.info("Matching %d beats", len(timings))
     for timing in sorted(timings, key=lambda item: item.tl_start):
         beat = beats_by_id[timing.beat_id]
+        reuse_counts_before = dict(reuse_counts)
         in_opening_guard = args.opening_guard_s > 0 and timing.tl_start < args.opening_guard_s
         source_start_override = None
         if in_opening_guard and args.opening_story_visual_start and film_map:
             source_start_override = opening_story_visual_start(beat, film_map)
+        anchor_plan = None
+        if (
+            use_content_anchors
+            and not in_opening_guard
+            and semantic_result is not None
+            and semantic_result.segment_scores
+            and film_map
+        ):
+            anchor_plan = plan_content_anchors(
+                beat=beat,
+                required_duration_s=timing.duration,
+                shots=shots,
+                film_map=film_map,
+                segment_scores=semantic_result.segment_scores,
+                max_clip=args.max_clip,
+                min_visual_clip=args.min_visual_clip,
+                allow_dark_fallback=args.allow_dark_fallback,
+            )
         result = fill_beat(
             beat=beat,
             timing=timing,
@@ -436,8 +499,43 @@ def run_match(args: argparse.Namespace) -> int:
             min_visual_clip=args.min_visual_clip,
             strict_ordered_fill=in_opening_guard and args.opening_ordered_fill,
             allow_dark_fallback=args.allow_dark_fallback,
+            candidate_filter_ids=anchor_plan.candidate_ids if anchor_plan else None,
+            dark_candidate_ids=anchor_plan.dark_candidate_ids if anchor_plan else None,
+            source_intervals=anchor_plan.intervals if anchor_plan else None,
         )
-        candidate_shot_ids[beat.beat_id] = result.candidate_shot_ids
+        beat_placements = assign_timeline(result.fragments, timing)
+        intra_beat_result = None
+        if (
+            beat.beat_id in opening_alignment_sentences
+            and semantic_result is not None
+            and semantic_result.provider == "bge-m3"
+            and semantic_result.query_shot_scores
+        ):
+            intra_beat_result = apply_opening_intra_beat_alignment(
+                beat=beat,
+                timing=timing,
+                baseline_placements=beat_placements,
+                sentences=opening_alignment_sentences[beat.beat_id],
+                shots=shots,
+                query_shot_scores=semantic_result.query_shot_scores,
+                reuse_counts_before=reuse_counts_before,
+                max_clip=args.max_clip,
+                min_visual_clip=args.min_visual_clip,
+                allow_dark_fallback=args.allow_dark_fallback,
+            )
+            beat_placements = intra_beat_result.placements
+            result.warnings.extend(intra_beat_result.warnings)
+            if intra_beat_result.used:
+                update_reuse_counts(reuse_counts, reuse_counts_before, beat_placements)
+
+        selected_candidate_ids = list(result.candidate_shot_ids)
+        if intra_beat_result is not None:
+            selected_candidate_ids.extend(
+                int(shot_index)
+                for diagnostic in intra_beat_result.diagnostics
+                for shot_index in diagnostic.get("selected_shot_ids", [])
+            )
+        candidate_shot_ids[beat.beat_id] = list(dict.fromkeys(selected_candidate_ids))
         candidate_diagnostics[beat.beat_id] = {
             "window_start": result.window_start,
             "window_end": result.window_end,
@@ -451,13 +549,22 @@ def run_match(args: argparse.Namespace) -> int:
             "dark_selected_ids": result.dark_selected_ids,
             "unused_source_reuse_count": result.unused_source_reuse_count,
             "overlapping_repeat_count": result.overlapping_repeat_count,
+            "content_anchor_used": anchor_plan is not None,
+            "content_anchor_intervals": result.source_intervals if anchor_plan else [],
+            "content_anchor_interval_weights": result.source_interval_weights if anchor_plan else [],
+            "content_anchor_segment_ids": anchor_plan.segment_ids if anchor_plan else [],
+            "content_anchor_threshold": anchor_plan.threshold if anchor_plan else None,
+            "content_anchor_capacity_s": anchor_plan.capacity_s if anchor_plan else None,
+            "opening_intra_beat_align_used": bool(intra_beat_result and intra_beat_result.used),
+            "opening_intra_beat_chunks": intra_beat_result.diagnostics if intra_beat_result else [],
+            "opening_intra_beat_replaced_ranges": [list(item) for item in intra_beat_result.replaced_ranges] if intra_beat_result else [],
         }
         n_dark_fallback_beats += int(bool(result.dark_selected_ids))
         n_capacity_exhausted_beats += int(result.capacity_exhausted)
         n_unused_source_reuse += result.unused_source_reuse_count
         n_overlapping_repeats += result.overlapping_repeat_count
         shots_by_index = {shot.index: shot for shot in shots}
-        for shot_index in result.candidate_shot_ids:
+        for shot_index in candidate_shot_ids[beat.beat_id]:
             shot = shots_by_index.get(shot_index)
             if shot is not None:
                 candidate_drift_tiers[(beat.beat_id, shot_index)] = chronology_tier(
@@ -470,18 +577,18 @@ def run_match(args: argparse.Namespace) -> int:
         if in_opening_guard and args.opening_ordered_fill:
             result.warnings.append(f"beat {beat.beat_id} opening_ordered_fill")
         if in_opening_guard:
-            unique_count = len({fragment.shot_index for fragment in result.fragments})
-            if result.fragments and unique_count < args.opening_min_unique_shots:
+            unique_count = len({placement.shot_index for placement in beat_placements})
+            if beat_placements and unique_count < args.opening_min_unique_shots:
                 result.warnings.append(f"beat {beat.beat_id} opening_low_unique_shots {unique_count} < {args.opening_min_unique_shots}")
-            filled_duration = sum(fragment.duration for fragment in result.fragments)
+            filled_duration = sum(placement.tl_end - placement.tl_start for placement in beat_placements)
             if args.opening_allow_short_fill and filled_duration + 0.02 < timing.duration:
                 result.warnings.append(f"beat {beat.beat_id} opening_short_fill {filled_duration:.3f}/{timing.duration:.3f}s")
         if result.widened:
             n_beats_widened += 1
-        n_reused += result.reused_count
+        n_reused += sum(1 for placement in beat_placements if placement.reused) if intra_beat_result and intra_beat_result.used else result.reused_count
         n_speedfit += result.speedfit_count
         warnings.extend(result.warnings)
-        placements.extend(assign_timeline(result.fragments, timing))
+        placements.extend(beat_placements)
 
     total_duration = max((timing.tl_end for timing in timings), default=0.0)
     before_gap_fill = len(placements)

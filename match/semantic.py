@@ -26,12 +26,15 @@ class SemanticConfig:
     device: str = "auto"
     batch_size: int = 16
     cache_dir: Path | None = None
+    score_segments: bool = True
 
 
 @dataclass
 class SemanticResult:
     scores: dict[tuple[int, int], float] = field(default_factory=dict)
     ranks: dict[tuple[int, int], int] = field(default_factory=dict)
+    segment_scores: dict[tuple[int, int], float] = field(default_factory=dict)
+    query_shot_scores: dict[tuple[int, int, int], float] = field(default_factory=dict)
     provider: str = "off"
     model: str | None = None
     device: str | None = None
@@ -95,22 +98,59 @@ def rank_scores(scores: dict[tuple[int, int], float]) -> dict[tuple[int, int], i
 class TfidfSemanticScorer:
     provider = "tfidf"
 
-    def score(self, beats: list[ReviewBeat], shots: list[Shot], film_map: list[FilmMapSegment]) -> SemanticResult:
+    def __init__(self, *, score_segments: bool = True) -> None:
+        self.score_segments = score_segments
+
+    def score(
+        self,
+        beats: list[ReviewBeat],
+        shots: list[Shot],
+        film_map: list[FilmMapSegment],
+        alignment_queries: dict[tuple[int, int], str] | None = None,
+    ) -> SemanticResult:
         beat_tokens = {beat.beat_id: tokenize(build_beat_context(beat, film_map)) for beat in beats}
+        anchor_beat_tokens = {beat.beat_id: tokenize(beat.narration) for beat in beats} if self.score_segments else {}
         shot_tokens = {shot.index: tokenize(build_shot_context(shot, film_map)) for shot in shots}
-        documents = list(beat_tokens.values()) + list(shot_tokens.values())
+        segment_tokens = {segment.id: tokenize(segment_text(segment)) for segment in film_map} if self.score_segments else {}
+        documents = (
+            list(beat_tokens.values())
+            + list(shot_tokens.values())
+            + list(anchor_beat_tokens.values())
+            + list(segment_tokens.values())
+        )
         document_count = max(1, len(documents))
         document_frequency: Counter[str] = Counter()
         for tokens in documents:
             document_frequency.update(set(tokens))
         idf = {token: math.log((1 + document_count) / (1 + count)) + 1 for token, count in document_frequency.items()}
         beat_vectors = {beat_id: _tfidf_vector(tokens, idf) for beat_id, tokens in beat_tokens.items()}
+        anchor_beat_vectors = {beat_id: _tfidf_vector(tokens, idf) for beat_id, tokens in anchor_beat_tokens.items()}
         shot_vectors = {shot_index: _tfidf_vector(tokens, idf) for shot_index, tokens in shot_tokens.items()}
+        segment_vectors = {segment_id: _tfidf_vector(tokens, idf) for segment_id, tokens in segment_tokens.items()}
         scores: dict[tuple[int, int], float] = {}
         for beat_id, beat_vector in beat_vectors.items():
             for shot_index, shot_vector in shot_vectors.items():
                 scores[(beat_id, shot_index)] = round(_sparse_cosine(beat_vector, shot_vector), 6)
-        return SemanticResult(scores=scores, ranks=rank_scores(scores), provider=self.provider, model="tfidf")
+        segment_scores = (
+            {
+                (beat.beat_id, segment.id): round(
+                    _sparse_cosine(anchor_beat_vectors[beat.beat_id], segment_vectors[segment.id]),
+                    6,
+                )
+                for beat in beats
+                for segment in film_map
+                if beat.from_seg_id <= segment.id <= beat.to_seg_id
+            }
+            if self.score_segments
+            else {}
+        )
+        return SemanticResult(
+            scores=scores,
+            ranks=rank_scores(scores),
+            segment_scores=segment_scores,
+            provider=self.provider,
+            model="tfidf",
+        )
 
 
 class SentenceTransformerEncoder:
@@ -141,28 +181,72 @@ class EmbeddingSemanticScorer:
         self.cache_hits: list[str] = []
         self.resolved_device = resolve_device(config.device)
 
-    def score(self, beats: list[ReviewBeat], shots: list[Shot], film_map: list[FilmMapSegment]) -> SemanticResult:
+    def score(
+        self,
+        beats: list[ReviewBeat],
+        shots: list[Shot],
+        film_map: list[FilmMapSegment],
+        alignment_queries: dict[tuple[int, int], str] | None = None,
+    ) -> SemanticResult:
         beat_contexts = {beat.beat_id: build_beat_context(beat, film_map) for beat in beats}
+        anchor_beat_contexts = {beat.beat_id: beat.narration for beat in beats} if self.config.score_segments else {}
         shot_contexts = {shot.index: build_shot_context(shot, film_map) for shot in shots}
-        all_keys = [("beat", key) for key in beat_contexts] + [("shot", key) for key in shot_contexts]
-        all_texts = [beat_contexts[key] for key in beat_contexts] + [shot_contexts[key] for key in shot_contexts]
+        segment_contexts = {segment.id: segment_text(segment) for segment in film_map} if self.config.score_segments else {}
+        alignment_contexts = alignment_queries or {}
+        all_keys = (
+            [("beat", key) for key in beat_contexts]
+            + [("shot", key) for key in shot_contexts]
+            + [("anchor-beat", key) for key in anchor_beat_contexts]
+            + [("segment", key) for key in segment_contexts]
+            + [("alignment", key) for key in alignment_contexts]
+        )
+        all_texts = (
+            [beat_contexts[key] for key in beat_contexts]
+            + [shot_contexts[key] for key in shot_contexts]
+            + [anchor_beat_contexts[key] for key in anchor_beat_contexts]
+            + [segment_contexts[key] for key in segment_contexts]
+            + [alignment_contexts[key] for key in alignment_contexts]
+        )
         vectors = self._encode_with_cache(all_keys, all_texts)
         beat_vectors = {key[1]: vectors[index] for index, key in enumerate(all_keys) if key[0] == "beat"}
         shot_vectors = {key[1]: vectors[index] for index, key in enumerate(all_keys) if key[0] == "shot"}
+        anchor_beat_vectors = {key[1]: vectors[index] for index, key in enumerate(all_keys) if key[0] == "anchor-beat"}
+        segment_vectors = {key[1]: vectors[index] for index, key in enumerate(all_keys) if key[0] == "segment"}
+        alignment_vectors = {key[1]: vectors[index] for index, key in enumerate(all_keys) if key[0] == "alignment"}
         scores: dict[tuple[int, int], float] = {}
         for beat_id, beat_vector in beat_vectors.items():
             for shot_index, shot_vector in shot_vectors.items():
                 scores[(beat_id, shot_index)] = round(dense_cosine(beat_vector, shot_vector), 6)
+        segment_scores = (
+            {
+                (beat.beat_id, segment.id): round(
+                    dense_cosine(anchor_beat_vectors[beat.beat_id], segment_vectors[segment.id]),
+                    6,
+                )
+                for beat in beats
+                for segment in film_map
+                if beat.from_seg_id <= segment.id <= beat.to_seg_id
+            }
+            if self.config.score_segments
+            else {}
+        )
+        query_shot_scores = {
+            (beat_id, sentence_index, shot_index): round(dense_cosine(query_vector, shot_vector), 6)
+            for (beat_id, sentence_index), query_vector in alignment_vectors.items()
+            for shot_index, shot_vector in shot_vectors.items()
+        }
         return SemanticResult(
             scores=scores,
             ranks=rank_scores(scores),
+            segment_scores=segment_scores,
+            query_shot_scores=query_shot_scores,
             provider=self.provider,
             model=self.config.model,
             device=self.resolved_device,
             cache_hits=self.cache_hits,
         )
 
-    def _encode_with_cache(self, keys: list[tuple[str, int]], texts: list[str]) -> list[list[float]]:
+    def _encode_with_cache(self, keys: list[tuple[str, object]], texts: list[str]) -> list[list[float]]:
         vectors: list[list[float] | None] = [None] * len(texts)
         misses: list[tuple[int, str, Path | None]] = []
         cache_dir = self.config.cache_dir
@@ -244,13 +328,19 @@ def compute_semantic_result(
     film_map: list[FilmMapSegment],
     config: SemanticConfig,
     encoder: Encoder | None = None,
+    alignment_queries: dict[tuple[int, int], str] | None = None,
 ) -> SemanticResult:
     if config.mode == "off":
         return SemanticResult(provider="off")
     if config.mode == "tfidf":
-        return TfidfSemanticScorer().score(beats, shots, film_map)
+        return TfidfSemanticScorer(score_segments=config.score_segments).score(beats, shots, film_map)
     if config.mode == "bge-m3":
-        return EmbeddingSemanticScorer(config, encoder=encoder).score(beats, shots, film_map)
+        return EmbeddingSemanticScorer(config, encoder=encoder).score(
+            beats,
+            shots,
+            film_map,
+            alignment_queries=alignment_queries,
+        )
     raise SemanticError("--semantic-mode must be off, tfidf, or bge-m3")
 
 

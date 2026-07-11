@@ -3,7 +3,7 @@
 from common.schema import EdlPlacement, FilmMapSegment, ReviewBeat, Shot
 from match.qa import build_edl_qa
 from match.scoring import ScoringWeights, score_shot
-from match.semantic import build_beat_context, build_shot_context, compute_semantic_scores
+from match.semantic import SemanticConfig, build_beat_context, build_shot_context, compute_semantic_result, compute_semantic_scores
 
 
 def seg(id: int, start: float, end: float, text: str) -> FilmMapSegment:
@@ -30,6 +30,17 @@ def test_tfidf_scores_related_shot_higher() -> None:
     film_map = [seg(0, 0, 5, "hero princess palace rescue"), seg(1, 5, 10, "cars rain street")]
     scores = compute_semantic_scores([beat()], [shot(0, 0, 5), shot(1, 5, 10)], film_map)
     assert scores[(0, 0)] > scores[(0, 1)]
+
+
+def test_tfidf_reports_narration_to_segment_anchor_scores() -> None:
+    film_map = [seg(0, 0, 5, "anh hùng cứu công chúa"), seg(1, 5, 10, "xe chạy trong mưa")]
+    result = compute_semantic_result(
+        [beat().model_copy(update={"to_seg_id": 1})],
+        [shot(0, 0, 5), shot(1, 5, 10)],
+        film_map,
+        SemanticConfig(mode="tfidf"),
+    )
+    assert result.segment_scores[(0, 0)] > result.segment_scores[(0, 1)]
 
 
 def test_semantic_weight_can_change_ranking() -> None:
@@ -74,19 +85,41 @@ def test_edl_qa_reports_source_drift() -> None:
     assert "semantic overrode chronology" in qa["beats"][0]["warnings"]
 
 
+def test_edl_qa_uses_content_anchor_intervals_for_expected_position() -> None:
+    placements = [
+        EdlPlacement(tl_start=0, tl_end=4, src="film.mp4", src_in=0, src_out=4, beat_id=0, shot_index=0, reused=False, speed=1.0),
+        EdlPlacement(tl_start=6, tl_end=10, src="film.mp4", src_in=92, src_out=96, beat_id=0, shot_index=1, reused=False, speed=1.0),
+    ]
+    qa = build_edl_qa(
+        beats=[ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=100, is_hook=False)],
+        placements=placements,
+        shots=[shot(0, 0, 5), shot(1, 90, 100)],
+        semantic_scores={},
+        weights=ScoringWeights(0.6, 0.18, 0.12, 0.35, 0.0),
+        min_semantic_score=0.12,
+        warnings=[],
+        candidate_diagnostics={0: {"content_anchor_intervals": [[0, 10], [90, 100]], "content_anchor_interval_weights": [10, 10], "content_anchor_used": True}},
+    )
+
+    assert qa["beats"][0]["selected"][1]["expected_src_position"] == 92.0
+    assert qa["beats"][0]["selected"][1]["source_drift_s"] == 0.0
+
+
 from pathlib import Path
 
 import pytest
 
-from match.semantic import EmbeddingSemanticScorer, SemanticConfig, SemanticError, compute_semantic_result, resolve_device
+from match.semantic import EmbeddingSemanticScorer, SemanticError, resolve_device
 
 
 class MockEncoder:
     def __init__(self) -> None:
         self.calls = 0
+        self.texts: list[str] = []
 
     def encode(self, texts: list[str], *, batch_size: int, device: str) -> list[list[float]]:
         self.calls += 1
+        self.texts.extend(texts)
         vectors = []
         for text in texts:
             lowered = text.lower()
@@ -101,7 +134,7 @@ def test_embedding_scorer_ranks_cross_lingual_context(tmp_path: Path) -> None:
     film_map = [seg(0, 0, 5, "hero princess palace rescue"), seg(1, 5, 10, "cars rain street")]
     encoder = MockEncoder()
     result = compute_semantic_result(
-        [beat()],
+        [beat().model_copy(update={"narration": "hero rescues princess", "to_seg_id": 1})],
         [shot(0, 0, 5), shot(1, 5, 10)],
         film_map,
         SemanticConfig(mode="bge-m3", model="mock", device="cpu", cache_dir=tmp_path),
@@ -111,6 +144,7 @@ def test_embedding_scorer_ranks_cross_lingual_context(tmp_path: Path) -> None:
     assert result.device == "cpu"
     assert result.scores[(0, 0)] > result.scores[(0, 1)]
     assert result.ranks[(0, 0)] == 1
+    assert result.segment_scores[(0, 0)] > result.segment_scores[(0, 1)]
 
 
 def test_embedding_cache_skips_reencode(tmp_path: Path) -> None:
@@ -122,6 +156,35 @@ def test_embedding_cache_skips_reencode(tmp_path: Path) -> None:
     second = compute_semantic_result([beat()], [shot(0, 0, 5)], film_map, config, encoder=encoder)
     assert encoder.calls == first_calls
     assert second.cache_hits
+
+
+def test_embedding_scorer_skips_segment_encoding_when_anchors_are_disabled(tmp_path: Path) -> None:
+    encoder = MockEncoder()
+    result = compute_semantic_result(
+        [beat()],
+        [shot(0, 0, 5)],
+        [seg(0, 0, 5, "hero princess palace rescue")],
+        SemanticConfig(mode="bge-m3", model="mock", device="cpu", cache_dir=tmp_path, score_segments=False),
+        encoder=encoder,
+    )
+
+    assert result.segment_scores == {}
+    assert len(encoder.texts) == 2
+
+
+def test_embedding_scorer_batches_alignment_queries_with_shot_contexts(tmp_path: Path) -> None:
+    encoder = MockEncoder()
+    result = compute_semantic_result(
+        [beat()],
+        [shot(0, 0, 5), shot(1, 5, 10)],
+        [seg(0, 0, 5, "hero princess palace rescue")],
+        SemanticConfig(mode="bge-m3", model="mock", device="cpu", cache_dir=tmp_path, score_segments=False),
+        encoder=encoder,
+        alignment_queries={(0, 3): "hero rescues princess"},
+    )
+
+    assert result.query_shot_scores[(0, 3, 0)] > result.query_shot_scores[(0, 3, 1)]
+    assert "hero rescues princess" in encoder.texts
 
 
 def test_bge_missing_dependency_fails_clearly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
