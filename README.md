@@ -336,7 +336,7 @@ Nguyên tắc GĐ5:
 - `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse/drift và warnings theo beat.
 - Face l? ?i?m c?ng m?m, kh?ng l?c c?ng.
 - Placement m?c ??nh 1:1 speed `1.0`.
-- `min_visual_clip` mac dinh `0.6s` de tranh flash-cut; pause gap ngan duoc absorb vao clip truoc, va placement dai hon `max_clip` se duoc split lien tuc cung source/shot.
+- `min_visual_clip` mac dinh `0.6s` de tranh flash-cut; pause gap ngan duoc absorb bang source capacity hoac slowdown toi da 10% tren hai clip ke nhau, va placement dai hon `max_clip` se duoc split lien tuc cung source/shot.
 - Thi?u footage th? n?i c?a s? ngu?n tr??c, sau ?? m?i repeat c? ki?m so?t.
 - Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
 

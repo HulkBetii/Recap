@@ -146,6 +146,7 @@ async def synthesize_one(
         audio_path=final_path.relative_to(cache.work_dir).as_posix(),
     )
     manifest[str(beat.beat_id)] = entry
+    cache.save_manifest(manifest)
     return final_path, entry
 
 

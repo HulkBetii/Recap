@@ -213,7 +213,7 @@ repo/
 - `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse, `expected_src_position`, `source_drift_s`, `chronology_score` va warnings `low semantic match`/`high source drift` theo beat.
 - `edl.review.html` la QA artifact truc quan tu `match/review_html.py`, dung thumbnails san co trong `shots.json`, hien narration/source span/selected clip metrics/drift/warnings de review nhanh bang browser.
 - Face la soft bonus, khong phai hard filter. Shot `face_count=0` van duoc chon neu motion/brightness/semantic tot.
-- GD5 co `--min-visual-clip` (default `0.6`) de tranh flash-cut/khung hinh giat do placement qua ngan; pause gap ngan duoc absorb vao placement truoc thay vi tao filler clip rieng.
+- GD5 co `--min-visual-clip` (default `0.6`) de tranh flash-cut/khung hinh giat do placement qua ngan; pause gap ngan duoc absorb bang source capacity hoac slowdown toi da 10%, co the phan bo qua ca hai placement ke nhau thay vi tao filler clip rieng.
 - Sau khi absorb short clip, GD5 split placement dai hon `--max-clip` thanh cac segment lien tuc cung source/shot de giu contract moi placement <= 5s.
 - Package thuc te:
   - `match/`: candidate filtering/widening, scoring, semantic adapters, greedy fill, timeline assignment, cache va CLI orchestration.
@@ -314,6 +314,8 @@ repo/
 
 - AI33 polling phải coi status `doing` là running, ngoài các status pending/queued/processing/running/in_progress.
 - AI33 submit có thể trả `task_id` hoặc `id`; adapter phải chấp nhận cả hai.
+- AI33/Genmax HTTP JSON calls retry transient `429/5xx` and network errors with exponential backoff.
+- GĐ3 saves `work/tts/manifest.json` after every completed beat so a later provider failure can resume successful audio instead of synthesizing the whole batch again.
 - CDN `https://cdn.ai33.pro/...` có thể trả `403` nếu tải không có `User-Agent`; downloader hiện gửi `User-Agent: Mozilla/5.0` và thêm `xi-api-key` cho domain `ai33.pro` khi có `VIVOO_API_KEY`.
 - Không commit `VIVOO_API_KEY`; chỉ set env runtime hoặc `.env` gitignored.
 

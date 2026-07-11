@@ -1,10 +1,13 @@
 ﻿from __future__ import annotations
 
+import io
+import json
+import urllib.error
 from pathlib import Path
 
 import pytest
 
-from tts.providers import ProviderResult, TtsProviderClient, TtsProviderError
+from tts.providers import ProviderResult, TtsProviderClient, TtsProviderError, http_json
 
 
 class FallbackClient(TtsProviderClient):
@@ -55,3 +58,30 @@ def test_provider_ai33_mode_does_not_fallback(tmp_path) -> None:
                 output_path=tmp_path / "out.mp3",
             )
         )
+
+
+def test_http_json_retries_transient_gateway_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls = 0
+
+    class Response:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *args):  # type: ignore[no-untyped-def]
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"status": "ok"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, io.BytesIO(b""))
+        return Response()
+
+    monkeypatch.setattr("tts.providers.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("tts.providers.time.sleep", lambda _seconds: None)
+
+    assert http_json("https://example.com") == {"status": "ok"}
+    assert calls == 2

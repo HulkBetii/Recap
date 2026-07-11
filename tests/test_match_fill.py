@@ -71,6 +71,24 @@ def test_short_pause_uses_source_capacity_without_crossing_shot_end() -> None:
     validate_source_bounds(filled, source_shots)
 
 
+def test_short_pause_splits_slowdown_across_adjacent_placements() -> None:
+    source_shots = [shot(0, 0, 1.122), shot(1, 10, 15)]
+    placements = [
+        EdlPlacement(tl_start=0, tl_end=1.122, src="film.mp4", src_in=0, src_out=1.122, beat_id=0, shot_index=0, reused=False, speed=1),
+        EdlPlacement(tl_start=1.272, tl_end=6.272, src="film.mp4", src_in=10, src_out=15, beat_id=1, shot_index=1, reused=False, speed=1),
+    ]
+
+    filled = fill_timeline_gaps(placements, 6.272, min_visual_clip=0.6, shots=source_shots)
+
+    assert len(filled) == 2
+    assert filled[0].tl_end == filled[1].tl_start
+    assert filled[0].speed >= 0.9
+    assert filled[1].speed >= 0.9
+    assert filled[0].src_out == 1.122
+    assert filled[1].src_in == 10
+    validate_source_bounds(filled, source_shots)
+
+
 def test_fill_budgets_short_remainder_without_out_of_bounds_extension() -> None:
     source_shots = [shot(0, 0, 5), shot(1, 10, 15)]
     beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=15, is_hook=True)

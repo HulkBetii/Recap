@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from math import ceil
+from math import ceil, floor
 
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
 from match.candidates import candidates_for_window, widen_until_enough
@@ -566,6 +566,23 @@ def absorb_short_gap(
     stretched = stretch_placement(previous, following.tl_start, min_speed=min_pause_speed)
     if stretched is not None:
         return stretched, following, True
+    previous_duration = previous.tl_end - previous.tl_start
+    following_duration = following.tl_end - following.tl_start
+    previous_source_duration = previous.src_out - previous.src_in
+    following_source_duration = following.src_out - following.src_in
+    previous_capacity = max(0.0, previous_source_duration / min_pause_speed - previous_duration)
+    following_capacity = max(0.0, following_source_duration / min_pause_speed - following_duration)
+    if previous_capacity + following_capacity >= gap - 1e-6:
+        previous_extension = min(gap, previous_capacity)
+        split_tl = floor((previous.tl_end + previous_extension) * 1000 + 1e-9) / 1000
+        stretched_previous = stretch_placement(previous, split_tl, min_speed=min_pause_speed)
+        following_target_duration = following.tl_end - split_tl
+        following_speed = following_source_duration / following_target_duration if following_target_duration > 0 else 0.0
+        if stretched_previous is not None and following_speed >= min_pause_speed - 1e-6:
+            stretched_following = following.model_copy(
+                update={"tl_start": split_tl, "speed": round(following_speed, 6)}
+            )
+            return stretched_previous, stretched_following, True
     return previous, following, False
 
 def make_pause_filler(

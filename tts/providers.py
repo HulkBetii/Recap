@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shutil
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,6 +17,9 @@ ProviderMode = Literal["auto", "ai33", "genmax"]
 AI33_BASE_URL = "https://api.ai33.pro"
 GENMAX_BASE_URL = "https://api.genmax.io"
 RUNNING_STATUSES = {"pending", "queued", "processing", "running", "in_progress", "doing"}
+RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+HTTP_MAX_ATTEMPTS = 3
+HTTP_RETRY_BASE_DELAY_S = 1.0
 
 
 class TtsProviderError(RuntimeError):
@@ -69,13 +73,20 @@ class TtsProviderClient:
 
 
 def http_json(url: str, *, method: str = "GET", headers: dict[str, str] | None = None, data: bytes | None = None) -> dict:
-    request = urllib.request.Request(url, method=method, headers=headers or {}, data=data)
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise TtsProviderError(f"HTTP {exc.code}: {body}") from exc
+    for attempt in range(HTTP_MAX_ATTEMPTS):
+        request = urllib.request.Request(url, method=method, headers=headers or {}, data=data)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if exc.code not in RETRYABLE_HTTP_CODES or attempt == HTTP_MAX_ATTEMPTS - 1:
+                raise TtsProviderError(f"HTTP {exc.code}: {body}") from exc
+        except urllib.error.URLError as exc:
+            if attempt == HTTP_MAX_ATTEMPTS - 1:
+                raise TtsProviderError(f"Network error: {exc.reason}") from exc
+        time.sleep(HTTP_RETRY_BASE_DELAY_S * (2 ** attempt))
+    raise AssertionError("HTTP retry loop exhausted unexpectedly")
 
 
 def submit_ai33(text: str, voice_id: str, speed: float) -> str:

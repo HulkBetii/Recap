@@ -29,6 +29,13 @@ class FakeProvider(TtsProviderClient):
         return ProviderResult(provider="genmax", voice_id=voice_id, audio_url="file://genmax")
 
 
+class FailSecondProvider(FakeProvider):
+    async def _synthesize_ai33(self, text: str, voice_id: str, speed: float, output_path: Path) -> ProviderResult:
+        if "tiếp tục" in text:
+            raise TtsProviderError("transient failure")
+        return await super()._synthesize_ai33(text, voice_id, speed, output_path)
+
+
 def write_review_script(tmp_path):  # type: ignore[no-untyped-def]
     data = [
         {"beat_id": 0, "narration": "Mở đầu căng thẳng.", "from_seg_id": 1, "to_seg_id": 1, "src_tc_start": 1.0, "src_tc_end": 2.0, "is_hook": True},
@@ -134,3 +141,22 @@ def test_tts_cli_auto_uses_genmax_fallback(tmp_path, monkeypatch) -> None:  # ty
     asyncio.run(run_tts_with_client(make_args(tmp_path, review_script, film_meta), provider))
 
     assert provider.calls == ["ai33", "genmax", "ai33", "genmax"]
+
+
+def test_tts_cli_persists_completed_beats_before_later_failure(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    review_script, film_meta = write_review_script(tmp_path)
+    args = make_args(tmp_path, review_script, film_meta)
+    args.provider_mode = "ai33"
+    args.concurrency = 1
+    monkeypatch.setattr("tts.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("tts.__main__.normalize_audio", lambda src, dst: dst.write_bytes(src.read_bytes()))
+
+    import asyncio
+    import pytest
+
+    with pytest.raises(TtsProviderError, match="transient failure"):
+        asyncio.run(run_tts_with_client(args, FailSecondProvider()))
+
+    manifest = json.loads((args.work_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert list(manifest) == ["0"]
+    assert (args.work_dir / "audio" / "0.mp3").exists()

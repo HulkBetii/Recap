@@ -683,3 +683,14 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Fixed sync QA float/pause accounting so exact-threshold clips and 150ms pauses absorbed into either adjacent beat do not create false warnings. Final `edl.sync.qa.json` warning counts are empty for both movies.
 - Final renders: first movie `1263.270s` with tail pad from `1262.660s` (`461.4s` render); second movie `1518.034s` with tail pad from `1516.578s` (`602.5s` render). Both are H.264/AAC, `1920x1080`, `30fps`, `duration_match=true`, with nonblack matching tail frames.
 - Final validation: `python -m pytest -q` -> `251 passed`; `python -m compileall -q ...` and `git diff --check` completed without code errors.
+
+### 2026-07-11 - Toan Tri Doc Gia visual E2E
+
+- Ran `Toan-Tri-Doc-Gia.mp4` end to end with Vietnamese local Faster Whisper + WhisperX, ChatGPT Playwright review, AI33 TTS, production ffmpeg-scene shots, SigLIP2 Visual Index, BGE-M3 matching, and G6 render.
+- AI33 returned a transient HTTP 502 after 7/29 beats. Added retry/backoff for transient HTTP/network failures and incremental per-beat TTS manifest persistence; resumed the seven completed files and finished all 29 beats with concurrency reduced to 1 for this long run.
+- G4 produced 1,187 shots (1,096 usable). G4.5 indexed 2,374 keyframes and wrote 3,561 keyframe/pooled sidecars in 264.7s. G5 produced 353 placements for a 1,418.462s voiceover.
+- EDL QA found one 0.15s pause filler where slowing only the previous clip would exceed the 10% limit. G5 now distributes a short pause across both adjacent placements when their combined slowdown capacity is sufficient.
+- Final invariants: zero timeline gaps/overlaps, zero shot-bound violations, minimum clip `0.600s`, maximum clip `5.000s`; sync QA only retains the known high-reuse warning for beat 23.
+- Final render is H.264/AAC, `1920x1080`, approximately `30fps`, `1418.443s`, `duration_match=true`, with a 21-frame nonblack freeze tail. Cached rerender encoded only 3 changed clips.
+- Playwright reviewed the HTML opening, action, warning-heavy beat 23, climax, and ending; thumbnails matched the narrated subject, while beat 23 remains the weakest section because it widened three times and reached repeat ratio `0.500`.
+- Validation: targeted TTS/match tests passed; full `python -m pytest -q` -> `254 passed`.
