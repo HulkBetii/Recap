@@ -228,6 +228,7 @@ repo/
 - GĐ6 là CLI local/offline, chạy bằng `python -m render`.
 - GĐ6 chỉ đọc `edl.json`, `voiceover.mp3`, `film.mp4` và sinh `recap.mp4` + `render.meta.json`; không gọi API, không chọn lại footage, không caption, không nhạc nền, không giữ tiếng gốc.
 - Render dùng `ffmpeg/ffprobe`; temp clips luôn video-only, re-encode H.264 `yuv420p`, cùng resolution/fps/codec params rồi concat bằng demuxer `-c copy`.
+- Khi video-only concat ngắn hơn voiceover, GĐ6 tail-pad bằng một freeze-frame clip ngắn rồi concat copy; full-video re-encode chỉ là fallback nếu tail padding fail.
 - Frame-lock toàn cục: placement chiếm frame `[round(tl_start*fps), round(tl_end*fps))`; không round duration từng clip độc lập.
 - Fit v1 chỉ hỗ trợ `cover`: scale-to-cover + center crop, không letterbox.
 - Package thực tế:
@@ -352,7 +353,7 @@ repo/
 - `openai-gpt4o-hybrid` chunked ASR phải skip/cache chunk audio quá nhỏ/invalid để không crash ở chunk cuối phim dài.
 - `film_map` approximate timecode vẫn là rủi ro chính cho footage matching; phim dài nên ưu tiên alignment/QC tốt hơn khi cần sát hình.
 - GĐ4 hiện vẫn có thể mất face feature nếu OpenCV runtime thiếu `CascadeClassifier`; GĐ5 không được hard-filter theo face.
-- GĐ6 padding video-only giúp giữ `duration_match=true`, nhưng padding concat dài có thể tốn thời gian vì phải re-encode video-only concat.
+- GĐ6 padding video-only giữ `duration_match=true` bằng tail freeze-frame clip ngắn + concat copy; full-video re-encode chỉ còn là fallback khi tail path fail.
 
 
 ## 30. GĐ0 VIDEO PROFILE / INTRO DETECTION

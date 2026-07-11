@@ -10,7 +10,7 @@ from pathlib import Path
 from common.media import MediaError, has_audio_stream, probe_duration, probe_video_stream, require_ffmpeg
 from common.schema import EdlPlacement, RenderMeta, validate_edl, write_json
 from render.cache import RenderCache
-from render.compose import concat_video, mux_voiceover, pad_video_to_duration
+from render.compose import concat_video, mux_voiceover, pad_video_by_tail, pad_video_to_duration
 from render.cut import RenderParams, clamp_source, cut_temp_clip, temp_cache_key
 from render.quantize import quantize_placements
 
@@ -118,12 +118,26 @@ def run_render(args: argparse.Namespace) -> int:
     concat_video(temp_paths, video_only, args.work_dir)
     video_for_mux = video_only
     video_only_duration = probe_duration(video_only)
-    if video_only_duration + max(0.1, 2.0 / args.fps) < mux_audio_duration:
+    duration_tolerance = max(0.1, 2.0 / args.fps)
+    if video_only_duration + duration_tolerance < mux_audio_duration:
         padded_video = args.work_dir / "video_only_padded.mp4"
         target_label = "delayed audio duration" if args.audio_delay_s > 0 else "audio duration"
-        warnings.append(f"video-only concat was padded from {video_only_duration:.3f}s to {target_label} {mux_audio_duration:.3f}s")
-        logging.info("pad video-only concat to voiceover duration")
-        pad_video_to_duration(video_only, padded_video, mux_audio_duration)
+        shortage_s = mux_audio_duration - video_only_duration
+        warnings.append(f"video-only concat was tail-padded from {video_only_duration:.3f}s to {target_label} {mux_audio_duration:.3f}s")
+        logging.info("tail-pad video-only concat to voiceover duration")
+        try:
+            pad_frames = pad_video_by_tail(
+                video_path=video_only,
+                output_path=padded_video,
+                work_dir=args.work_dir,
+                shortage_s=shortage_s,
+                params=params,
+            )
+            logging.info("tail-padded video-only concat by %s frame(s)", pad_frames)
+        except MediaError as exc:
+            warnings.append(f"tail padding failed; fell back to full re-encode padding: {exc}")
+            logging.warning("tail padding failed; falling back to full re-encode padding: %s", exc)
+            pad_video_to_duration(video_only, padded_video, mux_audio_duration)
         video_for_mux = padded_video
     logging.info("mux voiceover")
     mux_voiceover(video_for_mux, args.voiceover, args.output, audio_delay_s=args.audio_delay_s)
@@ -131,7 +145,6 @@ def run_render(args: argparse.Namespace) -> int:
     video_duration = probe_duration(args.output)
     if not has_audio_stream(args.output):
         warnings.append("output has no audio stream")
-    duration_tolerance = max(0.1, 2.0 / args.fps)
     duration_match = abs(video_duration - mux_audio_duration) <= duration_tolerance
     if not duration_match:
         warnings.append(f"video/audio duration mismatch: video={video_duration:.3f}s delayed_audio={mux_audio_duration:.3f}s")

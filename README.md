@@ -363,6 +363,7 @@ Nguyên tắc GĐ6:
 - Mỗi placement được re-encode thành temp clip video-only cùng resolution/fps/codec/pix_fmt.
 - Temp clip dùng cache trong `work/render/temp_clips/`; thêm `--force` để render lại toàn bộ cache GĐ6.
 - Concat temp clips bằng demuxer `-c copy`, sau đó mux `voiceover.mp3` thành audio duy nhất.
+- Nếu video-only concat ngắn hơn voiceover, GĐ6 chỉ encode một tail freeze-frame clip ngắn rồi concat copy; không re-encode toàn bộ video-only trong đường bình thường.
 - `render.meta.json` ghi duration video/audio, số temp clips, cache hits và warnings.
 
 

@@ -651,3 +651,12 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Reran `runs/ngoai-vong-phap-luat.visual-v2` from GĐ5 through GĐ6: placements changed from 464 original to 397 final, min clip `0.613s`, max clip `5.000s`, no timeline gaps/overlaps, no sync QA warnings, render `duration_match=true`.
 - Browser localhost QA loaded `edl.review.html` with 296 images and 0 broken images; contact sheet around TL `47.8-49.6s` no longer shows the old 0.055s/0.15s flash placement.
 - Validation: `python -m pytest -q` -> 212 passed.
+
+### 2026-07-11 - GD6 tail-padding render optimization
+
+- Replaced the normal full-video `tpad` re-encode with a frame-locked tail freeze-frame clip encoded for only `ceil(shortage_s * fps)` frames, then appended with concat demuxer `-c copy`.
+- Kept the previous full-video padding path as a fallback when tail extraction/encoding/concat raises an ffmpeg media error.
+- Added custom concat list filenames plus unit/CLI coverage for frame rounding, tail ffmpeg commands, tolerance bypass, audio delay, and legacy fallback.
+- Validation: `python -m pytest tests/test_render.py tests/test_render_cli.py -q` -> 18 passed; `python -m pytest -q` -> 219 passed.
+- Real cached render smoke on `runs/ngoai-vong-phap-luat.visual-v2`: shortage `1.524s` became 46 tail frames; all 397 temp clips were cache hits and concat + tail pad + mux completed in `43.433s`.
+- Final output stayed `1920x1080`, H.264/AAC, `30fps`, `1263.270s`, `duration_match=true`; visual checks at `1261.3s`, `1261.9s`, `1262.5s`, and `1263.1s` showed the expected freeze-frame tail with no black frame.

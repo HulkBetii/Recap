@@ -8,7 +8,7 @@ import pytest
 
 from common.schema import EdlPlacement, RenderMeta
 from render.cache import RenderCache
-from render.compose import concat_list_text, mux_voiceover
+from render.compose import concat_list_text, concat_video, mux_voiceover, pad_video_by_tail, tail_pad_frame_count
 from render.cut import RenderParams, build_video_filter, clamp_source, temp_cache_key
 from render.quantize import quantize_placements
 
@@ -96,6 +96,41 @@ def test_concat_list_text_preserves_order(tmp_path: Path) -> None:
     text = concat_list_text([first, second])
     assert text.splitlines()[0].endswith("a.mp4'")
     assert text.splitlines()[1].endswith("b.mp4'")
+
+
+def test_concat_video_can_use_custom_list_filename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    commands = []
+    monkeypatch.setattr("render.compose.run_command", lambda command: commands.append(command))
+    first = tmp_path / "a.mp4"
+    second = tmp_path / "b.mp4"
+    list_file = concat_video([first, second], tmp_path / "out.mp4", tmp_path / "work", list_filename="concat_pad.txt")
+    assert list_file == tmp_path / "work" / "concat_pad.txt"
+    assert list_file.read_text(encoding="utf-8") == concat_list_text([first, second])
+    assert str(list_file) in commands[0]
+
+
+def test_tail_pad_frame_count_ceilings_to_whole_frames() -> None:
+    assert tail_pad_frame_count(1.524, 30) == 46
+    assert tail_pad_frame_count(0.001, 30) == 1
+
+
+def test_pad_video_by_tail_extracts_frame_encodes_tail_and_concats(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    commands = []
+    monkeypatch.setattr("render.compose.run_command", lambda command: commands.append(command))
+    params = RenderParams(width=1920, height=1080, fps=30, fit="cover", crf=20, preset="medium")
+    pad_frames = pad_video_by_tail(
+        video_path=tmp_path / "video_only.mp4",
+        output_path=tmp_path / "video_only_padded.mp4",
+        work_dir=tmp_path / "work",
+        shortage_s=1.524,
+        params=params,
+    )
+    assert pad_frames == 46
+    assert commands[0][:4] == ["ffmpeg", "-y", "-sseof", "-0.1"]
+    assert "-frames:v" in commands[1]
+    assert commands[1][commands[1].index("-frames:v") + 1] == "46"
+    assert "scale=1920:1080,fps=30,format=yuv420p" in commands[1]
+    assert str(tmp_path / "work" / "concat_pad.txt") in commands[2]
 
 
 def test_mux_voiceover_can_delay_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
