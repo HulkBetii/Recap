@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from math import ceil
 
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
 from match.candidates import candidates_for_window, widen_until_enough
@@ -56,6 +57,7 @@ def fill_beat(
     chronology_weight: float = 0.70,
     max_source_drift_s: float = 12.0,
     source_start_override: float | None = None,
+    min_visual_clip: float = 0.0,
 ) -> FillResult:
     warnings: list[str] = []
     effective_start = max(beat.src_tc_start, source_start_override) if source_start_override is not None else beat.src_tc_start
@@ -223,7 +225,11 @@ def fill_beat(
     if total_fragments and repeat_ratio > max_repeat_ratio_per_beat:
         warnings.append(f"beat {beat.beat_id} high repeat ratio {repeat_ratio:.3f} > {max_repeat_ratio_per_beat:.3f}")
 
-    fragments = trim_fragments_to_duration(sorted(fragments, key=lambda item: (item.src_in, item.src_out)), timing.duration)
+    fragments = trim_fragments_to_duration(
+        sorted(fragments, key=lambda item: (item.src_in, item.src_out)),
+        timing.duration,
+        min_visual_clip=min_visual_clip,
+    )
     return FillResult(
         fragments=fragments,
         widened=widen_count > 0,
@@ -307,7 +313,7 @@ def choose_diverse_shot(
             return candidate
     return top
 
-def trim_fragments_to_duration(fragments: list[Fragment], target_duration: float) -> list[Fragment]:
+def trim_fragments_to_duration(fragments: list[Fragment], target_duration: float, *, min_visual_clip: float = 0.0) -> list[Fragment]:
     output: list[Fragment] = []
     remaining = target_duration
     for fragment in fragments:
@@ -328,6 +334,32 @@ def trim_fragments_to_duration(fragments: list[Fragment], target_duration: float
             )
         )
         remaining = round(remaining - duration, 6)
+    return coalesce_short_fragments(output, target_duration=target_duration, min_visual_clip=min_visual_clip)
+
+def coalesce_short_fragments(fragments: list[Fragment], *, target_duration: float, min_visual_clip: float) -> list[Fragment]:
+    if min_visual_clip <= 0 or len(fragments) <= 1:
+        return fragments
+    output = list(fragments)
+    index = 0
+    while index < len(output):
+        fragment = output[index]
+        if fragment.duration >= min_visual_clip or len(output) == 1:
+            index += 1
+            continue
+        duration = fragment.duration
+        if index > 0:
+            previous = output[index - 1]
+            output[index - 1] = replace(previous, src_out=round(previous.src_out + duration, 3))
+            del output[index]
+            index = max(0, index - 1)
+            continue
+        next_fragment = output[index + 1]
+        output[index + 1] = replace(next_fragment, src_out=round(next_fragment.src_out + duration, 3))
+        del output[index]
+    total = sum(fragment.duration for fragment in output)
+    diff = round(target_duration - total, 6)
+    if output and abs(diff) > 1e-6 and output[-1].duration + diff > 0:
+        output[-1] = replace(output[-1], src_out=round(output[-1].src_out + diff, 3))
     return output
 
 
@@ -357,7 +389,7 @@ def assign_timeline(fragments: list[Fragment], timing: BeatTiming) -> list[EdlPl
     return placements
 
 
-def fill_timeline_gaps(placements: list[EdlPlacement], total_duration: float) -> list[EdlPlacement]:
+def fill_timeline_gaps(placements: list[EdlPlacement], total_duration: float, *, min_visual_clip: float = 0.0) -> list[EdlPlacement]:
     ordered = sorted(placements, key=lambda item: (item.tl_start, item.tl_end, item.beat_id))
     if not ordered:
         return ordered
@@ -366,13 +398,60 @@ def fill_timeline_gaps(placements: list[EdlPlacement], total_duration: float) ->
     for placement in ordered:
         if previous is not None and placement.tl_start > previous.tl_end + 1e-3:
             gap = round(placement.tl_start - previous.tl_end, 3)
-            output.append(make_pause_filler(previous, previous.tl_end, placement.tl_start, gap))
+            if min_visual_clip > 0 and gap < min_visual_clip and output:
+                output[-1] = extend_placement(output[-1], placement.tl_start)
+                previous = output[-1]
+            else:
+                output.append(make_pause_filler(previous, previous.tl_end, placement.tl_start, gap))
         output.append(placement)
         previous = placement
     if previous is not None and total_duration > previous.tl_end + 1e-3:
         gap = round(total_duration - previous.tl_end, 3)
-        output.append(make_pause_filler(previous, previous.tl_end, total_duration, gap))
+        if min_visual_clip > 0 and gap < min_visual_clip and output:
+            output[-1] = extend_placement(output[-1], total_duration)
+        else:
+            output.append(make_pause_filler(previous, previous.tl_end, total_duration, gap))
     return output
+
+def split_long_placements(placements: list[EdlPlacement], *, max_clip: float) -> list[EdlPlacement]:
+    if max_clip <= 0:
+        return placements
+    output: list[EdlPlacement] = []
+    for placement in sorted(placements, key=lambda item: (item.tl_start, item.tl_end, item.beat_id)):
+        total_duration = placement.tl_end - placement.tl_start
+        if total_duration <= max_clip + 1e-6:
+            output.append(placement)
+            continue
+        n_chunks = max(2, ceil(total_duration / max_clip))
+        chunk_duration = total_duration / n_chunks
+        tl_cursor = placement.tl_start
+        src_cursor = placement.src_in
+        for index in range(n_chunks):
+            tl_start = round(tl_cursor, 3)
+            src_in = round(src_cursor, 3)
+            if index == n_chunks - 1:
+                tl_end = placement.tl_end
+                src_out = placement.src_out
+            else:
+                tl_end = round(tl_cursor + chunk_duration, 3)
+                actual_duration = tl_end - tl_start
+                src_out = round(src_cursor + actual_duration / max(placement.speed, 0.001), 3)
+            output.append(placement.model_copy(update={
+                "tl_start": tl_start,
+                "tl_end": round(tl_end, 3),
+                "src_in": src_in,
+                "src_out": round(src_out, 3),
+            }))
+            tl_cursor = tl_end
+            src_cursor = src_out
+    return output
+
+def extend_placement(placement: EdlPlacement, tl_end: float) -> EdlPlacement:
+    extension = max(0.0, tl_end - placement.tl_end)
+    return placement.model_copy(update={
+        "tl_end": round(tl_end, 3),
+        "src_out": round(placement.src_out + extension / max(placement.speed, 0.001), 3),
+    })
 
 def make_pause_filler(previous: EdlPlacement, tl_start: float, tl_end: float, duration: float) -> EdlPlacement:
     src_out = previous.src_out

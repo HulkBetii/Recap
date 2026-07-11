@@ -9,7 +9,7 @@ from pathlib import Path
 
 from common.schema import BeatTiming, EdlMeta, EdlPlacement, FilmMapSegment, ReviewBeat, ReviewIntent, Shot, StorySection, validate_edl, validate_review_intents, validate_story_map, write_json
 from match.cache import MatchCache, file_hash, stable_hash
-from match.fill import assign_timeline, fill_beat, fill_timeline_gaps
+from match.fill import assign_timeline, fill_beat, fill_timeline_gaps, split_long_placements
 from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
 from match.qa import build_edl_qa
 from match.review_html import write_review_html
@@ -53,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic-cache-dir", default=None, type=Path)
     parser.add_argument("--min-clip", default=3.0, type=float)
     parser.add_argument("--max-clip", default=5.0, type=float)
+    parser.add_argument("--min-visual-clip", default=0.6, type=float)
     parser.add_argument("--widen-margin", default=15.0, type=float)
     parser.add_argument("--max-widen", default=3, type=int)
     parser.add_argument("--allow-repeat", action="store_true", default=True)
@@ -100,6 +101,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "shots": file_hash(args.shots.expanduser().resolve()),
         "min_clip": args.min_clip,
         "max_clip": args.max_clip,
+        "min_visual_clip": args.min_visual_clip,
         "widen_margin": args.widen_margin,
         "max_widen": args.max_widen,
         "allow_repeat": args.allow_repeat,
@@ -140,6 +142,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError("--min-clip and --max-clip must be > 0")
     if args.max_clip < args.min_clip:
         raise MatchError("--max-clip must be >= --min-clip")
+    if args.min_visual_clip < 0:
+        raise MatchError("--min-visual-clip must be >= 0")
     if args.widen_margin < 0 or args.max_widen < 0:
         raise MatchError("widen settings must be >= 0")
     if args.semantic_mode != "off" and args.film_map is None:
@@ -250,6 +254,8 @@ def run_match(args: argparse.Namespace) -> int:
     for name, default in (("max_repeat_per_beat", 2), ("max_repeat_ratio_per_beat", 0.35), ("min_repeat_alternative_score_ratio", 0.75), ("adjacent_shot_repeat_penalty", 0.50), ("opening_guard_s", 0.0), ("opening_max_repeat_ratio", 0.20), ("opening_max_repeat_per_shot", 1), ("opening_min_unique_shots", 4), ("chronology_weight", 0.70), ("max_source_drift_s", 12.0)):
         if not hasattr(args, name):
             setattr(args, name, default)
+    if not hasattr(args, "min_visual_clip"):
+        args.min_visual_clip = 0.6
     if not hasattr(args, "opening_allow_short_fill"):
         args.opening_allow_short_fill = True
     if not hasattr(args, "opening_ordered_fill"):
@@ -402,6 +408,7 @@ def run_match(args: argparse.Namespace) -> int:
             chronology_weight=args.chronology_weight,
             max_source_drift_s=args.max_source_drift_s,
             source_start_override=source_start_override,
+            min_visual_clip=args.min_visual_clip,
         )
         if source_start_override is not None:
             result.warnings.append(f"beat {beat.beat_id} opening_story_visual_start {source_start_override:.3f}s")
@@ -423,13 +430,17 @@ def run_match(args: argparse.Namespace) -> int:
 
     total_duration = max((timing.tl_end for timing in timings), default=0.0)
     before_gap_fill = len(placements)
-    placements = fill_timeline_gaps(placements, total_duration)
+    placements = fill_timeline_gaps(placements, total_duration, min_visual_clip=args.min_visual_clip)
     pause_fillers = len(placements) - before_gap_fill
     if pause_fillers:
         warnings.append(f"inserted {pause_fillers} pause filler placement(s) to cover TTS inter-beat silence")
         n_reused += pause_fillers
+    before_long_split = len(placements)
+    placements = split_long_placements(placements, max_clip=args.max_clip)
+    long_splits = len(placements) - before_long_split
+    if long_splits:
+        warnings.append(f"split {long_splits} long placement segment(s) to keep visual clips <= {args.max_clip:.3f}s")
     placements = validate_timeline(placements, total_duration)
-    coverage_ok = not any("pause filler" not in warning for warning in warnings)
     beat_ids = sorted({timing.beat_id for timing in timings})
     placements_by_beat = {beat_id: [placement for placement in placements if placement.beat_id == beat_id] for beat_id in beat_ids}
     repeat_ratios = []
@@ -443,6 +454,7 @@ def run_match(args: argparse.Namespace) -> int:
         repeat_ratios.append(ratio)
         if ratio > args.max_repeat_ratio_per_beat:
             n_high_repeat_beats += 1
+    coverage_ok = n_empty_beats == 0
 
     meta = EdlMeta(
         total_duration_s=total_duration,
@@ -480,8 +492,9 @@ def run_match(args: argparse.Namespace) -> int:
         story_sections=story_sections,
         match_strategy=args.match_strategy,
         max_source_drift_s=args.max_source_drift_s,
+        short_clip_threshold_s=args.min_visual_clip,
     )
-    sync_qa = build_sync_qa(beats=review_beats, timings=timings, placements=placements, fps=None)
+    sync_qa = build_sync_qa(beats=review_beats, timings=timings, placements=placements, fps=None, short_clip_threshold_s=args.min_visual_clip)
     visual_qa = build_visual_qa(beats=review_beats, placements=placements, visual_result=visual_result, visual_mode=args.visual_mode)
     write_json(output_path, placements)
     write_json(output_path.with_name("edl.meta.json"), meta)

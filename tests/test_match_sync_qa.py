@@ -26,3 +26,15 @@ def test_sync_qa_clean_tiling_has_no_warnings() -> None:
     qa = build_sync_qa(beats=beats, timings=timings, placements=placements, fps=30)
     assert qa["summary"]["warning_counts"] == {}
     assert qa["beats"][0]["warnings"] == []
+
+def test_sync_qa_flags_short_clip() -> None:
+    beats = [ReviewBeat(beat_id=0, narration="beat", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=1, is_hook=True)]
+    timings = [BeatTiming(beat_id=0, audio_path="a.mp3", tl_start=0, tl_end=1, duration=1)]
+    placements = [
+        EdlPlacement(tl_start=0, tl_end=0.2, src="film.mp4", src_in=0, src_out=0.2, beat_id=0, shot_index=0, reused=False, speed=1),
+        EdlPlacement(tl_start=0.2, tl_end=1, src="film.mp4", src_in=1, src_out=1.8, beat_id=0, shot_index=1, reused=False, speed=1),
+    ]
+    qa = build_sync_qa(beats=beats, timings=timings, placements=placements, fps=30, short_clip_threshold_s=0.6)
+    assert qa["summary"]["warning_counts"]["short_clip"] == 1
+    assert qa["beats"][0]["short_clip_count"] == 1
+    assert "short_clip" in qa["beats"][0]["warnings"]

@@ -138,6 +138,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "match": {
         "min_clip": 3.0,
         "max_clip": 5.0,
+        "min_visual_clip": 0.6,
         "widen_margin": 15.0,
         "max_widen": 3,
         "allow_repeat": True,

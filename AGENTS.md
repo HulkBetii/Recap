@@ -213,6 +213,8 @@ repo/
 - `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse, `expected_src_position`, `source_drift_s`, `chronology_score` va warnings `low semantic match`/`high source drift` theo beat.
 - `edl.review.html` la QA artifact truc quan tu `match/review_html.py`, dung thumbnails san co trong `shots.json`, hien narration/source span/selected clip metrics/drift/warnings de review nhanh bang browser.
 - Face la soft bonus, khong phai hard filter. Shot `face_count=0` van duoc chon neu motion/brightness/semantic tot.
+- GD5 co `--min-visual-clip` (default `0.6`) de tranh flash-cut/khung hinh giat do placement qua ngan; pause gap ngan duoc absorb vao placement truoc thay vi tao filler clip rieng.
+- Sau khi absorb short clip, GD5 split placement dai hon `--max-clip` thanh cac segment lien tuc cung source/shot de giu contract moi placement <= 5s.
 - Package thuc te:
   - `match/`: candidate filtering/widening, scoring, semantic adapters, greedy fill, timeline assignment, cache va CLI orchestration.
   - `common/schema.py`: co them `EdlPlacement`, `EdlMeta`, `validate_edl`.
@@ -383,7 +385,7 @@ repo/
 ## G5/G6 Sync QA Report
 
 - G5 writes optional `edl.sync.qa.json` next to `edl.json`; it compares `beats_timing.json` against EDL placements per beat.
-- Sync QA flags beat start/end/duration deltas, placements outside the beat timing window, source-order mismatch, high reuse, long clips, and timeline gaps/overlaps.
+- Sync QA flags beat start/end/duration deltas, placements outside the beat timing window, source-order mismatch, high reuse, short clips, long clips, and timeline gaps/overlaps.
 - Use this report before changing global audio offset; if only a few beats are flagged, fix matching/timing locally instead of delaying the whole voiceover.
 - `summary.json` includes `timecode_qa` from `film_map.meta.json`; if `approximate_timecodes=true`, treat footage/narration mismatch as an ASR/alignment risk first, not a render audio-delay problem.
 

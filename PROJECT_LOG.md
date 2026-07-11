@@ -641,3 +641,13 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Updated GĐ4 feature cache key/meta, orchestrator config/command wiring, README/AGENTS, and `config.movie.visual.yaml` to enable `frame_sampling: batch` for long-movie visual runs.
 - Smoke on `ngoai-vong-phap-luat.mp4`: `ffmpeg-scene + max_shot_len=8 + frame_sampling=batch` wrote 1164 shots and 1164 thumbnails; full detect+feature run took 422.68s, and cached-detection face-on feature/profile rerun took 211.9s.
 - Validation: `python -m pytest tests/test_shots_features.py tests/test_shots_cli.py tests/test_orchestrator_runner.py -q` -> 22 passed; `python -m pytest -q` -> 207 passed.
+
+### 2026-07-11 - GD5 anti-flash visual clip guard
+
+- Added GĐ5 `--min-visual-clip` / `match.min_visual_clip` default `0.6s` to avoid rendered flash cuts from ultra-short EDL placements.
+- Short inter-beat pause gaps are now absorbed into the previous placement instead of creating a separate 0.15s pause filler clip; short fragments inside a beat are coalesced into adjacent visuals.
+- Added long-placement splitting after coalescing so every final placement stays `<= --max-clip` while preserving continuous source/shot spans.
+- `edl.qa.json` and `edl.sync.qa.json` now report placement duration and `short_clip` warnings when clips fall under the configured threshold.
+- Reran `runs/ngoai-vong-phap-luat.visual-v2` from GĐ5 through GĐ6: placements changed from 464 original to 397 final, min clip `0.613s`, max clip `5.000s`, no timeline gaps/overlaps, no sync QA warnings, render `duration_match=true`.
+- Browser localhost QA loaded `edl.review.html` with 296 images and 0 broken images; contact sheet around TL `47.8-49.6s` no longer shows the old 0.055s/0.15s flash placement.
+- Validation: `python -m pytest -q` -> 212 passed.

@@ -21,6 +21,7 @@ def build_sync_qa(
     placements: list[EdlPlacement],
     fps: float | None = None,
     tolerance_s: float = 0.08,
+    short_clip_threshold_s: float = 0.0,
 ) -> dict[str, Any]:
     timings_by_id = {timing.beat_id: timing for timing in timings}
     next_timing_by_id = {timing.beat_id: timings[index + 1] for index, timing in enumerate(sorted(timings, key=lambda item: item.beat_id)[:-1])}
@@ -81,7 +82,10 @@ def build_sync_qa(
         src_order_mismatch = any(beat_placements[index].src_in > beat_placements[index + 1].src_in + tolerance_s for index in range(len(beat_placements) - 1))
         repeated_count = sum(1 for item in beat_placements if item.reused)
         unique_shots = len({item.shot_index for item in beat_placements})
-        max_clip_s = max(duration(item.tl_start, item.tl_end) for item in beat_placements)
+        clip_durations = [duration(item.tl_start, item.tl_end) for item in beat_placements]
+        max_clip_s = max(clip_durations)
+        min_clip_s = min(clip_durations)
+        short_clip_count = sum(1 for clip_s in clip_durations if short_clip_threshold_s > 0 and clip_s < short_clip_threshold_s)
         avg_clip_s = edl_duration / len(beat_placements)
 
         if abs(start_delta) > tolerance_s:
@@ -105,6 +109,9 @@ def build_sync_qa(
         if max_clip_s > 5.25:
             warnings.append("long_clip")
             warning_counts["long_clip"] += 1
+        if short_clip_count:
+            warnings.append("short_clip")
+            warning_counts["short_clip"] += 1
 
         beat_reports.append({
             "beat_id": timing.beat_id,
@@ -137,15 +144,18 @@ def build_sync_qa(
             "reused_count": repeated_count,
             "reuse_ratio": round(repeated_count / len(beat_placements), 6),
             "avg_clip_s": round(avg_clip_s, 3),
+            "min_clip_s": round(min_clip_s, 3),
             "max_clip_s": round(max_clip_s, 3),
+            "short_clip_count": short_clip_count,
             "source_order_mismatch": src_order_mismatch,
             "warnings": warnings,
         })
 
     return {
-        "version": 1,
+        "version": 2,
         "fps": fps,
         "tolerance_s": tolerance_s,
+        "short_clip_threshold_s": short_clip_threshold_s,
         "summary": {
             "n_beats": len(timings),
             "n_placements": len(placements),

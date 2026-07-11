@@ -34,6 +34,7 @@ def build_edl_qa(
     story_sections: dict[int, StorySection] | None = None,
     match_strategy: str = "hybrid",
     max_source_drift_s: float = 12.0,
+    short_clip_threshold_s: float = 0.0,
 ) -> dict[str, Any]:
     review_intents = review_intents or {}
     story_sections = story_sections or {}
@@ -76,6 +77,7 @@ def build_edl_qa(
             entry: dict[str, Any] = {
                 "tl_start": placement.tl_start,
                 "tl_end": placement.tl_end,
+                "duration_s": round(placement.tl_end - placement.tl_start, 3),
                 "src_in": placement.src_in,
                 "src_out": placement.src_out,
                 "expected_src_position": round(expected_src_position, 3),
@@ -105,6 +107,9 @@ def build_edl_qa(
         n_reused = sum(1 for placement in beat_selected if placement.reused)
         repeat_ratio = n_reused / len(beat_selected) if beat_selected else 0.0
         unique_shots = len({placement.shot_index for placement in beat_selected})
+        clip_durations = [max(0.0, placement.tl_end - placement.tl_start) for placement in beat_selected]
+        min_clip_s = min(clip_durations) if clip_durations else 0.0
+        short_clip_count = sum(1 for duration_s in clip_durations if short_clip_threshold_s > 0 and duration_s < short_clip_threshold_s)
         avg_semantic = sum(beat_semantic_values) / len(beat_semantic_values) if beat_semantic_values else 0.0
         beat_warnings = list(warning_by_beat.get(beat.beat_id, []))
         if not beat_selected:
@@ -134,6 +139,8 @@ def build_edl_qa(
         avg_source_drift = sum(beat_drifts) / len(beat_drifts) if beat_drifts else 0.0
         if beat_drifts and max_source_drift > max_source_drift_s:
             beat_warnings.append(f"high source drift: max={max_source_drift:.3f}s > {max_source_drift_s:.3f}s")
+        if short_clip_count:
+            beat_warnings.append(f"short_clip: {short_clip_count} placement(s) < {short_clip_threshold_s:.3f}s")
         if semantic_override and match_strategy != "chronological":
             beat_warnings.append("semantic overrode chronology")
         beat_reports.append({
@@ -146,6 +153,8 @@ def build_edl_qa(
             "repeat_ratio": round(repeat_ratio, 6),
             "n_reused": n_reused,
             "unique_shots": unique_shots,
+            "min_clip_s": round(min_clip_s, 3),
+            "short_clip_count": short_clip_count,
             "empty_placements": not bool(beat_selected),
             "in_opening_guard": in_opening_guard,
             "story_section": {"id": intent.story_section_id, "type": intent.story_section_type} if intent else None,
@@ -160,7 +169,7 @@ def build_edl_qa(
         })
     excluded_intro = [shot.index for shot in shots if not shot.is_story]
     return {
-        "version": 5,
+        "version": 6,
         "match_strategy": match_strategy,
         "max_source_drift_s": max_source_drift_s,
         "semantic_enabled": bool(semantic_scores),
@@ -175,6 +184,7 @@ def build_edl_qa(
         "visual_cache_hits": visual_result.cache_hits if visual_result else [],
         "visual_warnings": visual_result.warnings if visual_result else [],
         "min_semantic_score": min_semantic_score,
+        "short_clip_threshold_s": short_clip_threshold_s,
         "n_intro_excluded": len(excluded_intro),
         "excluded_intro_candidates": excluded_intro[:200],
         "selected_from_non_story": any((not shots_by_index.get(item.shot_index, Shot(src="unknown", index=0, tc_start=0, tc_end=1, duration=1, thumb="unknown", motion_score=0, face_count=0, face_area=0, brightness=0, is_usable=False)).is_story) for item in placements),
