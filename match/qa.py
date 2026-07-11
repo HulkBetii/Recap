@@ -7,6 +7,7 @@ from common.schema import EdlPlacement, ReviewBeat, ReviewIntent, Shot, StorySec
 from match.scoring import brightness_bonus, face_bonus, score_shot, ScoringWeights
 from match.semantic import SemanticResult
 from match.visual import VisualScoreResult
+from match.fill import chronology_tier
 
 
 def narration_preview(text: str, limit: int = 180) -> str:
@@ -35,10 +36,14 @@ def build_edl_qa(
     match_strategy: str = "hybrid",
     max_source_drift_s: float = 12.0,
     short_clip_threshold_s: float = 0.0,
+    candidate_shot_ids: dict[int, list[int]] | None = None,
+    candidate_drift_tiers: dict[tuple[int, int], int] | None = None,
 ) -> dict[str, Any]:
     review_intents = review_intents or {}
     story_sections = story_sections or {}
     visual_scores = visual_scores or {}
+    candidate_shot_ids = candidate_shot_ids or {}
+    candidate_drift_tiers = candidate_drift_tiers or {}
     shots_by_index = {shot.index: shot for shot in shots}
     placements_by_beat: dict[int, list[EdlPlacement]] = defaultdict(list)
     for placement in placements:
@@ -88,7 +93,10 @@ def build_edl_qa(
                 "semantic_score": round(semantic_score, 6),
                 "semantic_rank": semantic_result.ranks.get((beat.beat_id, placement.shot_index)) if semantic_result else None,
                 "visual_score": round(visual_score, 6),
+                "visual_raw_cosine": visual_result.raw_cosines.get((beat.beat_id, placement.shot_index)) if visual_result else None,
                 "visual_rank": visual_result.ranks.get((beat.beat_id, placement.shot_index)) if visual_result else None,
+                "selected_keyframe": visual_result.selected_keyframes.get((beat.beat_id, placement.shot_index)) if visual_result else None,
+                "drift_tier": chronology_tier(shot, expected_src_position, max_source_drift_s=max_source_drift_s)[0] if shot else None,
             }
             if shot is not None:
                 entry.update({
@@ -109,7 +117,11 @@ def build_edl_qa(
         unique_shots = len({placement.shot_index for placement in beat_selected})
         clip_durations = [max(0.0, placement.tl_end - placement.tl_start) for placement in beat_selected]
         min_clip_s = min(clip_durations) if clip_durations else 0.0
-        short_clip_count = sum(1 for duration_s in clip_durations if short_clip_threshold_s > 0 and duration_s < short_clip_threshold_s)
+        short_clip_count = sum(
+            1
+            for duration_s in clip_durations
+            if short_clip_threshold_s > 0 and duration_s + 1e-3 < short_clip_threshold_s
+        )
         avg_semantic = sum(beat_semantic_values) / len(beat_semantic_values) if beat_semantic_values else 0.0
         beat_warnings = list(warning_by_beat.get(beat.beat_id, []))
         if not beat_selected:
@@ -143,6 +155,32 @@ def build_edl_qa(
             beat_warnings.append(f"short_clip: {short_clip_count} placement(s) < {short_clip_threshold_s:.3f}s")
         if semantic_override and match_strategy != "chronological":
             beat_warnings.append("semantic overrode chronology")
+        alternatives = []
+        if visual_result:
+            allowed = set(candidate_shot_ids.get(beat.beat_id, []))
+            for (beat_id, shot_index), visual_score in visual_result.scores.items():
+                if beat_id != beat.beat_id or (beat.beat_id in candidate_shot_ids and shot_index not in allowed):
+                    continue
+                shot = shots_by_index.get(shot_index)
+                alternatives.append({
+                    "shot_index": shot_index,
+                    "visual_score": visual_score,
+                    "visual_raw_cosine": visual_result.raw_cosines.get((beat_id, shot_index)),
+                    "total_score_no_reuse": round(
+                        score_shot(
+                            shot,
+                            0,
+                            weights,
+                            semantic_scores.get((beat_id, shot_index), 0.0),
+                            visual_score,
+                        ),
+                        6,
+                    ) if shot is not None else None,
+                    "selected_keyframe": visual_result.selected_keyframes.get((beat_id, shot_index)),
+                    "drift_tier": candidate_drift_tiers.get((beat_id, shot_index)),
+                })
+            alternatives.sort(key=lambda item: (item["total_score_no_reuse"] or 0.0, item["visual_score"]), reverse=True)
+            alternatives = alternatives[:5]
         beat_reports.append({
             "beat_id": beat.beat_id,
             "narration_preview": narration_preview(beat.narration),
@@ -161,6 +199,8 @@ def build_edl_qa(
             "visual_intent": intent.visual_intent if intent else None,
             "chronology_mode": intent.chronology_mode if intent else None,
             "visual_queries": visual_result.queries.get(beat.beat_id, []) if visual_result else [],
+            "visual_query_weights": visual_result.query_weights.get(beat.beat_id, []) if visual_result else [],
+            "visual_alternatives": alternatives,
             "ordered_fill_used": ordered_fill_used,
             "chronology_mismatch": chronology_mismatch,
             "intent_match_score": 1.0 if section is not None else 0.0,

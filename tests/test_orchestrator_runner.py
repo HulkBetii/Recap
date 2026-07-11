@@ -6,10 +6,12 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from orchestrator.config import load_config
 from run import run_pipeline
+from visual_index.integrity import PREPROCESSING_VERSION, media_identity_hash, sha256_file, visual_index_config_hash
 
 NOW = "2026-07-02T00:00:00Z"
 
@@ -94,7 +96,33 @@ def write_stage_outputs(command: list[str]) -> None:
         flag(command, "--output-review-html").write_text("<html>review</html>", encoding="utf-8")
     elif stage == "visual_index":
         output = flag(command, "--output")
-        output.write_text(json.dumps({"meta":{"version":"1.0","src":"film.mp4","embedding_mode":"siglip2","embedding_model":"mock","device":"cpu","embedding_dim":2,"keyframes_per_shot":1,"n_shots":1,"created_at":NOW,"cache_hits":[],"warnings":[]},"shots":[{"shot_index":0,"tc_start":0,"tc_end":2,"duration":2,"is_story":True,"is_usable":True,"keyframes":[{"frame_path":"visual_index/frames/shot_000000_k0.jpg","tc":1,"role":"mid","embedding_ref":"visual_index/emb/shot_000000_k0.f16.npy"}],"shot_embedding_ref":"visual_index/emb/shot_000000_pool.f16.npy"}]}), encoding="utf-8")
+        film = flag(command, "--film")
+        shots_path = flag(command, "--shots")
+        asset_dir = flag(command, "--asset-dir")
+        pooled_embedding = asset_dir / "emb" / "shot_000000_pool.f16.npy"
+        embedding_mode = command[command.index("--embedding-mode") + 1]
+        embedding_model = command[command.index("--embedding-model") + 1]
+        keyframes_per_shot = int(command[command.index("--keyframes-per-shot") + 1])
+        frame_sampling = command[command.index("--frame-sampling") + 1]
+        keyframes = []
+        for index in range(keyframes_per_shot):
+            frame_path = asset_dir / "frames" / f"shot_000000_k{index}.jpg"
+            keyframe_embedding = asset_dir / "emb" / f"shot_000000_k{index}.f16.npy"
+            frame_path.parent.mkdir(parents=True, exist_ok=True)
+            keyframe_embedding.parent.mkdir(parents=True, exist_ok=True)
+            frame_path.write_bytes(b"jpg")
+            np.save(keyframe_embedding, np.asarray([1.0, 0.0], dtype=np.float16))
+            keyframes.append({"frame_path":frame_path.relative_to(output.parent).as_posix(),"tc":0.5 + index,"role":f"k{index}","embedding_ref":keyframe_embedding.relative_to(output.parent).as_posix(),"embedding_sha256":sha256_file(keyframe_embedding)})
+        np.save(pooled_embedding, np.asarray([1.0, 0.0], dtype=np.float16))
+        config_hash = visual_index_config_hash(
+            film_path=film,
+            shots_path=shots_path,
+            embedding_mode=embedding_mode,
+            embedding_model=embedding_model,
+            keyframes_per_shot=keyframes_per_shot,
+            frame_sampling=frame_sampling,
+        )
+        output.write_text(json.dumps({"meta":{"version":"1.1","src":str(film),"embedding_mode":embedding_mode,"embedding_model":embedding_model,"device":"cpu","embedding_dim":2,"keyframes_per_shot":keyframes_per_shot,"n_shots":1,"created_at":NOW,"cache_hits":[],"warnings":[],"film_hash":media_identity_hash(film),"shots_hash":sha256_file(shots_path),"config_hash":config_hash,"preprocessing_version":PREPROCESSING_VERSION,"logit_scale":10.0,"logit_bias":-5.0},"shots":[{"shot_index":0,"tc_start":0,"tc_end":2,"duration":2,"is_story":True,"is_usable":True,"keyframes":keyframes,"shot_embedding_ref":pooled_embedding.relative_to(output.parent).as_posix(),"shot_embedding_sha256":sha256_file(pooled_embedding)}]}), encoding="utf-8")
     elif stage == "render":
         output = flag(command, "--output")
         output.write_bytes(b"recap")
@@ -250,6 +278,52 @@ def test_visual_config_runs_visual_index_and_passes_to_match(tmp_path: Path, mon
     assert run_pipeline(args, executor=fake_executor) == 0
     assert "visual_index" in calls
     assert calls.index("visual_index") < calls.index("match")
+
+
+def test_corrupt_visual_sidecar_reruns_visual_index_and_downstream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    data = json.loads(args.config.read_text(encoding="utf-8"))
+    data["visual_index"] = {"enabled": True, "embedding_model": "mock", "device": "cpu"}
+    data["match"] = {"visual_mode": "rerank"}
+    args.config.write_text(json.dumps(data), encoding="utf-8")
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    pooled = tmp_path / "run" / "visual_index" / "emb" / "shot_000000_pool.f16.npy"
+    np.save(pooled, np.asarray([0.0, 1.0], dtype=np.float16))
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        calls.append(stage_name(command))
+        write_stage_outputs(command)
+
+    run_pipeline(args, executor=fake_executor)
+
+    assert calls == ["visual_index", "match", "render"]
+
+
+def test_visual_model_change_reruns_visual_index_and_downstream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    data = json.loads(args.config.read_text(encoding="utf-8"))
+    data["visual_index"] = {"enabled": True, "embedding_model": "mock-v1", "device": "cpu"}
+    data["match"] = {"visual_mode": "rerank"}
+    args.config.write_text(json.dumps(data), encoding="utf-8")
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    data["visual_index"]["embedding_model"] = "mock-v2"
+    args.config.write_text(json.dumps(data), encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        calls.append(stage_name(command))
+        write_stage_outputs(command)
+
+    run_pipeline(args, executor=fake_executor)
+
+    assert calls == ["visual_index", "match", "render"]
 
 def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:
     args = argset(tmp_path)

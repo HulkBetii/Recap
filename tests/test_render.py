@@ -8,7 +8,7 @@ import pytest
 
 from common.schema import EdlPlacement, RenderMeta
 from render.cache import RenderCache
-from render.compose import concat_list_text, concat_video, mux_voiceover, pad_video_by_tail, tail_pad_frame_count
+from render.compose import concat_list_text, concat_video, mux_voiceover, pad_video_by_tail, pad_video_to_duration, tail_pad_frame_count
 from render.cut import RenderParams, build_video_filter, clamp_source, temp_cache_key
 from render.quantize import quantize_placements
 
@@ -131,6 +131,14 @@ def test_pad_video_by_tail_extracts_frame_encodes_tail_and_concats(tmp_path: Pat
     assert commands[1][commands[1].index("-frames:v") + 1] == "46"
     assert "scale=1920:1080,fps=30,format=yuv420p" in commands[1]
     assert str(tmp_path / "work" / "concat_pad.txt") in commands[2]
+
+
+def test_legacy_padding_scales_tpad_to_requested_duration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    commands = []
+    monkeypatch.setattr("render.compose.run_command", lambda command: commands.append(command))
+    pad_video_to_duration(tmp_path / "video.mp4", tmp_path / "padded.mp4", 25.5)
+    command = commands[0]
+    assert "tpad=stop_mode=clone:stop_duration=25.500000" in command
 
 
 def test_mux_voiceover_can_delay_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

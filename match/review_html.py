@@ -110,8 +110,11 @@ def write_review_html(
                     qa_selected = selected_items[ordinal]
             image_html = "<div class=\"placeholder\">missing thumbnail</div>"
             missing = False
+            keyframe = qa_selected.get("selected_keyframe") if qa_selected else None
+            keyframe_path = Path(str(keyframe.get("frame_path"))) if isinstance(keyframe, dict) and keyframe.get("frame_path") else None
             if shot is not None:
-                copied = _copy_thumb(_resolve_thumb(shots_path, shot), asset_dir, beat.beat_id, ordinal, shot.index)
+                source_image = keyframe_path if keyframe_path is not None and keyframe_path.is_file() else _resolve_thumb(shots_path, shot)
+                copied = _copy_thumb(source_image, asset_dir, beat.beat_id, ordinal, shot.index)
                 if copied:
                     image_html = f"<img src=\"{escape(rel_asset_dir + '/' + copied)}\" alt=\"shot {shot.index}\">"
                 else:
@@ -126,12 +129,34 @@ def write_review_html(
                 f"SRC {placement.src_in:.3f}–{placement.src_out:.3f}<br>"
                 f"shot {placement.shot_index} | reused={placement.reused}<br>"
                 f"semantic={escape(_fmt(qa_selected.get('semantic_score') if qa_selected else None))} rank={escape(_fmt(qa_selected.get('semantic_rank') if qa_selected else None))}<br>"
-                f"visual={escape(_fmt(qa_selected.get('visual_score') if qa_selected else None))} rank={escape(_fmt(qa_selected.get('visual_rank') if qa_selected else None))}<br>"
+                f"visual={escape(_fmt(qa_selected.get('visual_score') if qa_selected else None))} raw={escape(_fmt(qa_selected.get('visual_raw_cosine') if qa_selected else None))} rank={escape(_fmt(qa_selected.get('visual_rank') if qa_selected else None))}<br>"
                 f"expected={escape(_fmt(qa_selected.get('expected_src_position') if qa_selected else None))} drift={escape(_fmt(qa_selected.get('source_drift_s') if qa_selected else None))} chrono={escape(_fmt(qa_selected.get('chronology_score') if qa_selected else None))}<br>"
+                f"drift tier={escape(_fmt(qa_selected.get('drift_tier') if qa_selected else None))}<br>"
                 f"motion={escape(_fmt(shot.motion_score if shot else None))} bright={escape(_fmt(shot.brightness if shot else None))} face={escape(_fmt(shot.face_count if shot else None))}<br>"
                 f"is_story={escape(_fmt(shot.is_story if shot else None))} reason={escape(_fmt(shot.exclude_reason if shot else None))}"
                 "</div></article>"
             )
-        parts.append("</div></section>")
+        parts.append("</div>")
+        alternatives = qa_beat.get("visual_alternatives", []) if isinstance(qa_beat, dict) else []
+        if alternatives:
+            parts.append("<h3>Visual alternatives</h3><div class=\"grid\">")
+            for alt_ordinal, alternative in enumerate(alternatives):
+                shot_index = int(alternative.get("shot_index", -1))
+                keyframe = alternative.get("selected_keyframe")
+                frame_path = Path(str(keyframe.get("frame_path"))) if isinstance(keyframe, dict) and keyframe.get("frame_path") else None
+                image_html = "<div class=\"placeholder\">missing keyframe</div>"
+                if frame_path is not None:
+                    copied = _copy_thumb(frame_path, asset_dir, beat.beat_id, 100 + alt_ordinal, shot_index)
+                    if copied:
+                        image_html = f"<img src=\"{escape(rel_asset_dir + '/' + copied)}\" alt=\"alternative shot {shot_index}\">"
+                parts.append(
+                    "<article class=\"clip\">"
+                    + image_html
+                    + "<div class=\"meta\">"
+                    + f"shot {shot_index} | tier={escape(_fmt(alternative.get('drift_tier')))}<br>visual={escape(_fmt(alternative.get('visual_score')))} raw={escape(_fmt(alternative.get('visual_raw_cosine')))}<br>combined={escape(_fmt(alternative.get('total_score_no_reuse')))}"
+                    + "</div></article>"
+                )
+            parts.append("</div>")
+        parts.append("</section>")
     parts.append("</body></html>")
     output_path.write_text("\n".join(parts) + "\n", encoding="utf-8")

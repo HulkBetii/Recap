@@ -133,11 +133,21 @@ def run_render(args: argparse.Namespace) -> int:
                 shortage_s=shortage_s,
                 params=params,
             )
+            padded_duration = probe_duration(padded_video)
+            if padded_duration + duration_tolerance < mux_audio_duration:
+                raise MediaError(
+                    f"tail-padded video is still short: {padded_duration:.3f}s < {mux_audio_duration:.3f}s"
+                )
             logging.info("tail-padded video-only concat by %s frame(s)", pad_frames)
         except MediaError as exc:
             warnings.append(f"tail padding failed; fell back to full re-encode padding: {exc}")
             logging.warning("tail padding failed; falling back to full re-encode padding: %s", exc)
             pad_video_to_duration(video_only, padded_video, mux_audio_duration)
+            fallback_duration = probe_duration(padded_video)
+            if fallback_duration + duration_tolerance < mux_audio_duration:
+                raise RenderError(
+                    f"full re-encode padding is still short: {fallback_duration:.3f}s < {mux_audio_duration:.3f}s"
+                )
         video_for_mux = padded_video
     logging.info("mux voiceover")
     mux_voiceover(video_for_mux, args.voiceover, args.output, audio_delay_s=args.audio_delay_s)

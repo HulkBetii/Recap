@@ -103,7 +103,7 @@ def pad_video_to_duration(video_path: Path, output_path: Path, duration_s: float
         "-i",
         str(video_path),
         "-vf",
-        "tpad=stop_mode=clone:stop_duration=10",
+        f"tpad=stop_mode=clone:stop_duration={duration_s:.6f}",
         "-t",
         f"{duration_s:.6f}",
         "-an",

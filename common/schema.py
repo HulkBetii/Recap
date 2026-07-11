@@ -436,6 +436,7 @@ class ShotKeyframe(BaseModel):
     tc: float = Field(ge=0)
     role: str
     embedding_ref: str
+    embedding_sha256: str | None = None
 
     @field_validator("frame_path", "role", "embedding_ref")
     @classmethod
@@ -456,6 +457,7 @@ class ShotVisualIndex(BaseModel):
     is_usable: bool = True
     keyframes: list[ShotKeyframe] = Field(default_factory=list)
     shot_embedding_ref: str
+    shot_embedding_sha256: str | None = None
     ocr_text: str | None = None
     ocr_score: float = Field(default=0.0, ge=0, le=1)
     title_like_prob: float = Field(default=0.0, ge=0, le=1)
@@ -506,6 +508,12 @@ class VisualIndexMeta(BaseModel):
     created_at: datetime
     cache_hits: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    film_hash: str | None = None
+    shots_hash: str | None = None
+    config_hash: str | None = None
+    preprocessing_version: str | None = None
+    logit_scale: float | None = Field(default=None, gt=0)
+    logit_bias: float | None = None
 
     @field_validator("src", "embedding_mode", "embedding_model", "device")
     @classmethod
@@ -520,6 +528,56 @@ class ShotVisualIndexFile(BaseModel):
 
     meta: VisualIndexMeta
     shots: list[ShotVisualIndex] = Field(default_factory=list)
+
+
+class VisualGoldenCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shot_index: int = Field(ge=0)
+    base_score: float
+    visual_score: float = Field(ge=0, le=1)
+    drift_tier: int = Field(default=0, ge=0)
+    source_drift_s: float = Field(default=0.0, ge=0)
+    reused: bool = False
+    duration_s: float = Field(default=3.0, gt=0)
+    acceptable: bool = False
+
+
+class VisualGoldenBeat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    video: str = Field(min_length=1)
+    beat_id: int = Field(ge=0)
+    candidates: list[VisualGoldenCandidate]
+
+    @model_validator(mode="after")
+    def validate_candidates(self) -> "VisualGoldenBeat":
+        if not self.candidates:
+            raise ValueError("visual golden beat requires candidates")
+        if not any(candidate.acceptable for candidate in self.candidates):
+            raise ValueError("visual golden beat requires at least one acceptable candidate")
+        return self
+
+
+class VisualGoldenSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 1
+    videos: list[str] = Field(min_length=2)
+    beats: list[VisualGoldenBeat]
+
+    @model_validator(mode="after")
+    def validate_videos(self) -> "VisualGoldenSet":
+        if len(set(self.videos)) != len(self.videos):
+            raise ValueError("visual golden videos must be unique")
+        beat_videos = {beat.video for beat in self.beats}
+        unknown = sorted(beat_videos - set(self.videos))
+        if unknown:
+            raise ValueError(f"visual golden beats reference unknown videos: {unknown}")
+        missing = sorted(set(self.videos) - beat_videos)
+        if missing:
+            raise ValueError(f"visual golden set requires labeled beats for every video: {missing}")
+        return self
 
 class TtsManifestEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -705,11 +763,19 @@ def validate_shot_visual_index(index: ShotVisualIndexFile, shots: list[Shot] | N
     ordered = sorted(index.shots, key=lambda item: item.shot_index)
     if index.meta.n_shots != len(ordered):
         raise ValueError("visual index meta n_shots must match shots length")
+    if len({item.shot_index for item in ordered}) != len(ordered):
+        raise ValueError("visual index shot ids must be unique")
     if shots is not None:
-        shot_ids = {shot.index for shot in shots}
-        missing = sorted(item.shot_index for item in ordered if item.shot_index not in shot_ids)
+        by_index = {item.shot_index: item for item in ordered}
+        missing = sorted(shot.index for shot in shots if shot.index not in by_index)
         if missing:
-            raise ValueError(f"visual index references unknown shot ids: {missing[:10]}")
+            raise ValueError(f"visual index is missing candidate shot ids: {missing[:10]}")
+        for shot in shots:
+            item = by_index[shot.index]
+            if abs(item.tc_start - shot.tc_start) > 1e-3 or abs(item.tc_end - shot.tc_end) > 1e-3:
+                raise ValueError(f"visual index shot #{shot.index} timecode does not match shots.json")
+            if abs(item.duration - shot.duration) > 1e-3:
+                raise ValueError(f"visual index shot #{shot.index} duration does not match shots.json")
     return index.model_copy(update={"shots": ordered})
 
 def validate_review_script(beats: list[ReviewBeat], film_map: list[FilmMapSegment]) -> list[ReviewBeat]:

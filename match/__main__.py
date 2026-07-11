@@ -9,16 +9,17 @@ from pathlib import Path
 
 from common.schema import BeatTiming, EdlMeta, EdlPlacement, FilmMapSegment, ReviewBeat, ReviewIntent, Shot, StorySection, validate_edl, validate_review_intents, validate_story_map, write_json
 from match.cache import MatchCache, file_hash, stable_hash
-from match.fill import assign_timeline, fill_beat, fill_timeline_gaps, split_long_placements
+from match.fill import assign_timeline, chronology_tier, fill_beat, fill_timeline_gaps, split_long_placements
 from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
 from match.qa import build_edl_qa
 from match.review_html import write_review_html
-from match.scoring import ScoringWeights
+from match.scoring import ScoringWeights, score_shot
 from match.semantic import DEFAULT_EMBEDDING_MODEL, SemanticConfig, SemanticError, compute_semantic_result
 from match.sync_qa import build_sync_qa
-from match.timing import average_clip_len, validate_timeline
+from match.timing import average_clip_len, validate_source_bounds, validate_timeline
 from match.visual import VisualMatchError, build_visual_qa, compute_visual_scores
 from visual_index.encoder import VisualEncoderError
+from visual_index.integrity import visual_index_artifact_hash
 
 
 class MatchError(RuntimeError):
@@ -44,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--visual-index", default=None, type=Path)
     parser.add_argument("--visual-mode", default="off", choices=["off", "rerank"])
     parser.add_argument("--visual-cache-dir", default=None, type=Path)
+    parser.add_argument("--visual-device", default=None, choices=["auto", "cpu", "cuda"])
+    parser.add_argument("--visual-batch-size", default=None, type=int)
     parser.add_argument("--output-visual-qa", default=None, type=Path)
     parser.add_argument("--w-visual", default=0.20, type=float)
     parser.add_argument("--semantic-mode", default="off", choices=["off", "tfidf", "bge-m3"])
@@ -116,9 +119,11 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "semantic_device": args.semantic_device,
         "semantic_batch_size": args.semantic_batch_size,
         "semantic_cache_dir": str(args.semantic_cache_dir) if args.semantic_cache_dir else None,
-        "visual_index": file_hash(args.visual_index.expanduser().resolve()) if args.visual_index and args.visual_index.expanduser().resolve().is_file() else None,
+        "visual_index": visual_index_artifact_hash(args.visual_index.expanduser().resolve()) if args.visual_index and args.visual_index.expanduser().resolve().is_file() else None,
         "visual_mode": args.visual_mode,
         "visual_cache_dir": str(args.visual_cache_dir) if args.visual_cache_dir else None,
+        "visual_device": args.visual_device,
+        "visual_batch_size": args.visual_batch_size,
         "w_visual": args.w_visual,
         "min_semantic_score": args.min_semantic_score,
         "match_strategy": args.match_strategy,
@@ -160,6 +165,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError("--min-semantic-score must be >= 0")
     if args.w_visual < 0:
         raise MatchError("--w-visual must be >= 0")
+    if args.visual_batch_size is not None and args.visual_batch_size <= 0:
+        raise MatchError("--visual-batch-size must be > 0")
     if args.chronology_weight < 0:
         raise MatchError("--chronology-weight must be >= 0")
     if args.max_source_drift_s <= 0:
@@ -286,6 +293,10 @@ def run_match(args: argparse.Namespace) -> int:
         args.visual_mode = "off"
     if not hasattr(args, "visual_cache_dir"):
         args.visual_cache_dir = None
+    if not hasattr(args, "visual_device"):
+        args.visual_device = None
+    if not hasattr(args, "visual_batch_size"):
+        args.visual_batch_size = None
     if not hasattr(args, "output_visual_qa"):
         args.output_visual_qa = None
     if not hasattr(args, "w_visual"):
@@ -360,8 +371,8 @@ def run_match(args: argparse.Namespace) -> int:
                 review_intents=review_intents,
                 index_path=args.visual_index.expanduser().resolve(),
                 cache_dir=visual_cache_dir,
-                device=args.semantic_device,
-                batch_size=args.semantic_batch_size,
+                device=args.visual_device or args.semantic_device,
+                batch_size=args.visual_batch_size or args.semantic_batch_size,
             )
             visual_scores = visual_result.scores
             warnings.extend(f"visual: {warning}" for warning in visual_result.warnings)
@@ -376,6 +387,8 @@ def run_match(args: argparse.Namespace) -> int:
     n_beats_widened = 0
     n_reused = 0
     n_speedfit = 0
+    candidate_shot_ids: dict[int, list[int]] = {}
+    candidate_drift_tiers: dict[tuple[int, int], int] = {}
 
     logger.info("Matching %d beats", len(timings))
     for timing in sorted(timings, key=lambda item: item.tl_start):
@@ -409,7 +422,18 @@ def run_match(args: argparse.Namespace) -> int:
             max_source_drift_s=args.max_source_drift_s,
             source_start_override=source_start_override,
             min_visual_clip=args.min_visual_clip,
+            strict_ordered_fill=in_opening_guard and args.opening_ordered_fill,
         )
+        candidate_shot_ids[beat.beat_id] = result.candidate_shot_ids
+        shots_by_index = {shot.index: shot for shot in shots}
+        for shot_index in result.candidate_shot_ids:
+            shot = shots_by_index.get(shot_index)
+            if shot is not None:
+                candidate_drift_tiers[(beat.beat_id, shot_index)] = chronology_tier(
+                    shot,
+                    result.source_cursor_start,
+                    max_source_drift_s=args.max_source_drift_s,
+                )[0]
         if source_start_override is not None:
             result.warnings.append(f"beat {beat.beat_id} opening_story_visual_start {source_start_override:.3f}s")
         if in_opening_guard and args.opening_ordered_fill:
@@ -430,7 +454,7 @@ def run_match(args: argparse.Namespace) -> int:
 
     total_duration = max((timing.tl_end for timing in timings), default=0.0)
     before_gap_fill = len(placements)
-    placements = fill_timeline_gaps(placements, total_duration, min_visual_clip=args.min_visual_clip)
+    placements = fill_timeline_gaps(placements, total_duration, min_visual_clip=args.min_visual_clip, shots=all_shots)
     pause_fillers = len(placements) - before_gap_fill
     if pause_fillers:
         warnings.append(f"inserted {pause_fillers} pause filler placement(s) to cover TTS inter-beat silence")
@@ -441,6 +465,7 @@ def run_match(args: argparse.Namespace) -> int:
     if long_splits:
         warnings.append(f"split {long_splits} long placement segment(s) to keep visual clips <= {args.max_clip:.3f}s")
     placements = validate_timeline(placements, total_duration)
+    placements = validate_source_bounds(placements, all_shots)
     beat_ids = sorted({timing.beat_id for timing in timings})
     placements_by_beat = {beat_id: [placement for placement in placements if placement.beat_id == beat_id] for beat_id in beat_ids}
     repeat_ratios = []
@@ -493,9 +518,30 @@ def run_match(args: argparse.Namespace) -> int:
         match_strategy=args.match_strategy,
         max_source_drift_s=args.max_source_drift_s,
         short_clip_threshold_s=args.min_visual_clip,
+        candidate_shot_ids=candidate_shot_ids,
+        candidate_drift_tiers=candidate_drift_tiers,
     )
     sync_qa = build_sync_qa(beats=review_beats, timings=timings, placements=placements, fps=None, short_clip_threshold_s=args.min_visual_clip)
-    visual_qa = build_visual_qa(beats=review_beats, placements=placements, visual_result=visual_result, visual_mode=args.visual_mode)
+    combined_scores = {
+        (beat.beat_id, shot.index): score_shot(
+            shot,
+            0,
+            weights,
+            semantic_scores.get((beat.beat_id, shot.index), 0.0),
+            visual_scores.get((beat.beat_id, shot.index), 0.0),
+        )
+        for beat in review_beats
+        for shot in shots
+    }
+    visual_qa = build_visual_qa(
+        beats=review_beats,
+        placements=placements,
+        visual_result=visual_result,
+        visual_mode=args.visual_mode,
+        candidate_shot_ids=candidate_shot_ids,
+        combined_scores=combined_scores,
+        candidate_drift_tiers=candidate_drift_tiers,
+    )
     write_json(output_path, placements)
     write_json(output_path.with_name("edl.meta.json"), meta)
     write_json(qa_path, qa)

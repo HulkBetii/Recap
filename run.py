@@ -11,7 +11,7 @@ from typing import Callable
 
 from orchestrator.config import ConfigError, load_config
 from orchestrator.cost_policy import build_cost_summary, resolve_cost_policy
-from orchestrator.graph import STAGES, build_paths, forced_stages, stage_range
+from orchestrator.graph import DOWNSTREAM, STAGES, build_paths, forced_stages, stage_range
 from orchestrator.runner import OrchestratorError, outputs_valid, preflight, run_stage
 from orchestrator.summary import StageSummary, write_summary
 
@@ -90,7 +90,9 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
         selected.discard("visual_index")
     forced = forced_stages(selected, args.force, args.force_stage)
     python_exe = config.get("orchestrator", {}).get("python")
-    will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage)}
+    will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage, film=film, config=config)}
+    for stage in will_run:
+        forced.update(set(DOWNSTREAM[stage]) & selected)
     openai_fallback_possible = bool(config.get("orchestrator", {}).get("auto_fallback", False) and "ingest" in selected)
     cost_summary = build_cost_summary(cost_policy, selected, will_run, openai_fallback_possible=openai_fallback_possible)
     preflight(film=film, selected=selected, forced=forced, paths=paths, config=config, dry_run=args.dry_run, cost_policy=cost_policy)

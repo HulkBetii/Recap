@@ -133,6 +133,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "device": "auto",
         "batch_size": 16,
         "keyframes_per_shot": 2,
+        "frame_sampling": "per-frame",
         "log_level": "INFO",
     },
     "match": {
@@ -172,6 +173,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "visual_mode": "off",
         "visual_index": "auto",
         "visual_cache_dir": None,
+        "visual_device": None,
+        "visual_batch_size": None,
         "w_visual": 0.20,
         "output_visual_qa": None,
         "film_map": "auto",

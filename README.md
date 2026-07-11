@@ -437,6 +437,27 @@ python -m ingest --input film.mp4 --output runs\ep01\film_map.json --video-profi
 python -m shots --input film.mp4 --output runs\ep01\shots.json --thumb-dir runs\ep01\shots --video-profile runs\ep01\video_profile.json
 ```
 
+## Visual Index v1.1 and calibration
+
+Visual Index v1.1 validates film/shots/config identity plus every embedding sidecar checksum and dimension before reuse. Legacy v1.0 indexes are treated as uncalibrated and must be rebuilt. SigLIP scoring uses learned calibration (`sigmoid(cosine * logit_scale + logit_bias)`), combines VI/EN query weights on each keyframe, then picks the best keyframe in the shot.
+
+For long videos, use `--frame-sampling batch`. G5 can use `--visual-device cuda --visual-batch-size 32`. Candidate ordering is drift-tier first, so visual relevance only reranks within a chronology-valid tier.
+
+Calibrate `w_visual` from a hand-labeled two-video golden set:
+
+```powershell
+python -m match.calibrate_visual `
+  --golden examples\visual_golden.example.json `
+  --weights 0,0.05,0.10,0.15,0.20,0.25,0.30,0.40 `
+  --output work\visual_calibration.json
+```
+
+The report maximizes NDCG@5 and acceptable top-1 rate while preventing regressions in drift, high-drift rate, reuse, and short clips. Equal results select the lower weight.
+
+The current two-movie calibration selects `w_visual=0.15` for `config.movie.visual.yaml` (`NDCG@5 0.9341`, top-1 `1.0`). Stable presets keep visual matching disabled.
+
+Long local ASR now overlaps chunks and atomically caches validated per-chunk transcripts to avoid boundary loss after interrupted runs. G6 validates both tail padding and legacy full re-encode padding before muxing audio.
+
 ## Runtime Notes From Real E2E
 
 - For long movie reviews, use the logged-in ChatGPT persistent profile and keep other Chrome windows for that profile closed before running GĐ2.

@@ -24,7 +24,9 @@ def build_sync_qa(
     short_clip_threshold_s: float = 0.0,
 ) -> dict[str, Any]:
     timings_by_id = {timing.beat_id: timing for timing in timings}
-    next_timing_by_id = {timing.beat_id: timings[index + 1] for index, timing in enumerate(sorted(timings, key=lambda item: item.beat_id)[:-1])}
+    ordered_timings = sorted(timings, key=lambda item: item.beat_id)
+    next_timing_by_id = {timing.beat_id: ordered_timings[index + 1] for index, timing in enumerate(ordered_timings[:-1])}
+    previous_timing_by_id = {timing.beat_id: ordered_timings[index - 1] for index, timing in enumerate(ordered_timings[1:], start=1)}
     beats_by_id = {beat.beat_id: beat for beat in beats}
     placements_by_beat: dict[int, list[EdlPlacement]] = defaultdict(list)
     for placement in placements:
@@ -70,8 +72,14 @@ def build_sync_qa(
         outside_timing_duration = max(0.0, edl_duration - in_timing_duration)
         next_timing = next_timing_by_id.get(timing.beat_id)
         inter_beat_pause_filler_s = 0.0
+        previous_timing = previous_timing_by_id.get(timing.beat_id)
+        if previous_timing is not None:
+            inter_beat_pause_filler_s += sum(
+                overlap_duration(item.tl_start, item.tl_end, previous_timing.tl_end, timing.tl_start)
+                for item in beat_placements
+            )
         if next_timing is not None:
-            inter_beat_pause_filler_s = sum(
+            inter_beat_pause_filler_s += sum(
                 overlap_duration(item.tl_start, item.tl_end, timing.tl_end, next_timing.tl_start)
                 for item in beat_placements
             )
@@ -85,7 +93,11 @@ def build_sync_qa(
         clip_durations = [duration(item.tl_start, item.tl_end) for item in beat_placements]
         max_clip_s = max(clip_durations)
         min_clip_s = min(clip_durations)
-        short_clip_count = sum(1 for clip_s in clip_durations if short_clip_threshold_s > 0 and clip_s < short_clip_threshold_s)
+        short_clip_count = sum(
+            1
+            for clip_s in clip_durations
+            if short_clip_threshold_s > 0 and clip_s + 1e-3 < short_clip_threshold_s
+        )
         avg_clip_s = edl_duration / len(beat_placements)
 
         if abs(start_delta) > tolerance_s:

@@ -11,6 +11,8 @@ class VisualEncoderError(RuntimeError):
 
 class VisualEncoder(Protocol):
     device: str
+    logit_scale: float
+    logit_bias: float
 
     def encode_images(self, image_paths: list[Path], *, batch_size: int) -> list[list[float]]:
         ...
@@ -55,9 +57,22 @@ class TransformerVisualEncoder:
         self.torch = torch
         self.device = resolve_device(device)
         self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        model_kwargs = {"trust_remote_code": trust_remote_code}
+        if self.device == "cuda":
+            model_kwargs["dtype"] = torch.float16
+        try:
+            self.model = AutoModel.from_pretrained(model_name, **model_kwargs)
+        except TypeError:
+            dtype = model_kwargs.pop("dtype", None)
+            if dtype is not None:
+                model_kwargs["torch_dtype"] = dtype
+            self.model = AutoModel.from_pretrained(model_name, **model_kwargs)
         self.model.to(self.device)
         self.model.eval()
+        raw_scale = getattr(self.model, "logit_scale", None)
+        raw_bias = getattr(self.model, "logit_bias", None)
+        self.logit_scale = float(raw_scale.detach().float().exp().cpu()) if raw_scale is not None else 1.0
+        self.logit_bias = float(raw_bias.detach().float().cpu()) if raw_bias is not None else 0.0
 
     def encode_images(self, image_paths: list[Path], *, batch_size: int) -> list[list[float]]:
         if not image_paths:
@@ -73,7 +88,7 @@ class TransformerVisualEncoder:
             try:
                 inputs = self.processor(images=images, return_tensors="pt")
                 inputs = {key: value.to(self.device) for key, value in inputs.items()}
-                with self.torch.no_grad():
+                with self.torch.inference_mode():
                     if hasattr(self.model, "get_image_features"):
                         features = self.model.get_image_features(**inputs)
                     else:
@@ -95,9 +110,15 @@ class TransformerVisualEncoder:
         vectors: list[list[float]] = []
         for start in range(0, len(texts), batch_size):
             batch = texts[start:start + batch_size]
-            inputs = self.processor(text=batch, padding=True, truncation=True, return_tensors="pt")
+            inputs = self.processor(
+                text=batch,
+                padding="max_length",
+                max_length=64,
+                truncation=True,
+                return_tensors="pt",
+            )
             inputs = {key: value.to(self.device) for key, value in inputs.items()}
-            with self.torch.no_grad():
+            with self.torch.inference_mode():
                 if hasattr(self.model, "get_text_features"):
                     features = self.model.get_text_features(**inputs)
                 else:

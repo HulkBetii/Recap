@@ -3,6 +3,7 @@
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
 from match.fill import Fragment, assign_timeline, fill_beat, fill_timeline_gaps, split_long_placements, trim_fragments_to_duration
 from match.scoring import ScoringWeights
+from match.timing import validate_source_bounds
 
 
 def shot(index, start, end, motion=0.5):  # type: ignore[no-untyped-def]
@@ -25,25 +26,25 @@ def test_assign_timeline_tiles_beat() -> None:
     assert placements[0].tl_start == 0
     assert placements[-1].tl_end == 4
 
-def test_trim_coalesces_short_tail_fragment() -> None:
+def test_trim_does_not_extend_across_shot_boundaries() -> None:
     fragments = [
         Fragment(src="film.mp4", src_in=0.0, src_out=5.0, beat_id=0, shot_index=0, reused=False),
         Fragment(src="film.mp4", src_in=10.0, src_out=10.2, beat_id=0, shot_index=1, reused=False),
     ]
     trimmed = trim_fragments_to_duration(fragments, 5.2, min_visual_clip=0.6)
-    assert len(trimmed) == 1
-    assert trimmed[0].shot_index == 0
-    assert abs(trimmed[0].duration - 5.2) < 0.02
+    assert len(trimmed) == 2
+    assert trimmed[0].src_out == 5.0
+    assert trimmed[1].src_out == 10.2
 
-def test_trim_coalesces_short_leading_fragment_into_next() -> None:
+def test_trim_does_not_expand_next_shot_to_hide_short_lead() -> None:
     fragments = [
         Fragment(src="film.mp4", src_in=0.0, src_out=0.2, beat_id=0, shot_index=0, reused=False),
         Fragment(src="film.mp4", src_in=10.0, src_out=10.8, beat_id=0, shot_index=1, reused=False),
     ]
     trimmed = trim_fragments_to_duration(fragments, 1.0, min_visual_clip=0.6)
-    assert len(trimmed) == 1
-    assert trimmed[0].shot_index == 1
-    assert abs(trimmed[0].duration - 1.0) < 0.02
+    assert len(trimmed) == 2
+    assert trimmed[0].src_in == 0.0
+    assert trimmed[1].src_out == 10.8
 
 def test_short_pause_gap_extends_previous_placement() -> None:
     placements = [
@@ -53,8 +54,106 @@ def test_short_pause_gap_extends_previous_placement() -> None:
     filled = fill_timeline_gaps(placements, 4.15, min_visual_clip=0.6)
     assert len(filled) == 2
     assert filled[0].tl_end == 2.15
-    assert round(filled[0].src_out, 3) == 2.15
+    assert round(filled[0].src_out, 3) == 2.0
+    assert filled[0].speed >= 0.9
     assert filled[1].tl_start == 2.15
+
+
+def test_short_pause_uses_source_capacity_without_crossing_shot_end() -> None:
+    source_shots = [shot(0, 0, 3), shot(1, 4, 7)]
+    placements = [
+        assign_timeline([Fragment(src="film.mp4", src_in=0.0, src_out=2.0, beat_id=0, shot_index=0, reused=False)], BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=2, duration=2))[0],
+        assign_timeline([Fragment(src="film.mp4", src_in=4.0, src_out=6.0, beat_id=1, shot_index=1, reused=False)], BeatTiming(beat_id=1, audio_path="1.mp3", tl_start=2.15, tl_end=4.15, duration=2))[0],
+    ]
+    filled = fill_timeline_gaps(placements, 4.15, min_visual_clip=0.6, shots=source_shots)
+    assert filled[0].src_out == 2.15
+    assert filled[0].speed == 1.0
+    validate_source_bounds(filled, source_shots)
+
+
+def test_fill_budgets_short_remainder_without_out_of_bounds_extension() -> None:
+    source_shots = [shot(0, 0, 5), shot(1, 10, 15)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=15, is_hook=True)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=5.2, duration=5.2)
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=3,
+        max_clip=5,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=False,
+        allow_speedfit=False,
+    )
+    placements = assign_timeline(result.fragments, timing)
+    assert min(item.tl_end - item.tl_start for item in placements) >= 0.6 - 1e-3
+    validate_source_bounds(placements, source_shots)
+
+
+def test_underfilled_beat_uses_source_safe_filler() -> None:
+    source_shots = [shot(0, 0, 0.2)]
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=1.0, duration=1.0)
+    placements = assign_timeline(
+        [Fragment(src="film.mp4", src_in=0.0, src_out=0.2, beat_id=0, shot_index=0, reused=False)],
+        timing,
+    )
+    assert placements[-1].tl_end == 0.2
+    filled = fill_timeline_gaps(placements, 1.0, min_visual_clip=0.6, shots=source_shots)
+    assert filled[-1].tl_end == 1.0
+    assert filled[-1].src_out <= 0.2
+    validate_source_bounds(filled, source_shots)
+
+
+def test_fill_ignores_physical_shots_shorter_than_visual_minimum() -> None:
+    source_shots = [shot(0, 0, 1.0), shot(1, 1.0, 1.2)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=1.2, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=1.2, duration=1.2)
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=0.5,
+        max_clip=1.0,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=True,
+        allow_speedfit=False,
+    )
+    assert result.fragments
+    assert {fragment.shot_index for fragment in result.fragments} == {0}
+    assert all(fragment.duration >= 0.6 - 1e-3 for fragment in result.fragments)
+
+
+def test_fill_leaves_tiny_final_remainder_for_gap_absorption() -> None:
+    source_shots = [shot(0, 0, 1.0), shot(1, 1.0, 2.0)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=2.0, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=1.071, duration=1.071)
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=0.5,
+        max_clip=1.0,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=True,
+        allow_speedfit=False,
+    )
+    placements = assign_timeline(result.fragments, timing)
+    filled = fill_timeline_gaps(placements, timing.tl_end, min_visual_clip=0.6, shots=source_shots)
+    assert len(filled) == 1
+    assert filled[0].tl_end == timing.tl_end
+    assert filled[0].speed >= 0.9
 
 def test_split_long_placement_keeps_continuous_source_and_timeline() -> None:
     placement = EdlPlacement(tl_start=0, tl_end=12, src="film.mp4", src_in=100, src_out=112, beat_id=0, shot_index=3, reused=False, speed=1)

@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from common.schema import TranscriptSegment
@@ -9,6 +12,7 @@ from common.schema import TranscriptSegment
 MIN_SEGMENT_SECONDS = 0.2
 MIN_OPENAI_CHUNK_BYTES = 1024
 LOCAL_ASR_CHUNK_SECONDS = 600.0
+LOCAL_ASR_CHUNK_OVERLAP_SECONDS = 2.0
 
 
 def _transcribe_with_model(
@@ -40,6 +44,7 @@ def _transcribe_with_model(
 
 def _extract_audio_chunk(audio_path: Path, chunk_path: Path, start_s: float, length_s: float) -> None:
     chunk_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = chunk_path.with_name(f"{chunk_path.stem}.tmp{chunk_path.suffix}")
     subprocess.run(
         [
             "ffmpeg",
@@ -55,12 +60,80 @@ def _extract_audio_chunk(audio_path: Path, chunk_path: Path, start_s: float, len
             "1",
             "-ar",
             "16000",
-            str(chunk_path),
+            str(temp_path),
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=True,
     )
+    if not temp_path.is_file() or temp_path.stat().st_size <= 44:
+        temp_path.unlink(missing_ok=True)
+        raise RuntimeError(f"invalid extracted audio chunk: {chunk_path}")
+    os.replace(temp_path, chunk_path)
+
+
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(path.name + ".tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def _source_identity(path: Path) -> dict[str, int]:
+    stat = path.stat()
+    return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _chunk_cache_payload_is_valid(
+    payload: dict,
+    *,
+    source_identity: dict[str, int],
+    start_s: float,
+    length_s: float,
+    whisper_model: str,
+    device: str,
+    language: str,
+    vad_filter: bool,
+) -> bool:
+    expected = {
+        "source": source_identity,
+        "start_s": round(start_s, 3),
+        "length_s": round(length_s, 3),
+        "whisper_model": whisper_model,
+        "device": device,
+        "language": language,
+        "vad_filter": vad_filter,
+    }
+    return all(payload.get(key) == value for key, value in expected.items()) and isinstance(payload.get("segments"), list)
+
+
+def _normalize_transcript_text(text: str) -> str:
+    return re.sub(r"\W+", " ", text.casefold(), flags=re.UNICODE).strip()
+
+
+def _dedupe_overlapping_segments(segments: list[TranscriptSegment], *, overlap_s: float) -> list[TranscriptSegment]:
+    output: list[TranscriptSegment] = []
+    for segment in sorted(segments, key=lambda item: (item.tc_start, item.tc_end)):
+        duplicate_index = None
+        normalized = _normalize_transcript_text(segment.ko)
+        for index in range(len(output) - 1, -1, -1):
+            previous = output[index]
+            if segment.tc_start - previous.tc_end > overlap_s + 1.0:
+                break
+            previous_normalized = _normalize_transcript_text(previous.ko)
+            similarity = SequenceMatcher(None, normalized, previous_normalized).ratio()
+            intervals_overlap = min(segment.tc_end, previous.tc_end) > max(segment.tc_start, previous.tc_start)
+            near_same_start = abs(segment.tc_start - previous.tc_start) <= overlap_s + 0.5
+            if similarity >= 0.85 and (intervals_overlap or near_same_start):
+                duplicate_index = index
+                break
+        if duplicate_index is None:
+            output.append(segment)
+            continue
+        previous = output[duplicate_index]
+        if len(segment.ko.strip()) > len(previous.ko.strip()):
+            output[duplicate_index] = segment
+    return [segment.model_copy(update={"id": index}) for index, segment in enumerate(output)]
 
 
 def transcribe_korean(
@@ -76,33 +149,75 @@ def transcribe_korean(
 ) -> list[TranscriptSegment]:
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(whisper_model, device=device)
     if duration is None or chunks_dir is None or duration <= chunk_s:
+        model = WhisperModel(whisper_model, device=device)
         return _transcribe_with_model(model, audio_path, language=language, vad_filter=vad_filter)
 
     segments: list[TranscriptSegment] = []
+    model = None
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    source_identity = _source_identity(audio_path)
+    overlap_s = min(LOCAL_ASR_CHUNK_OVERLAP_SECONDS, max(0.0, chunk_s * 0.1))
+    step_s = chunk_s - overlap_s
+    if step_s <= 0:
+        raise ValueError("local ASR chunk overlap must be smaller than chunk size")
     start = 0.0
     index = 0
     while start < duration - 1e-6:
         length = min(chunk_s, duration - start)
         if length < MIN_SEGMENT_SECONDS:
             break
-        chunk_path = chunks_dir / f"chunk-{index:04d}.wav"
-        if not chunk_path.exists():
+        chunk_path = chunks_dir / f"chunk-{index:04d}-{round(start * 1000):010d}.wav"
+        transcript_path = chunk_path.with_suffix(".json")
+        cached_segments: list[TranscriptSegment] | None = None
+        if transcript_path.is_file():
+            try:
+                payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+                if _chunk_cache_payload_is_valid(
+                    payload,
+                    source_identity=source_identity,
+                    start_s=start,
+                    length_s=length,
+                    whisper_model=whisper_model,
+                    device=device,
+                    language=language,
+                    vad_filter=vad_filter,
+                ):
+                    cached_segments = [TranscriptSegment.model_validate(item) for item in payload["segments"]]
+            except (json.JSONDecodeError, OSError, TypeError, ValueError):
+                cached_segments = None
+        if cached_segments is None:
             _extract_audio_chunk(audio_path, chunk_path, start, length)
-        segments.extend(
-            _transcribe_with_model(
+            model = model or WhisperModel(whisper_model, device=device)
+            cached_segments = _transcribe_with_model(
                 model,
                 chunk_path,
                 language=language,
                 vad_filter=vad_filter,
                 offset_s=start,
-                start_id=len(segments),
             )
-        )
-        start += chunk_s
+            _write_json_atomic(
+                transcript_path,
+                {
+                    "source": source_identity,
+                    "start_s": round(start, 3),
+                    "length_s": round(length, 3),
+                    "whisper_model": whisper_model,
+                    "device": device,
+                    "language": language,
+                    "vad_filter": vad_filter,
+                    "segments": [segment.model_dump(mode="json") for segment in cached_segments],
+                },
+            )
+        segments.extend(cached_segments)
+        start += step_s
         index += 1
-    return [segment.model_copy(update={"id": index}) for index, segment in enumerate(segments)]
+    bounded = [
+        segment.model_copy(update={"tc_start": max(0.0, segment.tc_start), "tc_end": min(duration, segment.tc_end)})
+        for segment in segments
+        if segment.tc_start < duration and min(duration, segment.tc_end) - max(0.0, segment.tc_start) >= MIN_SEGMENT_SECONDS
+    ]
+    return _dedupe_overlapping_segments(bounded, overlap_s=overlap_s)
 
 
 def transcribe_openai_gpt4o(audio_path: Path, duration: float, model: str = "gpt-4o-mini-transcribe", language: str = "ko") -> tuple[list[TranscriptSegment], bool]:

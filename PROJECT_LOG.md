@@ -652,6 +652,19 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Browser localhost QA loaded `edl.review.html` with 296 images and 0 broken images; contact sheet around TL `47.8-49.6s` no longer shows the old 0.055s/0.15s flash placement.
 - Validation: `python -m pytest -q` -> 212 passed.
 
+### 2026-07-11 - Visual Index v1.1 correctness and match hardening
+
+- Added film/shots/config/preprocessing identity, SigLIP calibration parameters, and SHA-256 checksums for keyframe plus pooled embedding sidecars.
+- Visual Index validation now allows non-story supersets but requires every G5 candidate to match shot timecodes and have finite vectors with the declared dimension; legacy v1.0 indexes rebuild/fallback.
+- Visual queries now use Vietnamese word-boundary intent detection, compact deterministic VI/EN text, fixed 64-token preprocessing, deduplicated query encoding, CUDA FP16, and NumPy matrix scoring.
+- Corrected visual scoring to combine query weights on the same keyframe before selecting the shot maximum; QA reports raw cosine, calibrated probability, combined score, drift tier, selected keyframe, and candidate-window alternatives.
+- Corrected chronology tier ordering so all inside-drift candidates precede outside-drift candidates, and diversity selection cannot jump tiers. Source cursor starts at the beat anchor rather than the widened-window edge.
+- Hardened anti-flash/source bounds: underfilled beats no longer extend the last source clip; source-bounded fillers close timeline gaps and every final placement is validated against its shot.
+- Match cache fingerprints actual visual sidecars. Orchestrator invalidation now propagates to selected downstream stages when an upstream artifact is stale or corrupt.
+- Added `python -m match.calibrate_visual` for a labeled two-video golden set with NDCG@5/top-1 optimization and non-regression constraints.
+- Added local ASR chunk overlap, atomic per-chunk transcript cache, boundary dedupe, and source/model cache validation.
+- Hardened G6 fallback: dynamic full-padding duration and pre-mux duration validation for both tail and legacy paths.
+
 ### 2026-07-11 - GD6 tail-padding render optimization
 
 - Replaced the normal full-video `tpad` re-encode with a frame-locked tail freeze-frame clip encoded for only `ceil(shortage_s * fps)` frames, then appended with concat demuxer `-c copy`.
@@ -660,3 +673,13 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Validation: `python -m pytest tests/test_render.py tests/test_render_cli.py -q` -> 18 passed; `python -m pytest -q` -> 219 passed.
 - Real cached render smoke on `runs/ngoai-vong-phap-luat.visual-v2`: shortage `1.524s` became 46 tail frames; all 397 temp clips were cache hits and concat + tail pad + mux completed in `43.433s`.
 - Final output stayed `1920x1080`, H.264/AAC, `30fps`, `1263.270s`, `duration_match=true`; visual checks at `1261.3s`, `1261.9s`, `1262.5s`, and `1263.1s` showed the expected freeze-frame tail with no black frame.
+
+### 2026-07-11 - Visual hardening two-movie acceptance
+
+- Completed Visual Index v1.1 real validation on `ngoai-vong-phap-luat.visual-v2` (30fps source workflow) and `gang-to-tai-xuat-vi-align` (23.976fps source, rendered at 30fps).
+- Tightened deterministic intent after visual review: generic `secret`/story-section labels no longer force reveal/location queries, while visible verbs such as `chống trả`, `khống chế`, and `đập tan` correctly classify climax fights as action.
+- Hand-labeled four representative beats across both movies and ran `python -m match.calibrate_visual`; `w_visual=0.15` won with NDCG@5 `0.9341` and acceptable top-1 `1.0`, versus NDCG@5 `0.8880` at `0.20`.
+- Final G5 invariants: first movie `323` placements, second movie `427`; both have zero source-bound violations, zero timeline gaps/overlaps, minimum clip `0.600s`, and maximum clip `5.000s`.
+- Fixed sync QA float/pause accounting so exact-threshold clips and 150ms pauses absorbed into either adjacent beat do not create false warnings. Final `edl.sync.qa.json` warning counts are empty for both movies.
+- Final renders: first movie `1263.270s` with tail pad from `1262.660s` (`461.4s` render); second movie `1518.034s` with tail pad from `1516.578s` (`602.5s` render). Both are H.264/AAC, `1920x1080`, `30fps`, `duration_match=true`, with nonblack matching tail frames.
+- Final validation: `python -m pytest -q` -> `251 passed`; `python -m compileall -q ...` and `git diff --check` completed without code errors.

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "videos": ["movie-30fps.mp4", "movie-23.976fps.mp4"],
+  "beats": [
+    {
+      "video": "movie-30fps.mp4",
+      "beat_id": 0,
+      "candidates": [
+        {"shot_index": 10, "base_score": 0.62, "visual_score": 0.31, "drift_tier": 0, "source_drift_s": 1.2, "reused": false, "duration_s": 3.4, "acceptable": false},
+        {"shot_index": 11, "base_score": 0.58, "visual_score": 0.87, "drift_tier": 0, "source_drift_s": 0.8, "reused": false, "duration_s": 3.8, "acceptable": true}
+      ]
+    },
+    {
+      "video": "movie-23.976fps.mp4",
+      "beat_id": 0,
+      "candidates": [
+        {"shot_index": 20, "base_score": 0.55, "visual_score": 0.72, "drift_tier": 0, "source_drift_s": 0.5, "reused": false, "duration_s": 2.9, "acceptable": true},
+        {"shot_index": 21, "base_score": 0.57, "visual_score": 0.18, "drift_tier": 0, "source_drift_s": 0.8, "reused": false, "duration_s": 3.1, "acceptable": false}
+      ]
+    }
+  ]
+}

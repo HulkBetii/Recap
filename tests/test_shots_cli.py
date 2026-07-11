@@ -3,7 +3,8 @@
 import argparse
 from pathlib import Path
 
-from shots.__main__ import run_shots
+from common.schema import Shot
+from shots.__main__ import clamp_shots_to_duration, run_shots
 from shots.detect import ShotSpan
 from shots.features import SampledFrame, ShotFeatures
 
@@ -25,6 +26,25 @@ def make_args(tmp_path, input_path, force=False):  # type: ignore[no-untyped-def
         force=force,
         log_level="ERROR",
     )
+
+
+def test_clamp_shots_to_duration_repairs_sub_millisecond_rounding_overflow() -> None:
+    shot = Shot(
+        src="film.mp4",
+        index=0,
+        tc_start=6959.0,
+        tc_end=6960.811,
+        duration=1.811,
+        thumb="shot.jpg",
+        motion_score=0.1,
+        face_count=0,
+        face_area=0,
+        brightness=0.2,
+        is_usable=True,
+    )
+    clamped = clamp_shots_to_duration([shot], 6960.810667)
+    assert clamped[0].tc_end == 6960.810667
+    assert clamped[0].duration == 1.811
 
 
 def test_shots_cli_mock_end_to_end(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

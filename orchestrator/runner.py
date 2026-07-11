@@ -40,6 +40,7 @@ from orchestrator.config import add_option
 from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
+from visual_index.integrity import metadata_is_current, validate_visual_index_artifacts, visual_index_config_hash
 
 class OrchestratorError(RuntimeError):
     pass
@@ -102,7 +103,14 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
             validate_shots([Shot.model_validate(item) for item in load_json(paths.shots)], duration=meta.duration_s)
         elif stage == "visual_index":
             shots = [Shot.model_validate(item) for item in load_json(paths.shots)] if paths.shots.is_file() else None
-            validate_shot_visual_index(ShotVisualIndexFile.model_validate(load_json(paths.shot_visual_index)), shots)
+            index = validate_shot_visual_index(ShotVisualIndexFile.model_validate(load_json(paths.shot_visual_index)), shots)
+            validate_visual_index_artifacts(
+                paths.shot_visual_index,
+                index,
+                shots,
+                require_frames=True,
+                require_calibration=True,
+            )
         elif stage == "match":
             pause_s = 0.0
             if paths.tts_meta.is_file():
@@ -120,11 +128,24 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
         raise OrchestratorError(f"{stage} output validation failed: {exc}") from exc
 
 
-def outputs_valid(paths: RunPaths, stage: str) -> bool:
+def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, config: dict[str, Any] | None = None) -> bool:
     if not all_outputs_exist(paths, stage):
         return False
     try:
         validate_stage(paths, stage)
+        if stage == "visual_index" and film is not None and config is not None:
+            section = config.get("visual_index", {})
+            config_hash = visual_index_config_hash(
+                film_path=film,
+                shots_path=paths.shots,
+                embedding_mode=str(section.get("embedding_mode", "siglip2")),
+                embedding_model=str(section.get("embedding_model", "google/siglip2-base-patch16-384")),
+                keyframes_per_shot=int(section.get("keyframes_per_shot", 2)),
+                frame_sampling=str(section.get("frame_sampling", "per-frame")),
+            )
+            index = ShotVisualIndexFile.model_validate(load_json(paths.shot_visual_index))
+            if not metadata_is_current(index, film_path=film, shots_path=paths.shots, config_hash=config_hash):
+                return False
         return True
     except OrchestratorError:
         return False
@@ -205,7 +226,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             add_option(command, key, section.get(key))
     elif stage == "visual_index":
         command += ["--film", str(film), "--shots", str(paths.shots), "--output", str(paths.shot_visual_index), "--asset-dir", str(paths.visual_index_dir)]
-        for key in ("embedding_mode", "embedding_model", "device", "batch_size", "keyframes_per_shot", "log_level"):
+        for key in ("embedding_mode", "embedding_model", "device", "batch_size", "keyframes_per_shot", "frame_sampling", "log_level"):
             add_option(command, key, section.get(key))
     elif stage == "match":
         command += ["--review-script", str(paths.review_script), "--beats-timing", str(paths.beats_timing), "--shots", str(paths.shots), "--output", str(paths.edl)]
@@ -238,7 +259,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--output-review-html", str(output_review_html or paths.edl_review_html)]
         command += ["--review-asset-dir", str(review_asset_dir or paths.edl_review_dir)]
         add_option(command, "review_thumbs_per_beat", section.get("review_thumbs_per_beat"))
-        for key in ("min_clip", "max_clip", "min_visual_clip", "widen_margin", "max_widen", "seed", "max_repeat_per_beat", "max_repeat_ratio_per_beat", "min_repeat_alternative_score_ratio", "adjacent_shot_repeat_penalty", "opening_guard_s", "opening_max_repeat_ratio", "opening_max_repeat_per_shot", "opening_min_unique_shots", "w_motion", "w_face", "w_bright", "w_reuse", "w_semantic", "w_visual", "min_semantic_score", "match_strategy", "chronology_weight", "max_source_drift_s", "semantic_mode", "semantic_model", "semantic_device", "semantic_batch_size", "semantic_cache_dir", "visual_mode", "visual_cache_dir", "log_level"):
+        for key in ("min_clip", "max_clip", "min_visual_clip", "widen_margin", "max_widen", "seed", "max_repeat_per_beat", "max_repeat_ratio_per_beat", "min_repeat_alternative_score_ratio", "adjacent_shot_repeat_penalty", "opening_guard_s", "opening_max_repeat_ratio", "opening_max_repeat_per_shot", "opening_min_unique_shots", "w_motion", "w_face", "w_bright", "w_reuse", "w_semantic", "w_visual", "min_semantic_score", "match_strategy", "chronology_weight", "max_source_drift_s", "semantic_mode", "semantic_model", "semantic_device", "semantic_batch_size", "semantic_cache_dir", "visual_mode", "visual_cache_dir", "visual_device", "visual_batch_size", "log_level"):
             add_option(command, key, section.get(key))
         command.append("--allow-repeat" if section.get("allow_repeat", True) else "--no-allow-repeat")
         command.append("--allow-speedfit" if section.get("allow_speedfit", False) else "--no-allow-speedfit")
@@ -266,7 +287,7 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
         raise OrchestratorError(f"input film does not exist: {film}")
     if selected & {"ingest", "tts", "shots", "visual_index", "render"} and not dry_run:
         require_ffmpeg()
-    will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage)}
+    will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage, film=film, config=config)}
     if cost_policy is not None:
         blocked = disallowed_openai_stages(cost_policy, will_run)
         if blocked:
@@ -313,7 +334,7 @@ def run_stage(
 ) -> StageSummary:
     command = build_command(stage, paths, film, config, force, python_exe=python_exe)
     outputs = [str(path) for path in output_paths(paths, stage)]
-    if not force and outputs_valid(paths, stage):
+    if not force and outputs_valid(paths, stage, film=film, config=config):
         return StageSummary(stage=stage, status="skipped", duration_s=0.0, command=command, outputs=outputs)
     if dry_run:
         return StageSummary(stage=stage, status="planned", duration_s=0.0, command=command, outputs=outputs)

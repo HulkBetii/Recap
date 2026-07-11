@@ -401,6 +401,24 @@ repo/
 - Lexicon m?u kh?ng ch?a secret n?m ? `examples/tts/vi_pronunciation_lexicon.example.yaml`; key API v?n ch? ??c env/.env gitignored.
 
 
+## VISUAL INDEX V1.1 CORRECTNESS / MATCH HARDENING
+
+- Visual Index v1.1 metadata records film identity, `shots.json` hash, config hash, preprocessing version, SigLIP logit scale/bias, and SHA-256 checksums for every keyframe/pooled embedding sidecar.
+- A legacy v1.0 or uncalibrated index may still parse, but G5 must rebuild or fall back to text-only matching instead of using raw cosine silently.
+- The index may contain non-story shots as a superset. Every filtered G5 candidate must exist with matching timecodes and finite vectors of the declared dimension.
+- G2 deterministic visual intent emits at most two compact VI/EN queries. SigLIP text preprocessing is fixed to 64 tokens; G5 deduplicates query encoding and caches by model/device/query/preprocessing version.
+- G5 computes calibrated probability as `sigmoid(cosine * logit_scale + logit_bias)`, combines VI/EN weights per keyframe, then selects the best keyframe for the shot.
+- Chronological matching ranks candidates by drift tier before visual/base score. Candidates outside `max_source_drift_s` are used only after candidates inside the drift limit cannot provide enough footage. Opening ordered fill remains strict.
+- G5 must not extend `src_in/src_out` outside the owning shot. Short pauses use available source capacity, at most 10 percent slowdown for absorption, or a source-bounded filler with a warning.
+- `edl.visual.qa.json`, `edl.qa.json`, and `edl.review.html` expose raw cosine, calibrated probability, combined score, selected keyframe, actual candidate alternatives, and drift tier.
+- Orchestrator skip validation includes Visual Index metadata and sidecars. Any invalid upstream artifact forces selected downstream stages to rerun.
+- Visual weight calibration runs with `python -m match.calibrate_visual` on a labeled set containing at least two videos; ties choose the lower visual weight and drift/reuse/short-clip metrics may not regress from weight zero.
+- The current experimental `config.movie.visual.yaml` weight is `w_visual=0.15`, calibrated on hand-reviewed beats from one 30fps movie and one 23.976fps movie. Stable presets remain visual-off.
+- Story-section labels are only fallbacks for deterministic intent. Explicit visible narration cues such as action/reveal/reaction take priority; generic setup/ending labels must not override plain dialogue or a visible fight.
+- Sync QA treats short inter-beat pauses absorbed into either the previous or following placement as expected filler and uses a 1ms epsilon at the minimum-clip threshold.
+- Local long-video ASR chunks overlap at boundaries, cache validated per-chunk transcripts atomically, and deduplicate repeated boundary segments.
+- G6 validates tail-pad duration before mux. Legacy full re-encode padding uses a dynamic `tpad` duration and is validated before continuing.
+
 ## 32. COST-AWARE BACKEND POLICY
 
 - Orchestrator c? `quality_mode: low_cost|balanced|max_quality`, `text_llm_backend`, v? `api_budget_guard` ?? ch?n backend theo chi ph?/ch?t l??ng.

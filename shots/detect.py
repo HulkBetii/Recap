@@ -54,7 +54,13 @@ def detect_shots(
     if not clipped:
         clipped = [(start_bound, end_bound)]
     clipped = split_long_scenes(clipped, max_shot_len=max_shot_len)
-    return [ShotSpan(index=index, tc_start=round(start, 3), tc_end=round(end, 3)) for index, (start, end) in enumerate(clipped)], duration
+    spans: list[ShotSpan] = []
+    for start, end in clipped:
+        rounded_start = max(0.0, round(start, 3))
+        rounded_end = min(duration, round(end, 3))
+        if rounded_end > rounded_start:
+            spans.append(ShotSpan(index=len(spans), tc_start=rounded_start, tc_end=rounded_end))
+    return spans, duration
 
 def split_long_scenes(scenes: list[tuple[float, float]], *, max_shot_len: float) -> list[tuple[float, float]]:
     if max_shot_len <= 0:

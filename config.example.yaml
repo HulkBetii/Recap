@@ -124,6 +124,7 @@ visual_index:
   device: auto
   batch_size: 16
   keyframes_per_shot: 2
+  frame_sampling: per-frame
   log_level: INFO
 
 match:
@@ -151,7 +152,7 @@ match:
   w_bright: 0.12
   w_reuse: 0.35
   w_semantic: 0.15
-  w_visual: 0.20
+  w_visual: 0.15
   min_semantic_score: 0.22
   match_strategy: chronological
   chronology_weight: 0.70
@@ -164,6 +165,8 @@ match:
   visual_mode: off
   visual_index: auto
   visual_cache_dir: null
+  visual_device: null
+  visual_batch_size: null
   output_visual_qa: null
   film_map: auto
   output_qa: null

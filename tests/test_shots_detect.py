@@ -47,3 +47,21 @@ def test_run_ffmpeg_scene_parses_showinfo(monkeypatch) -> None:  # type: ignore[
     scenes = detect.run_ffmpeg_scene(Path("film.mp4"), duration=60.0, threshold=0.3, scale_width=640, min_gap=0.3)
 
     assert scenes == [(0.0, 29.5), (29.5, 44.067), (44.067, 60.0)]
+
+
+def test_detect_shots_clamps_rounded_final_end_to_source_duration(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    duration = 6960.810667
+    monkeypatch.setattr(detect, "probe_duration", lambda _path: duration)
+    monkeypatch.setattr(detect, "run_ffmpeg_scene", lambda *args, **kwargs: [(0.0, duration)])
+
+    spans, detected_duration = detect.detect_shots(
+        Path("film.mp4"),
+        detector="ffmpeg-scene",
+        skip_intro=0.0,
+        skip_outro=0.0,
+        downscale="auto",
+    )
+
+    assert detected_duration == duration
+    assert spans[-1].tc_end == duration
+    assert spans[-1].tc_end <= detected_duration

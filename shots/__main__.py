@@ -148,6 +148,26 @@ def features_to_shots(input_path: Path, output_path: Path, thumb_dir: Path, span
         )
     return shots
 
+
+def clamp_shots_to_duration(shots: list[Shot], duration_s: float) -> list[Shot]:
+    output: list[Shot] = []
+    for shot in shots:
+        tc_start = min(shot.tc_start, duration_s)
+        tc_end = min(shot.tc_end, duration_s)
+        if tc_end <= tc_start:
+            continue
+        output.append(
+            shot.model_copy(
+                update={
+                    "index": len(output),
+                    "tc_start": tc_start,
+                    "tc_end": tc_end,
+                    "duration": round(tc_end - tc_start, 3),
+                }
+            )
+        )
+    return output
+
 def thumbnail_sample(span: ShotSpan, samples: list[SampledFrame]) -> SampledFrame | None:
     if not samples:
         return None
@@ -297,7 +317,7 @@ def run_shots(args: argparse.Namespace) -> int:
         base_shots = features_to_shots(input_path, output_path, thumb_dir, spans, features_by_index)
         shots, n_non_story = apply_video_profile_to_shots(base_shots, profile)
         cache.write_cached("profile_marking.json", profile_key, {"n_non_story": n_non_story, "shots": [shot.model_dump(mode="json") for shot in shots]})
-    shots = validate_shots(shots, duration_s)
+    shots = validate_shots(clamp_shots_to_duration(shots, duration_s), duration_s)
 
     logger.info("[4/4] Writing shots output")
     write_json(output_path, shots)
