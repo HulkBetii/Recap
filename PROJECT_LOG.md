@@ -1,5 +1,15 @@
 # PROJECT_LOG.md
 
+## 2026-07-11 - GĐ5 hardening beat thiếu footage
+
+- GĐ4 thêm optional `Shot.unusable_reasons` và feature cache schema v2 để phân biệt `too_dark`, `too_short`, `transition_spike`, `no_frames`; legacy `shots.json` vẫn parse được.
+- GĐ5 dùng effective candidate capacity theo `sum(min(max_clip, source_intersection))`, loại intersection ngắn hơn `min_visual_clip`, thử dark-only story shots trong từng window trước khi widen và sửa off-by-one `max_widen`.
+- Repeat fallback ưu tiên source ranges chưa dùng, sau đó span overlap thấp nhất; không chọn lại ngay shot liền trước khi còn alternative cùng chronology tier.
+- Thêm `allow_dark_fallback=true` vào stable/visual presets, QA/HTML diagnostics, `EdlMeta` counters và `algorithm_version=2`; orchestrator invalidates match/render artifacts cũ.
+- Regression thật `Toan-Tri-Doc-Gia` beat 23: `widen=0`, repeat ratio `0`, overlapping repeats `0`, max drift `11.469s` (trước đó widen 3+ cấp, repeat khoảng `0.5`, drift trên `90s`).
+- Hai run acceptance không regress: `Ngoai-Vong-Phap-Luat` giảm high-drift beats `5 -> 4`, `Gang-To-Tai-Xuat` giữ `4`; cả hai giữ repeat/overlap/short clips bằng `0`.
+- Cached rerender `Toan-Tri-Doc-Gia` chỉ encode lại 14 clips, output H.264 1920x1080/30fps dài `1418.443s`, `duration_match=true`; Playwright review HTML và preview 41s quanh beat 23 không thấy black frame, flash hoặc khựng cut.
+
 ## 2026-07-08 — Opening story visual start guard
 
 - Added GĐ5 opening guard to avoid selecting early logo/title/credit visuals when `film_map` identifies a later story visual segment inside the opening source window.

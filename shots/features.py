@@ -27,6 +27,7 @@ class ShotFeatures:
     face_area: float
     brightness: float
     is_usable: bool
+    unusable_reasons: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class FrameSampleRequest:
@@ -260,7 +261,14 @@ def compute_features_from_frames(
     face_detector: FaceDetector,
 ) -> ShotFeatures:
     if not frames:
-        return ShotFeatures(motion_score=0.0, face_count=0, face_area=0.0, brightness=0.0, is_usable=False)
+        return ShotFeatures(
+            motion_score=0.0,
+            face_count=0,
+            face_area=0.0,
+            brightness=0.0,
+            is_usable=False,
+            unusable_reasons=("no_frames",),
+        )
     grays = [to_luma(frame) for frame in frames]
     brightness = float(np.mean([gray.mean() / 255.0 for gray in grays]))
     diffs: list[float] = []
@@ -275,17 +283,20 @@ def compute_features_from_frames(
         count, area = face_detector.detect(frame)
         max_face_count = max(max_face_count, count)
         max_face_area = max(max_face_area, area)
-    is_usable = (
-        duration >= config.min_shot_len
-        and brightness >= config.min_brightness
-        and motion < TRANSITION_SPIKE_THRESHOLD
-    )
+    unusable_reasons: list[str] = []
+    if duration < config.min_shot_len:
+        unusable_reasons.append("too_short")
+    if brightness < config.min_brightness:
+        unusable_reasons.append("too_dark")
+    if motion >= TRANSITION_SPIKE_THRESHOLD:
+        unusable_reasons.append("transition_spike")
     return ShotFeatures(
         motion_score=round(clamp01(motion), 4),
         face_count=max_face_count,
         face_area=round(clamp01(max_face_area), 4),
         brightness=round(clamp01(brightness), 4),
-        is_usable=is_usable,
+        is_usable=not unusable_reasons,
+        unusable_reasons=tuple(unusable_reasons),
     )
 
 

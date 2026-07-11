@@ -142,6 +142,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_visual_clip": 0.6,
         "widen_margin": 15.0,
         "max_widen": 3,
+        "allow_dark_fallback": True,
         "allow_repeat": True,
         "allow_speedfit": False,
         "exclude_non_story": True,

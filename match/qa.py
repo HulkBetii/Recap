@@ -38,12 +38,14 @@ def build_edl_qa(
     short_clip_threshold_s: float = 0.0,
     candidate_shot_ids: dict[int, list[int]] | None = None,
     candidate_drift_tiers: dict[tuple[int, int], int] | None = None,
+    candidate_diagnostics: dict[int, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     review_intents = review_intents or {}
     story_sections = story_sections or {}
     visual_scores = visual_scores or {}
     candidate_shot_ids = candidate_shot_ids or {}
     candidate_drift_tiers = candidate_drift_tiers or {}
+    candidate_diagnostics = candidate_diagnostics or {}
     shots_by_index = {shot.index: shot for shot in shots}
     placements_by_beat: dict[int, list[EdlPlacement]] = defaultdict(list)
     for placement in placements:
@@ -56,6 +58,8 @@ def build_edl_qa(
                 break
     beat_reports: list[dict[str, Any]] = []
     for beat in beats:
+        candidate_info = candidate_diagnostics.get(beat.beat_id, {})
+        dark_candidate_ids = {int(item) for item in candidate_info.get("dark_candidate_ids", [])}
         intent = review_intents.get(beat.beat_id)
         section = story_sections.get(intent.story_section_id) if intent and intent.story_section_id is not None else None
         selected = []
@@ -97,6 +101,7 @@ def build_edl_qa(
                 "visual_rank": visual_result.ranks.get((beat.beat_id, placement.shot_index)) if visual_result else None,
                 "selected_keyframe": visual_result.selected_keyframes.get((beat.beat_id, placement.shot_index)) if visual_result else None,
                 "drift_tier": chronology_tier(shot, expected_src_position, max_source_drift_s=max_source_drift_s)[0] if shot else None,
+                "dark_fallback": placement.shot_index in dark_candidate_ids,
             }
             if shot is not None:
                 entry.update({
@@ -201,6 +206,20 @@ def build_edl_qa(
             "visual_queries": visual_result.queries.get(beat.beat_id, []) if visual_result else [],
             "visual_query_weights": visual_result.query_weights.get(beat.beat_id, []) if visual_result else [],
             "visual_alternatives": alternatives,
+            "candidate_window": {
+                "start": candidate_info.get("window_start"),
+                "end": candidate_info.get("window_end"),
+                "widen_count": candidate_info.get("widen_count", 0),
+            },
+            "candidate_capacity_s": candidate_info.get("total_capacity_s", 0.0),
+            "primary_candidate_capacity_s": candidate_info.get("primary_capacity_s", 0.0),
+            "dark_candidate_capacity_s": candidate_info.get("dark_capacity_s", 0.0),
+            "required_duration_s": candidate_info.get("required_duration_s", 0.0),
+            "capacity_exhausted": bool(candidate_info.get("capacity_exhausted", False)),
+            "dark_candidate_ids": sorted(dark_candidate_ids),
+            "dark_selected_ids": candidate_info.get("dark_selected_ids", []),
+            "unused_source_reuse_count": candidate_info.get("unused_source_reuse_count", 0),
+            "overlapping_repeat_count": candidate_info.get("overlapping_repeat_count", 0),
             "ordered_fill_used": ordered_fill_used,
             "chronology_mismatch": chronology_mismatch,
             "intent_match_score": 1.0 if section is not None else 0.0,
@@ -209,7 +228,7 @@ def build_edl_qa(
         })
     excluded_intro = [shot.index for shot in shots if not shot.is_story]
     return {
-        "version": 6,
+        "version": 7,
         "match_strategy": match_strategy,
         "max_source_drift_s": max_source_drift_s,
         "semantic_enabled": bool(semantic_scores),

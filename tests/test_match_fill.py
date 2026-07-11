@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
-from match.fill import Fragment, assign_timeline, fill_beat, fill_timeline_gaps, split_long_placements, trim_fragments_to_duration
+from match.fill import Fragment, assign_timeline, avoid_adjacent_repeat_in_tier, fill_beat, fill_timeline_gaps, split_long_placements, trim_fragments_to_duration
 from match.scoring import ScoringWeights
 from match.timing import validate_source_bounds
 
@@ -16,6 +16,100 @@ def test_fill_enforces_max_clip_and_per_beat_duration() -> None:
     result = fill_beat(beat=beat, timing=timing, shots=[shot(0,0,10), shot(1,10,20)], reuse_counts={}, weights=ScoringWeights(.6,.18,.12,.35), min_clip=3, max_clip=5, widen_margin=15, max_widen=0, allow_repeat=True, allow_speedfit=False)
     assert all(fragment.duration <= 5.001 for fragment in result.fragments)
     assert abs(sum(fragment.duration for fragment in result.fragments) - 8) < 0.02
+
+
+def test_fill_uses_dark_local_shots_before_widening() -> None:
+    dark_shots = [
+        shot(0, 10, 15).model_copy(update={"is_usable": False, "brightness": 0.05, "unusable_reasons": ["too_dark"]}),
+        shot(1, 15, 20).model_copy(update={"is_usable": False, "brightness": 0.05, "unusable_reasons": ["too_dark"]}),
+    ]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=10, src_tc_end=20, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=8, duration=8)
+
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=dark_shots,
+        reuse_counts={},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=3,
+        max_clip=5,
+        min_visual_clip=0.6,
+        widen_margin=15,
+        max_widen=3,
+        allow_repeat=True,
+        allow_speedfit=False,
+    )
+
+    assert result.widen_count == 0
+    assert result.dark_selected_ids == [0, 1]
+    assert result.overlapping_repeat_count == 0
+    assert abs(sum(fragment.duration for fragment in result.fragments) - 8) < 0.02
+
+
+def test_repeat_uses_uncovered_source_before_overlapping() -> None:
+    source_shots = [shot(0, 0, 8)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=8, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=8, duration=8)
+
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=3,
+        max_clip=5,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=True,
+        allow_speedfit=False,
+    )
+
+    assert result.unused_source_reuse_count == 1
+    assert result.overlapping_repeat_count == 0
+    assert [(fragment.src_in, fragment.src_out) for fragment in result.fragments] == [(0.0, 5.0), (5.0, 8.0)]
+
+
+def test_repeat_overlaps_only_after_source_is_exhausted() -> None:
+    source_shots = [shot(0, 0, 8)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=8, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=12, duration=12)
+
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=3,
+        max_clip=5,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=True,
+        allow_speedfit=False,
+        max_repeat_per_beat=3,
+    )
+
+    assert result.unused_source_reuse_count == 1
+    assert result.overlapping_repeat_count == 1
+    placements = assign_timeline(result.fragments, timing)
+    validate_source_bounds(placements, source_shots)
+
+
+def test_repeat_avoids_adjacent_shot_when_same_tier_alternative_exists() -> None:
+    ranked = [shot(0, 10, 15), shot(1, 16, 21), shot(2, 40, 45)]
+
+    result = avoid_adjacent_repeat_in_tier(
+        ranked,
+        previous_shot_index=0,
+        source_cursor=10,
+        max_source_drift_s=12,
+    )
+
+    assert [item.index for item in result] == [1]
 
 
 def test_assign_timeline_tiles_beat() -> None:

@@ -203,6 +203,7 @@ repo/
 - CLI có `--profile-only` để debug re-apply profile từ cache; thiếu cache features thì fail-fast.
 - Test tự động dùng mock/frame synthetic; real clip smoke test sẽ chạy khi có video mẫu.
 - GĐ4 has `--frame-sampling per-shot|batch`; default `per-shot` keeps legacy behavior, while `batch` opens the video once, samples frames in timeline order, and reuses those frames for features + thumbnails. `config.movie.visual.yaml` enables `batch`.
+- `Shot.unusable_reasons` là optional/backward-compatible; GĐ4 ghi `too_dark`, `too_short`, `transition_spike` hoặc `no_frames` để GĐ5 chỉ relax đúng nguyên nhân cho phép.
 
 ## 14. GD5 IMPLEMENTATION HIEN TAI
 
@@ -218,7 +219,10 @@ repo/
 - Package thuc te:
   - `match/`: candidate filtering/widening, scoring, semantic adapters, greedy fill, timeline assignment, cache va CLI orchestration.
   - `common/schema.py`: co them `EdlPlacement`, `EdlMeta`, `validate_edl`.
-- Fallback thieu footage: noi cua so nguon truoc, sau do repeat co kiem soat; speedfit mac dinh tat.
+- Fallback thiếu footage tính capacity theo `sum(min(max_clip, source_intersection))`, bỏ candidate ngắn hơn `min_visual_clip`; thử usable rồi dark-only trong window hiện tại trước khi widen đúng tối đa `max_widen` cấp.
+- `allow_dark_fallback=true` mặc định cho stable/visual presets; chỉ shot story bị loại duy nhất vì `too_dark` được relax. Non-story, no-frame, transition spike và too-short luôn bị loại cứng.
+- Repeat fallback dùng phần source chưa dùng trong shot trước, sau đó mới chọn span overlap thấp nhất; tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier.
+- `edl.meta.json` ghi `algorithm_version` và counters dark/capacity/reuse; orchestrator buộc rerun GĐ5 + downstream khi version cũ.
 - Cache GD5 nam trong `--work-dir/plan.json`; embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
 - Test tu dong dung JSON fixtures/mock; khong dung video/ffmpeg/API.
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from math import ceil, floor
 
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
-from match.candidates import candidates_for_window, widen_until_enough
+from match.candidates import plan_candidates
 from match.scoring import ScoringWeights, rank_shots, score_shot
 
 
@@ -34,6 +34,16 @@ class FillResult:
     window_start: float
     window_end: float
     source_cursor_start: float
+    widen_count: int
+    required_duration_s: float
+    primary_capacity_s: float
+    dark_capacity_s: float
+    total_capacity_s: float
+    capacity_exhausted: bool
+    dark_candidate_ids: list[int]
+    dark_selected_ids: list[int]
+    unused_source_reuse_count: int
+    overlapping_repeat_count: int
 
 
 def fill_beat(
@@ -63,26 +73,42 @@ def fill_beat(
     source_start_override: float | None = None,
     min_visual_clip: float = 0.0,
     strict_ordered_fill: bool = False,
+    allow_dark_fallback: bool = True,
 ) -> FillResult:
     warnings: list[str] = []
     effective_start = max(beat.src_tc_start, source_start_override) if source_start_override is not None else beat.src_tc_start
-    candidate_source = [shot for shot in shots if min_visual_clip <= 0 or shot.duration + 1e-6 >= min_visual_clip]
-    window_start, window_end, candidates, widen_count = widen_until_enough(
-        shots=candidate_source,
+    candidate_plan = plan_candidates(
+        shots=shots,
         start=effective_start,
         end=beat.src_tc_end,
         needed_duration=timing.duration,
         margin=widen_margin,
         max_widen=max_widen,
+        max_clip=max_clip,
+        min_visual_clip=min_visual_clip,
+        allow_dark_fallback=allow_dark_fallback,
     )
+    window_start = candidate_plan.window_start
+    window_end = candidate_plan.window_end
+    candidates = candidate_plan.candidates
+    widen_count = candidate_plan.widen_count
     if widen_count > 0:
         warnings.append(f"beat {beat.beat_id} widened source window {widen_count} time(s)")
+    if candidate_plan.capacity_exhausted:
+        warnings.append(
+            f"beat {beat.beat_id} candidate capacity exhausted "
+            f"{candidate_plan.total_capacity_s:.3f}/{timing.duration:.3f}s"
+        )
     fragments: list[Fragment] = []
     remaining = timing.duration
     used_in_beat: set[int] = set()
     reuse_count = 0
     speedfit_count = 0
     repeat_by_shot: dict[int, int] = {}
+    used_ranges_by_shot: dict[int, list[tuple[float, float]]] = {}
+    dark_selected_ids: set[int] = set()
+    unused_source_reuse_count = 0
+    overlapping_repeat_count = 0
     previous_shot_index: int | None = None
     source_cursor = min(window_end, max(window_start, effective_start))
     source_anchor = source_cursor
@@ -95,12 +121,6 @@ def fill_beat(
         if min_visual_clip > 0:
             long_enough = [shot for shot in available if min(shot.tc_end, window_end) - max(shot.tc_start, window_start) >= min_visual_clip]
             available = long_enough
-        repeated = False
-        if not available:
-            if not allow_repeat:
-                break
-            available = candidates
-            repeated = True
         if not available:
             break
         ranked = rank_shots(available, reuse_counts, weights, semantic_scores, visual_scores, beat.beat_id)
@@ -153,17 +173,19 @@ def fill_beat(
                     clip_len -= adjustment
         if clip_len <= 0:
             break
-        fragments.append(
-            Fragment(
-                src=shot.src,
-                src_in=round(src_start, 3),
-                src_out=round(src_start + clip_len, 3),
-                beat_id=beat.beat_id,
-                shot_index=shot.index,
-                reused=repeated or reuse_counts.get(shot.index, 0) > 0,
-            )
+        fragment = Fragment(
+            src=shot.src,
+            src_in=round(src_start, 3),
+            src_out=round(src_start + clip_len, 3),
+            beat_id=beat.beat_id,
+            shot_index=shot.index,
+            reused=reuse_counts.get(shot.index, 0) > 0,
         )
-        if repeated or reuse_counts.get(shot.index, 0) > 0:
+        fragments.append(fragment)
+        used_ranges_by_shot.setdefault(shot.index, []).append((fragment.src_in, fragment.src_out))
+        if shot.index in candidate_plan.dark_candidate_ids:
+            dark_selected_ids.add(shot.index)
+        if reuse_counts.get(shot.index, 0) > 0:
             reuse_count += 1
             repeat_by_shot[shot.index] = repeat_by_shot.get(shot.index, 0) + 1
         reuse_counts[shot.index] = reuse_counts.get(shot.index, 0) + 1
@@ -212,8 +234,27 @@ def fill_beat(
                             strict_ordered_fill=strict_ordered_fill,
                         )
                     warnings.append(f"beat {beat.beat_id} exceeded repeat cap during fallback")
+                unused_ranked = [
+                    shot for shot in ranked_repeat
+                    if any(
+                        end - start + 1e-6 >= min_visual_clip
+                        for start, end in uncovered_source_ranges(
+                            shot,
+                            window_start,
+                            window_end,
+                            used_ranges_by_shot.get(shot.index, []),
+                        )
+                    )
+                ]
+                repeat_pool = unused_ranked or ranked_repeat
+                repeat_pool = avoid_adjacent_repeat_in_tier(
+                    repeat_pool,
+                    previous_shot_index=previous_shot_index,
+                    source_cursor=source_cursor,
+                    max_source_drift_s=max_source_drift_s,
+                )
                 shot = choose_diverse_shot(
-                    ranked_repeat,
+                    repeat_pool,
                     reuse_counts,
                     weights,
                     semantic_scores or {},
@@ -226,23 +267,53 @@ def fill_beat(
                     max_source_drift_s=max_source_drift_s,
                     enforce_chronology_tier=ordered_fill or match_strategy == "chronological",
                 )
-                clip_len = min(max_clip, max(0.05, remaining), shot.duration)
-                src_start = shot.tc_start
-                fragments.append(
-                    Fragment(
-                        src=shot.src,
-                        src_in=round(src_start, 3),
-                        src_out=round(src_start + clip_len, 3),
-                        beat_id=beat.beat_id,
-                        shot_index=shot.index,
-                        reused=True,
+                used_ranges = used_ranges_by_shot.get(shot.index, [])
+                uncovered = uncovered_source_ranges(shot, window_start, window_end, used_ranges)
+                selected_range = choose_uncovered_range(uncovered, source_cursor) if unused_ranked else None
+                if selected_range is not None:
+                    src_start, range_end = selected_range
+                    usable_len = range_end - src_start
+                    unused_source_reuse_count += 1
+                else:
+                    usable_len = min(window_end, shot.tc_end) - max(window_start, shot.tc_start)
+                    clip_probe = min(max_clip, remaining, usable_len)
+                    src_start = least_overlap_start(
+                        shot,
+                        window_start,
+                        window_end,
+                        clip_probe,
+                        used_ranges,
+                        source_cursor,
                     )
+                    overlapping_repeat_count += 1
+                clip_len = min(max_clip, remaining, usable_len)
+                remainder = remaining - clip_len
+                if min_visual_clip > 0 and 1e-6 < remainder < min_visual_clip:
+                    adjustment = min_visual_clip - remainder
+                    if clip_len - adjustment >= min_visual_clip:
+                        clip_len -= adjustment
+                if clip_len <= 0 or (min_visual_clip > 0 and clip_len + 1e-6 < min_visual_clip):
+                    break
+                fragment = Fragment(
+                    src=shot.src,
+                    src_in=round(src_start, 3),
+                    src_out=round(src_start + clip_len, 3),
+                    beat_id=beat.beat_id,
+                    shot_index=shot.index,
+                    reused=True,
                 )
+                fragments.append(fragment)
+                used_ranges_by_shot.setdefault(shot.index, []).append((fragment.src_in, fragment.src_out))
+                if shot.index in candidate_plan.dark_candidate_ids:
+                    dark_selected_ids.add(shot.index)
                 reuse_count += 1
                 repeat_by_shot[shot.index] = repeat_by_shot.get(shot.index, 0) + 1
                 reuse_counts[shot.index] = reuse_counts.get(shot.index, 0) + 1
                 previous_shot_index = shot.index
                 remaining = round(remaining - clip_len, 6)
+                if ordered_fill_by_audio_progress and timing.duration > 0:
+                    progress = min(1.0, max(0.0, (timing.duration - remaining) / timing.duration))
+                    source_cursor = min(window_end, source_anchor + source_span * progress)
         elif allow_speedfit and fragments:
             warnings.append(f"beat {beat.beat_id} would require speedfit; not applied to existing fragments")
             speedfit_count += 1
@@ -255,6 +326,12 @@ def fill_beat(
         warnings.append(f"beat {beat.beat_id} empty beat placements")
     if total_fragments and repeat_ratio > max_repeat_ratio_per_beat:
         warnings.append(f"beat {beat.beat_id} high repeat ratio {repeat_ratio:.3f} > {max_repeat_ratio_per_beat:.3f}")
+    if dark_selected_ids:
+        warnings.append(f"beat {beat.beat_id} used dark local fallback {len(dark_selected_ids)} shot(s)")
+    if unused_source_reuse_count:
+        warnings.append(f"beat {beat.beat_id} reused unused source ranges {unused_source_reuse_count} time(s)")
+    if overlapping_repeat_count:
+        warnings.append(f"beat {beat.beat_id} used overlapping source repeat {overlapping_repeat_count} time(s)")
 
     fragments = trim_fragments_to_duration(
         sorted(fragments, key=lambda item: (item.src_in, item.src_out)),
@@ -271,8 +348,113 @@ def fill_beat(
         window_start=window_start,
         window_end=window_end,
         source_cursor_start=source_anchor,
+        widen_count=widen_count,
+        required_duration_s=timing.duration,
+        primary_capacity_s=candidate_plan.primary_capacity_s,
+        dark_capacity_s=candidate_plan.dark_capacity_s,
+        total_capacity_s=candidate_plan.total_capacity_s,
+        capacity_exhausted=candidate_plan.capacity_exhausted,
+        dark_candidate_ids=sorted(candidate_plan.dark_candidate_ids),
+        dark_selected_ids=sorted(dark_selected_ids),
+        unused_source_reuse_count=unused_source_reuse_count,
+        overlapping_repeat_count=overlapping_repeat_count,
     )
 
+
+def uncovered_source_ranges(
+    shot: Shot,
+    window_start: float,
+    window_end: float,
+    used_ranges: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    start = max(window_start, shot.tc_start)
+    end = min(window_end, shot.tc_end)
+    if end <= start:
+        return []
+    clipped = sorted(
+        (max(start, used_start), min(end, used_end))
+        for used_start, used_end in used_ranges
+        if used_end > start and used_start < end
+    )
+    output: list[tuple[float, float]] = []
+    cursor = start
+    for used_start, used_end in clipped:
+        if used_start > cursor + 1e-6:
+            output.append((cursor, used_start))
+        cursor = max(cursor, used_end)
+    if cursor < end - 1e-6:
+        output.append((cursor, end))
+    return output
+
+
+def choose_uncovered_range(
+    ranges: list[tuple[float, float]],
+    source_cursor: float,
+) -> tuple[float, float] | None:
+    if not ranges:
+        return None
+    return min(
+        ranges,
+        key=lambda item: (
+            0 if item[0] <= source_cursor < item[1] else 1 if item[0] >= source_cursor else 2,
+            abs(item[0] - source_cursor),
+        ),
+    )
+
+
+def source_overlap_duration(
+    start: float,
+    end: float,
+    used_ranges: list[tuple[float, float]],
+) -> float:
+    return sum(max(0.0, min(end, used_end) - max(start, used_start)) for used_start, used_end in used_ranges)
+
+
+def least_overlap_start(
+    shot: Shot,
+    window_start: float,
+    window_end: float,
+    clip_len: float,
+    used_ranges: list[tuple[float, float]],
+    source_cursor: float,
+) -> float:
+    start = max(window_start, shot.tc_start)
+    end = min(window_end, shot.tc_end)
+    latest_start = max(start, end - clip_len)
+    candidate_starts = {start, latest_start}
+    for used_start, used_end in used_ranges:
+        candidate_starts.add(min(latest_start, max(start, used_end)))
+        candidate_starts.add(min(latest_start, max(start, used_start - clip_len)))
+    return min(
+        candidate_starts,
+        key=lambda candidate: (
+            source_overlap_duration(candidate, candidate + clip_len, used_ranges),
+            abs(candidate - source_cursor),
+            candidate,
+        ),
+    )
+
+
+def avoid_adjacent_repeat_in_tier(
+    ranked: list[Shot],
+    *,
+    previous_shot_index: int | None,
+    source_cursor: float,
+    max_source_drift_s: float,
+) -> list[Shot]:
+    if previous_shot_index is None or len(ranked) < 2 or ranked[0].index != previous_shot_index:
+        return ranked
+    previous_tier = chronology_tier(
+        ranked[0],
+        source_cursor,
+        max_source_drift_s=max_source_drift_s,
+    )[0]
+    alternatives = [
+        shot
+        for shot in ranked[1:]
+        if chronology_tier(shot, source_cursor, max_source_drift_s=max_source_drift_s)[0] == previous_tier
+    ]
+    return alternatives if alternatives else ranked
 
 
 def rank_for_ordered_fill(

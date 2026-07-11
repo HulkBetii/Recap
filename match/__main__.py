@@ -18,6 +18,7 @@ from match.semantic import DEFAULT_EMBEDDING_MODEL, SemanticConfig, SemanticErro
 from match.sync_qa import build_sync_qa
 from match.timing import average_clip_len, validate_source_bounds, validate_timeline
 from match.visual import VisualMatchError, build_visual_qa, compute_visual_scores
+from match.version import MATCH_ALGORITHM_VERSION
 from visual_index.encoder import VisualEncoderError
 from visual_index.integrity import visual_index_artifact_hash
 
@@ -59,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-visual-clip", default=0.6, type=float)
     parser.add_argument("--widen-margin", default=15.0, type=float)
     parser.add_argument("--max-widen", default=3, type=int)
+    parser.add_argument("--allow-dark-fallback", action="store_true", default=True)
+    parser.add_argument("--no-allow-dark-fallback", dest="allow_dark_fallback", action="store_false")
     parser.add_argument("--allow-repeat", action="store_true", default=True)
     parser.add_argument("--no-allow-repeat", dest="allow_repeat", action="store_false")
     parser.add_argument("--allow-speedfit", action="store_true", default=False)
@@ -99,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def make_cache_key(args: argparse.Namespace) -> str:
     return stable_hash({
+        "algorithm_version": MATCH_ALGORITHM_VERSION,
         "review_script": file_hash(args.review_script.expanduser().resolve()),
         "beats_timing": file_hash(args.beats_timing.expanduser().resolve()),
         "shots": file_hash(args.shots.expanduser().resolve()),
@@ -107,6 +111,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "min_visual_clip": args.min_visual_clip,
         "widen_margin": args.widen_margin,
         "max_widen": args.max_widen,
+        "allow_dark_fallback": args.allow_dark_fallback,
         "allow_repeat": args.allow_repeat,
         "allow_speedfit": args.allow_speedfit,
         "seed": args.seed,
@@ -263,6 +268,8 @@ def run_match(args: argparse.Namespace) -> int:
             setattr(args, name, default)
     if not hasattr(args, "min_visual_clip"):
         args.min_visual_clip = 0.6
+    if not hasattr(args, "allow_dark_fallback"):
+        args.allow_dark_fallback = True
     if not hasattr(args, "opening_allow_short_fill"):
         args.opening_allow_short_fill = True
     if not hasattr(args, "opening_ordered_fill"):
@@ -389,6 +396,11 @@ def run_match(args: argparse.Namespace) -> int:
     n_speedfit = 0
     candidate_shot_ids: dict[int, list[int]] = {}
     candidate_drift_tiers: dict[tuple[int, int], int] = {}
+    candidate_diagnostics: dict[int, dict[str, object]] = {}
+    n_dark_fallback_beats = 0
+    n_capacity_exhausted_beats = 0
+    n_unused_source_reuse = 0
+    n_overlapping_repeats = 0
 
     logger.info("Matching %d beats", len(timings))
     for timing in sorted(timings, key=lambda item: item.tl_start):
@@ -423,8 +435,27 @@ def run_match(args: argparse.Namespace) -> int:
             source_start_override=source_start_override,
             min_visual_clip=args.min_visual_clip,
             strict_ordered_fill=in_opening_guard and args.opening_ordered_fill,
+            allow_dark_fallback=args.allow_dark_fallback,
         )
         candidate_shot_ids[beat.beat_id] = result.candidate_shot_ids
+        candidate_diagnostics[beat.beat_id] = {
+            "window_start": result.window_start,
+            "window_end": result.window_end,
+            "widen_count": result.widen_count,
+            "required_duration_s": result.required_duration_s,
+            "primary_capacity_s": result.primary_capacity_s,
+            "dark_capacity_s": result.dark_capacity_s,
+            "total_capacity_s": result.total_capacity_s,
+            "capacity_exhausted": result.capacity_exhausted,
+            "dark_candidate_ids": result.dark_candidate_ids,
+            "dark_selected_ids": result.dark_selected_ids,
+            "unused_source_reuse_count": result.unused_source_reuse_count,
+            "overlapping_repeat_count": result.overlapping_repeat_count,
+        }
+        n_dark_fallback_beats += int(bool(result.dark_selected_ids))
+        n_capacity_exhausted_beats += int(result.capacity_exhausted)
+        n_unused_source_reuse += result.unused_source_reuse_count
+        n_overlapping_repeats += result.overlapping_repeat_count
         shots_by_index = {shot.index: shot for shot in shots}
         for shot_index in result.candidate_shot_ids:
             shot = shots_by_index.get(shot_index)
@@ -490,6 +521,10 @@ def run_match(args: argparse.Namespace) -> int:
         n_intro_excluded=n_intro_excluded if args.exclude_non_story else 0,
         n_empty_beats=n_empty_beats,
         n_high_repeat_beats=n_high_repeat_beats,
+        n_dark_fallback_beats=n_dark_fallback_beats,
+        n_capacity_exhausted_beats=n_capacity_exhausted_beats,
+        n_unused_source_reuse=n_unused_source_reuse,
+        n_overlapping_repeats=n_overlapping_repeats,
         max_repeat_ratio=round(max(repeat_ratios), 6) if repeat_ratios else 0.0,
         avg_clip_len=round(average_clip_len(placements), 3),
         coverage_ok=coverage_ok,
@@ -497,6 +532,7 @@ def run_match(args: argparse.Namespace) -> int:
         seed=args.seed,
         created_at=datetime.now(timezone.utc),
         cache_hits=cache.cache_hits,
+        algorithm_version=MATCH_ALGORITHM_VERSION,
     )
     qa = build_edl_qa(
         beats=review_beats,
@@ -520,6 +556,7 @@ def run_match(args: argparse.Namespace) -> int:
         short_clip_threshold_s=args.min_visual_clip,
         candidate_shot_ids=candidate_shot_ids,
         candidate_drift_tiers=candidate_drift_tiers,
+        candidate_diagnostics=candidate_diagnostics,
     )
     sync_qa = build_sync_qa(beats=review_beats, timings=timings, placements=placements, fps=None, short_clip_threshold_s=args.min_visual_clip)
     combined_scores = {

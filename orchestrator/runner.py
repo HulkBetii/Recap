@@ -13,6 +13,7 @@ from typing import Any, Callable
 from common.media import require_ffmpeg
 from common.schema import (
     BeatTiming,
+    EdlMeta,
     EdlPlacement,
     FilmMapMeta,
     FilmMapSegment,
@@ -41,6 +42,7 @@ from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
 from visual_index.integrity import metadata_is_current, validate_visual_index_artifacts, visual_index_config_hash
+from match.version import MATCH_ALGORITHM_VERSION
 
 class OrchestratorError(RuntimeError):
     pass
@@ -118,6 +120,11 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
             timings = validate_beats_timing([BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)], pause_s=pause_s)
             total_duration = timings[-1].tl_end if timings else None
             validate_edl([EdlPlacement.model_validate(item) for item in load_json(paths.edl)], total_duration=total_duration)
+            match_meta = EdlMeta.model_validate(load_json(paths.edl_meta))
+            if match_meta.algorithm_version != MATCH_ALGORITHM_VERSION:
+                raise ValueError(
+                    f"match algorithm version is stale: {match_meta.algorithm_version} != {MATCH_ALGORITHM_VERSION}"
+                )
         elif stage == "render":
             RenderMeta.model_validate(load_json(paths.render_meta))
             if not paths.recap.is_file():
@@ -261,6 +268,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         add_option(command, "review_thumbs_per_beat", section.get("review_thumbs_per_beat"))
         for key in ("min_clip", "max_clip", "min_visual_clip", "widen_margin", "max_widen", "seed", "max_repeat_per_beat", "max_repeat_ratio_per_beat", "min_repeat_alternative_score_ratio", "adjacent_shot_repeat_penalty", "opening_guard_s", "opening_max_repeat_ratio", "opening_max_repeat_per_shot", "opening_min_unique_shots", "w_motion", "w_face", "w_bright", "w_reuse", "w_semantic", "w_visual", "min_semantic_score", "match_strategy", "chronology_weight", "max_source_drift_s", "semantic_mode", "semantic_model", "semantic_device", "semantic_batch_size", "semantic_cache_dir", "visual_mode", "visual_cache_dir", "visual_device", "visual_batch_size", "log_level"):
             add_option(command, key, section.get(key))
+        command.append("--allow-dark-fallback" if section.get("allow_dark_fallback", True) else "--no-allow-dark-fallback")
         command.append("--allow-repeat" if section.get("allow_repeat", True) else "--no-allow-repeat")
         command.append("--allow-speedfit" if section.get("allow_speedfit", False) else "--no-allow-speedfit")
         command.append("--exclude-non-story" if section.get("exclude_non_story", True) else "--no-exclude-non-story")

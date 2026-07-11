@@ -89,7 +89,7 @@ def write_stage_outputs(command: list[str]) -> None:
     elif stage == "match":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")
-        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[]}), encoding="utf-8")
+        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[],"algorithm_version":"2"}), encoding="utf-8")
         output.with_name("edl.qa.json").write_text(json.dumps({"version":1,"semantic_enabled":True,"min_semantic_score":0.12,"beats":[]}), encoding="utf-8")
         flag(command, "--output-sync-qa").write_text(json.dumps({"version":1,"summary":{},"beats":[]}), encoding="utf-8")
         flag(command, "--output-visual-qa").write_text(json.dumps({"version":1,"visual_mode":"off","visual_enabled":False,"beats":[]}), encoding="utf-8")
@@ -166,6 +166,23 @@ def test_rerun_skips_all_valid_outputs(tmp_path: Path, monkeypatch: pytest.Monke
     assert calls == []
     summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
     assert {stage["status"] for stage in summary["stages"]} == {"skipped"}
+
+
+def test_stale_match_algorithm_reruns_match_and_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    meta_path = tmp_path / "run" / "edl.meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["algorithm_version"] = "1"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    calls: list[str] = []
+
+    run_pipeline(args, executor=lambda command, log_path: (calls.append(stage_name(command)), write_stage_outputs(command)))
+
+    assert calls == ["match", "render"]
 
 
 def test_force_stage_match_reruns_match_and_render_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

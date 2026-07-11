@@ -608,6 +608,7 @@ class Shot(BaseModel):
     face_area: float = Field(ge=0, le=1)
     brightness: float = Field(ge=0, le=1)
     is_usable: bool
+    unusable_reasons: list[str] = Field(default_factory=list)
     is_story: bool = True
     exclude_reason: str | None = None
 
@@ -618,6 +619,12 @@ class Shot(BaseModel):
         if not normalized:
             raise ValueError("path fields cannot be empty")
         return normalized
+
+    @field_validator("unusable_reasons")
+    @classmethod
+    def validate_unusable_reasons(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
 
     @model_validator(mode="after")
     def validate_shot(self) -> "Shot":
@@ -692,6 +699,10 @@ class EdlMeta(BaseModel):
     n_intro_excluded: int = Field(default=0, ge=0)
     n_empty_beats: int = Field(default=0, ge=0)
     n_high_repeat_beats: int = Field(default=0, ge=0)
+    n_dark_fallback_beats: int = Field(default=0, ge=0)
+    n_capacity_exhausted_beats: int = Field(default=0, ge=0)
+    n_unused_source_reuse: int = Field(default=0, ge=0)
+    n_overlapping_repeats: int = Field(default=0, ge=0)
     max_repeat_ratio: float = Field(default=0.0, ge=0)
     avg_clip_len: float = Field(ge=0)
     coverage_ok: bool
@@ -699,6 +710,7 @@ class EdlMeta(BaseModel):
     seed: int
     created_at: datetime
     cache_hits: list[str] = Field(default_factory=list)
+    algorithm_version: str = "1"
 
 class RenderMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")

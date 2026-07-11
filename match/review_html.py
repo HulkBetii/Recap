@@ -97,7 +97,15 @@ def write_review_html(
         visual_query = ""
         if isinstance(qa_beat, dict) and qa_beat.get("visual_queries"):
             visual_query = " | Visual query: " + escape(" / ".join(str(item) for item in qa_beat.get("visual_queries", [])[:2]))
-        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}{visual_query}</div>")
+        capacity_info = ""
+        if isinstance(qa_beat, dict):
+            capacity_info = (
+                f" | Capacity: {escape(_fmt(qa_beat.get('candidate_capacity_s')))}"
+                f"/{escape(_fmt(qa_beat.get('required_duration_s')))}s"
+                f" | Dark selected: {len(qa_beat.get('dark_selected_ids', []))}"
+                f" | Overlap repeats: {escape(_fmt(qa_beat.get('overlapping_repeat_count')))}"
+            )
+        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}{visual_query}{capacity_info}</div>")
         if beat_warnings:
             parts.append("<ul class=\"warn\">" + "".join(f"<li>{escape(str(warning))}</li>" for warning in beat_warnings) + "</ul>")
         parts.append("<div class=\"grid\">")
@@ -132,6 +140,7 @@ def write_review_html(
                 f"visual={escape(_fmt(qa_selected.get('visual_score') if qa_selected else None))} raw={escape(_fmt(qa_selected.get('visual_raw_cosine') if qa_selected else None))} rank={escape(_fmt(qa_selected.get('visual_rank') if qa_selected else None))}<br>"
                 f"expected={escape(_fmt(qa_selected.get('expected_src_position') if qa_selected else None))} drift={escape(_fmt(qa_selected.get('source_drift_s') if qa_selected else None))} chrono={escape(_fmt(qa_selected.get('chronology_score') if qa_selected else None))}<br>"
                 f"drift tier={escape(_fmt(qa_selected.get('drift_tier') if qa_selected else None))}<br>"
+                f"dark fallback={escape(_fmt(qa_selected.get('dark_fallback') if qa_selected else None))}<br>"
                 f"motion={escape(_fmt(shot.motion_score if shot else None))} bright={escape(_fmt(shot.brightness if shot else None))} face={escape(_fmt(shot.face_count if shot else None))}<br>"
                 f"is_story={escape(_fmt(shot.is_story if shot else None))} reason={escape(_fmt(shot.exclude_reason if shot else None))}"
                 "</div></article>"

@@ -107,6 +107,7 @@ def legacy_detection_cache_key(input_path: Path, args: argparse.Namespace) -> st
 
 def feature_cache_key(spans: list[ShotSpan], args: argparse.Namespace) -> str:
     return stable_hash({
+        "feature_schema_version": 2,
         "spans": [span.__dict__ for span in spans],
         "sample_frames": args.sample_frames,
         "frame_sampling": args.frame_sampling,
@@ -144,6 +145,7 @@ def features_to_shots(input_path: Path, output_path: Path, thumb_dir: Path, span
                 face_area=float(features["face_area"]),
                 brightness=float(features["brightness"]),
                 is_usable=bool(features["is_usable"]),
+                unusable_reasons=list(features.get("unusable_reasons", [])),
             )
         )
     return shots
