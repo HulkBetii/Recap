@@ -90,12 +90,13 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
         selected.discard("visual_index")
     forced = forced_stages(selected, args.force, args.force_stage)
     python_exe = config.get("orchestrator", {}).get("python")
-    will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage, film=film, config=config)}
-    for stage in will_run:
-        forced.update(set(DOWNSTREAM[stage]) & selected)
+    invalid = {stage for stage in selected if not outputs_valid(paths, stage, film=film, config=config)}
+    will_run = set(forced) | invalid
+    for stage in tuple(will_run):
+        will_run.update(set(DOWNSTREAM[stage]) & selected)
     openai_fallback_possible = bool(config.get("orchestrator", {}).get("auto_fallback", False) and "ingest" in selected)
     cost_summary = build_cost_summary(cost_policy, selected, will_run, openai_fallback_possible=openai_fallback_possible)
-    preflight(film=film, selected=selected, forced=forced, paths=paths, config=config, dry_run=args.dry_run, cost_policy=cost_policy)
+    preflight(film=film, selected=selected, forced=will_run, paths=paths, config=config, dry_run=args.dry_run, cost_policy=cost_policy)
 
     summaries: list[StageSummary] = []
 
@@ -107,6 +108,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
             config=config,
             force=stage in forced,
             dry_run=args.dry_run,
+            run_anyway=stage in will_run,
             python_exe=python_exe,
             executor=executor if executor is not None else run_stage.__globals__["run_subprocess"],
         )

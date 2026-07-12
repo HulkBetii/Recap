@@ -767,3 +767,12 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Live smoke succeeded for AI33/VBee (`2.482s`) and OpenAI `gpt-4o-mini-tts/coral` (`2.256s`); both outputs were valid non-empty MP3 files under `work/tts-live-smoke`.
 - Validation: targeted TTS/orchestrator suites passed; full `python -m pytest -q` -> `316 passed`; production dependency/CUDA preflight, editable metadata, compileall, and `git diff --check` passed.
 - Genmax live integration reused the `auto_YT` contract and voice `VU16byTywsWv5JpI8rbc`. Initial Python submit hit Cloudflare `403 error 1010`; adding `User-Agent: Mozilla/5.0` to JSON requests fixed it, and the rerun produced a valid `3.318s` MP3.
+
+### 2026-07-12 - GĐ0 → GĐ1 and review cache integrity
+
+- Connected orchestrator preflight output to GĐ1 through `--video-profile`; GĐ1 now suppresses only non-story visual gaps while preserving speech.
+- Added film/config/cache identity to GĐ0 and selective GĐ1 manifest keys for audio, transcript, correction, translation, and vision. Legacy/missing/corrupt caches rebuild once; changed profile or vision config keeps ASR/translation cache.
+- Split aligned transcript from correction output so glossary/model changes reuse ASR. Manifest keys are written atomically only after successful artifact writes.
+- Added content-hash integrity to film-map/story-map/review metadata and orchestrator skip validation. Upstream invalidation reruns downstream without clearing stage caches unless the user explicitly forces them.
+- Replaced partial GĐ2 style invalidation with one review input manifest covering every generated artifact. ChatGPT `auto` sessions start fresh when core input changes; explicit `resume` warns and continues.
+- Validation includes selective invalidation, legacy/corrupt artifact recovery, profile-only vision invalidation, review cache cleanup, session rollover, and orchestrator propagation tests; full `python -m pytest -q` -> `333 passed`, compileall/diff check and production dry-run passed.

@@ -151,7 +151,7 @@ repo/
   - `common/schema.py`: contract/schema dùng chung.
   - `common/media.py`: wrapper `ffmpeg`/`ffprobe`.
   - `ingest/`: orchestrator, cache, transcribe, translate/vision client, gap detection, film map builder.
-- Cache GĐ1 nằm trong `--work-dir`: `audio.wav`, `transcript_raw.json`, `translated.json`, `frames/`, `vision.json`.
+- Cache GĐ1 nằm trong `--work-dir`: `audio.wav`, aligned/corrected transcript, translation, frames/vision và `cache_manifest.json`; cache được invalidation chọn lọc theo identity từng pass.
 - Test v1 dùng mock/unit; smoke test clip thật sẽ chạy khi có video mẫu.
 ## 10. NGUYÊN TẮC CHI PHÍ API VS PLAYWRIGHT WORKER
 
@@ -319,7 +319,7 @@ repo/
 
 - Một video/run GĐ2 phải dùng một ChatGPT conversation riêng để giữ ngữ cảnh outline/narration/QA đồng bộ và tránh lẫn video khác.
 - CLI: `--chat-session-policy auto|new|resume`, `--chat-session-meta path`, `--chat-title title`.
-- Mặc định `auto`: nếu có `work/review/chat_session_meta.json` thì mở lại `chat_url`; nếu chưa có thì bắt đầu từ `https://chatgpt.com/`.
+- Mặc định `auto`: chỉ mở lại `chat_url` khi core review input hash không đổi; input đổi hoặc chưa có metadata thì bắt đầu conversation mới từ `https://chatgpt.com/`.
 - `new` ép mở chat mới nhưng vẫn ghi đè metadata sau run; `resume` yêu cầu ưu tiên URL cũ và warning nếu meta chưa tồn tại.
 - Metadata chỉ lưu URL/profile/title/path, không lưu prompt hoặc nội dung trả lời; artifacts LLM vẫn là `outline.json`, `narration.json`, `qa.json`.
 
@@ -478,3 +478,15 @@ repo/
 - Production preset bật `orchestrator.runtime_preflight=true`; thiếu optional module trong `movie-visual` hoặc CUDA phải fail-fast trước khi chạy stage nặng.
 - TTS production dùng voice AI33 `vbee_hn_female_ngochuyen_full_24k-st`, Genmax `VU16byTywsWv5JpI8rbc`, OpenAI fallback `gpt-4o-mini-tts/coral`, concurrency `1`. `TtsMeta` có diagnostics optional/backward-compatible cho provider usage và fallback count.
 - Stable/visual presets cũ vẫn tương thích và không bị tự động chuyển sang production behavior.
+
+## 37. GĐ0 → GĐ1 / REVIEW CACHE INTEGRITY
+
+- `video_profile.json` có optional `input_hash`, `config_hash`, `cache_version`; film identity dùng resolved path + size + `mtime_ns`. Legacy profile thiếu integrity metadata vẫn parse nhưng orchestrator xem là stale và rebuild một lần.
+- Orchestrator truyền `--video-profile` trực tiếp vào GĐ1 khi preflight bật. GĐ1 chỉ bỏ visual-only gaps overlap `non_story_ranges`; speech thật luôn được giữ.
+- GĐ1 dùng `work/ingest/cache_manifest.json` với key riêng cho audio, transcript, correction, translation và vision. Key chỉ được commit sau khi artifact tương ứng ghi thành công.
+- `transcript_aligned.json` là output ASR/alignment/QC chưa correction. `transcript_corrected.json` là lớp correction riêng; đổi glossary/model không được chạy lại ASR.
+- Selective invalidation: đổi film xóa toàn bộ; đổi ASR/alignment giữ audio; đổi correction giữ aligned transcript; đổi translation giữ transcript; đổi profile/vision config chỉ xóa vision/frames. `--force` mới xóa toàn bộ.
+- `film_map.meta.json`, `story_map.meta.json` và `review_script.meta.json` có optional integrity hashes/cache version. Orchestrator chỉ skip khi source/config/content hashes hiện tại khớp; artifact legacy hoặc corrupt phải rerun stage và downstream selected.
+- GĐ2 dùng `work/review/cache_manifest.json` hash nội dung film map/meta, story map, video profile, style sample và generation settings. Operational browser settings không làm đổi cache.
+- `chat_session_policy=auto` mở conversation mới khi core review input đổi. Explicit `resume` tiếp tục session cũ nhưng phải ghi warning input mismatch.
+- Upstream stale buộc downstream chạy lại nhưng không tự truyền `--force`; selective cache của stage con vẫn được giữ. Chỉ user `--force`/`--force-stage` mới yêu cầu xóa cache stage.

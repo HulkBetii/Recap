@@ -78,3 +78,40 @@ def test_build_chat_session_meta_preserves_created_at_on_update(tmp_path: Path) 
     assert updated.created_at == first.created_at
     assert updated.updated_at >= first.updated_at
     assert updated.warnings == ["warn"]
+
+
+def test_auto_starts_new_chat_when_core_input_changes(tmp_path: Path) -> None:
+    path = tmp_path / "chat_session_meta.json"
+    save_chat_session(path, build_chat_session_meta(
+        policy="auto",
+        chat_url="https://chatgpt.com/c/old",
+        profile_dir=tmp_path / "profile",
+        film_map_path=tmp_path / "film_map.json",
+        title=None,
+        previous=None,
+        core_input_hash="old",
+    ))
+
+    url, previous, warnings = resolve_initial_chat_url(path, "auto", "new")
+
+    assert url == CHATGPT_HOME_URL
+    assert previous is not None
+    assert any("core input changed" in warning for warning in warnings)
+
+
+def test_resume_warns_but_keeps_chat_when_core_input_changes(tmp_path: Path) -> None:
+    path = tmp_path / "chat_session_meta.json"
+    save_chat_session(path, build_chat_session_meta(
+        policy="auto",
+        chat_url="https://chatgpt.com/c/old",
+        profile_dir=tmp_path / "profile",
+        film_map_path=tmp_path / "film_map.json",
+        title=None,
+        previous=None,
+        core_input_hash="old",
+    ))
+
+    url, _, warnings = resolve_initial_chat_url(path, "resume", "new")
+
+    assert url == "https://chatgpt.com/c/old"
+    assert any("policy=resume" in warning for warning in warnings)

@@ -21,6 +21,7 @@ class ChatSessionMeta(BaseModel):
     created_at: datetime
     updated_at: datetime
     warnings: list[str] = Field(default_factory=list)
+    core_input_hash: str | None = None
 
 
 def load_chat_session(path: Path) -> ChatSessionMeta | None:
@@ -34,11 +35,17 @@ def save_chat_session(path: Path, meta: ChatSessionMeta) -> None:
     path.write_text(meta.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
 
-def resolve_initial_chat_url(path: Path, policy: ChatSessionPolicy) -> tuple[str, ChatSessionMeta | None, list[str]]:
+def resolve_initial_chat_url(path: Path, policy: ChatSessionPolicy, core_input_hash: str | None = None) -> tuple[str, ChatSessionMeta | None, list[str]]:
     existing = load_chat_session(path)
     warnings: list[str] = []
     if policy == "new":
         return CHATGPT_HOME_URL, existing, warnings
+    input_changed = bool(existing and core_input_hash and existing.core_input_hash != core_input_hash)
+    if input_changed and policy == "auto":
+        warnings.append("review core input changed; starting a new ChatGPT conversation")
+        return CHATGPT_HOME_URL, existing, warnings
+    if input_changed and policy == "resume":
+        warnings.append("review core input changed but chat_session_policy=resume; continuing the existing conversation")
     if existing is not None and existing.chat_url:
         return existing.chat_url, existing, warnings
     if policy == "resume":
@@ -55,6 +62,7 @@ def build_chat_session_meta(
     title: str | None,
     previous: ChatSessionMeta | None,
     warnings: list[str] | None = None,
+    core_input_hash: str | None = None,
 ) -> ChatSessionMeta:
     now = datetime.now(timezone.utc)
     return ChatSessionMeta(
@@ -66,4 +74,5 @@ def build_chat_session_meta(
         created_at=previous.created_at if previous else now,
         updated_at=now,
         warnings=warnings or [],
+        core_input_hash=core_input_hash,
     )

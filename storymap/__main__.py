@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.schema import FilmMapMeta, FilmMapSegment, StoryMapMeta, VideoProfile, validate_film_map, validate_story_map, write_json
+from common.integrity import file_hash
 from storymap.builder import build_story_sections
 from storymap.cache import StoryMapCache, stable_hash
 
@@ -99,6 +100,10 @@ def run_storymap(args: argparse.Namespace) -> int:
         created_at=datetime.now(timezone.utc),
         cache_hits=cache_hits,
         warnings=qa.get("warnings", []),
+        film_map_hash=file_hash(film_map_path),
+        video_profile_hash=file_hash(args.video_profile) if args.video_profile else None,
+        config_hash=config_key,
+        cache_version="storymap-v1",
     )
     write_json(output_path, story_sections)
     write_json(output_path.with_name(f"{output_path.stem}.meta.json"), meta)

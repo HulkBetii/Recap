@@ -11,6 +11,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Callable
 
+from common.integrity import file_hash, media_identity_hash
 from common.media import require_ffmpeg
 from common.schema import (
     BeatTiming,
@@ -45,6 +46,11 @@ from orchestrator.summary import StageSummary
 from tts.providers import TtsProviderError, resolve_provider_order
 from visual_index.integrity import metadata_is_current, validate_visual_index_artifacts, visual_index_config_hash
 from match.version import MATCH_ALGORITHM_VERSION
+from ingest.integrity import INGEST_CACHE_VERSION, ingest_config_hash
+from preflight.integrity import PREFLIGHT_CACHE_VERSION, preflight_identity
+from review.integrity import REVIEW_CACHE_VERSION, build_review_identity
+from review.style import DEFAULT_STYLE_SAMPLE
+from storymap.cache import stable_hash as storymap_stable_hash
 
 class OrchestratorError(RuntimeError):
     pass
@@ -142,6 +148,73 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
         return False
     try:
         validate_stage(paths, stage)
+        if stage == "preflight" and film is not None and config is not None:
+            section = config.get("preflight", {})
+            expected_input, expected_config = preflight_identity(
+                film,
+                classifier=str(section.get("classifier", "heuristic")),
+                max_intro_s=float(section.get("max_intro_s", 240.0)),
+                sample_every_s=float(section.get("sample_every_s", 5.0)),
+                confidence_threshold=float(section.get("confidence_threshold", 0.75)),
+                uncertain_threshold=float(section.get("uncertain_threshold", 0.55)),
+            )
+            profile = VideoProfile.model_validate(load_json(paths.video_profile))
+            if profile.cache_version != PREFLIGHT_CACHE_VERSION or profile.input_hash != expected_input or profile.config_hash != expected_config:
+                return False
+        if stage == "ingest" and film is not None and config is not None:
+            meta = FilmMapMeta.model_validate(load_json(paths.film_map_meta))
+            profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file() else None
+            if (
+                meta.cache_version != INGEST_CACHE_VERSION
+                or meta.input_hash != media_identity_hash(film)
+                or meta.config_hash != ingest_config_hash(config.get("ingest", {}))
+                or meta.video_profile_hash != file_hash(profile_path)
+            ):
+                return False
+        if stage == "storymap" and config is not None:
+            section = config.get("storymap", {})
+            profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file() else None
+            profile_payload = VideoProfile.model_validate(load_json(profile_path)).model_dump(mode="json") if profile_path else None
+            expected_config = storymap_stable_hash(
+                {
+                    "film_map": storymap_stable_hash(load_json(paths.film_map)),
+                    "video_profile": storymap_stable_hash(profile_payload),
+                    "content_type": section.get("content_type", "movie"),
+                    "target_story_sections": section.get("target_story_sections", 7),
+                }
+            )
+            meta = StoryMapMeta.model_validate(load_json(paths.story_map_meta))
+            if (
+                meta.cache_version != "storymap-v1"
+                or meta.film_map_hash != file_hash(paths.film_map)
+                or meta.video_profile_hash != file_hash(profile_path)
+                or meta.config_hash != expected_config
+            ):
+                return False
+        if stage == "review" and config is not None:
+            section = config.get("review", {})
+            story_setting = section.get("story_map", "auto")
+            story_path = paths.story_map if story_setting == "auto" and paths.story_map.is_file() else (Path(str(story_setting)) if story_setting not in {None, "auto"} else None)
+            profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file() else None
+            style_setting = section.get("style_sample")
+            style_path = Path(str(style_setting)).expanduser().resolve() if style_setting else DEFAULT_STYLE_SAMPLE
+            identity = build_review_identity(
+                film_map_path=paths.film_map,
+                settings=section,
+                style_sample_path=style_path,
+                story_map_path=story_path,
+                video_profile_path=profile_path,
+            )
+            meta = ReviewMeta.model_validate(load_json(paths.review_meta))
+            if (
+                meta.cache_version != REVIEW_CACHE_VERSION
+                or meta.film_map_hash != identity.film_map_hash
+                or meta.film_map_meta_hash != identity.film_map_meta_hash
+                or meta.story_map_hash != identity.story_map_hash
+                or meta.video_profile_hash != identity.video_profile_hash
+                or meta.config_hash != identity.config_hash
+            ):
+                return False
         if stage == "shots" and config is not None:
             section = config.get("shots", {})
             meta = ShotsMeta.model_validate(load_json(paths.shots_meta))
@@ -167,7 +240,7 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
             if not metadata_is_current(index, film_path=film, shots_path=paths.shots, config_hash=config_hash):
                 return False
         return True
-    except OrchestratorError:
+    except (OrchestratorError, OSError, ValueError):
         return False
 
 
@@ -191,8 +264,8 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--input", str(film), "--output", str(paths.film_map)]
         for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "source_language", "translate_mode", "vision_model", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
             add_option(command, key, section.get(key))
-        # GĐ1 CLI does not currently accept video_profile directly; downstream
-        # visual stages consume it when preflight is enabled.
+        if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file():
+            command += ["--video-profile", str(paths.video_profile)]
         if not section.get("vad_filter", True):
             command.append("--no-vad-filter")
     elif stage == "storymap":
@@ -398,12 +471,13 @@ def run_stage(
     config: dict[str, Any],
     force: bool,
     dry_run: bool,
+    run_anyway: bool = False,
     python_exe: str | None = None,
     executor: Callable[[list[str], Path], None] = run_subprocess,
 ) -> StageSummary:
     command = build_command(stage, paths, film, config, force, python_exe=python_exe)
     outputs = [str(path) for path in output_paths(paths, stage)]
-    if not force and outputs_valid(paths, stage, film=film, config=config):
+    if not force and not run_anyway and outputs_valid(paths, stage, film=film, config=config):
         return StageSummary(stage=stage, status="skipped", duration_s=0.0, command=command, outputs=outputs)
     if dry_run:
         return StageSummary(stage=stage, status="planned", duration_s=0.0, command=command, outputs=outputs)

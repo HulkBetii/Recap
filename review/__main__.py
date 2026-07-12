@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from review.coverage import coverage_ratio
 from review.consistency import apply_narration_consistency
 from review.inputs import ReviewInputError, load_duration, load_film_map
 from review.intent import build_review_intents, story_map_prompt_context
+from review.integrity import REVIEW_CACHE_VERSION, ReviewIdentity, build_review_identity
 from review.llm_flow import regenerate_beat, request_narration, request_outline, request_qa
 from review.micro_beats import split_long_beats
 from review.movie_mode import (
@@ -40,7 +40,6 @@ from review.style import (
     check_readability,
     issue_to_prompt,
     read_clean_style_sample,
-    style_config_key,
 )
 from review.timecode import derive_review_beats
 from review.view import build_film_map_view
@@ -182,22 +181,14 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
 
     cache = ReviewCache(work_dir, force=args.force)
     cache.prepare()
-    review_config_key = style_config_key(style_config, cleaned_style_sample)
-    review_config_key.update({
-        "content_type": args.content_type,
-        "hook_mode": args.hook_mode,
-        "target_ratio": str(args.target_ratio),
-        "resolved_target_ratio": auto_duration.target_ratio,
-        "opening_coherence_qa": args.opening_coherence_qa,
-        "max_qa_rewrites_per_iteration": args.max_qa_rewrites_per_iteration,
-        "video_profile": str(args.video_profile) if args.video_profile else None,
-        "story_map": str(args.story_map) if args.story_map else None,
-        "story_start_s": story_start_s,
-        "micro_beats": args.micro_beats,
-        "target_beat_audio_s": args.target_beat_audio_s,
-        "max_beat_audio_s": args.max_beat_audio_s,
-    })
-    refresh_style_cache(cache, review_config_key)
+    identity: ReviewIdentity = getattr(args, "_review_identity", None) or build_review_identity(
+        film_map_path=film_map_path,
+        settings=args,
+        style_sample_path=style_sample_path,
+        story_map_path=args.story_map,
+        video_profile_path=args.video_profile,
+    )
+    cache.reconcile(identity.cache_key)
 
     if cache.has("outline.json"):
         logger.info("[1/4] Using cached outline.json")
@@ -430,6 +421,12 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         n_micro_beats_split=micro_report.n_split_beats if micro_report else 0,
         micro_beat_split_ids=micro_report.split_beat_ids if micro_report else [],
         micro_beat_warnings=micro_report.warnings if micro_report else [],
+        film_map_hash=identity.film_map_hash,
+        film_map_meta_hash=identity.film_map_meta_hash,
+        story_map_hash=identity.story_map_hash,
+        video_profile_hash=identity.video_profile_hash,
+        config_hash=identity.config_hash,
+        cache_version=REVIEW_CACHE_VERSION,
     )
     write_json(output_path, beats)
     write_json(intent_output, review_intents)
@@ -454,26 +451,6 @@ def load_video_profile(path: Path | None) -> VideoProfile | None:
     if not resolved.is_file():
         raise ReviewError(f"video profile does not exist: {resolved}")
     return VideoProfile.model_validate_json(resolved.read_text(encoding="utf-8"))
-
-
-def refresh_style_cache(cache: ReviewCache, config_key: dict) -> None:
-    current_path = cache.path("style_config.json")
-    if current_path.exists():
-        try:
-            previous = cache.read_json("style_config.json")
-        except Exception:  # noqa: BLE001 - bad cache should be rebuilt
-            previous = None
-        if previous != config_key:
-            for name in ("outline.json", "narration.json", "narration_consistent.json", "narration_style_checked.json", "qa.json", "style_qa.json", "opening_coherence.json", "opening_coherence_revision.json"):
-                target = cache.path(name)
-                if target.exists():
-                    target.unlink()
-            for dirname in ("revisions", "style_revisions"):
-                target_dir = cache.path(dirname)
-                if target_dir.exists():
-                    shutil.rmtree(target_dir)
-                target_dir.mkdir(parents=True, exist_ok=True)
-    cache.write_json("style_config.json", config_key)
 
 
 async def ensure_style_readability(
@@ -559,8 +536,28 @@ def ensure_narration_consistency(
 async def run_review(args: argparse.Namespace) -> int:
     profile_dir = args.chatgpt_profile_dir.expanduser().resolve()
     work_dir = args.work_dir.expanduser().resolve()
+    args.hook_mode, args.opening_coherence_qa = resolve_content_defaults(
+        args.content_type,
+        args.hook_mode,
+        args.opening_coherence_qa,
+    )
+    if args.micro_beats is None:
+        args.micro_beats = False
+    style_sample_path = Path(args.style_sample).expanduser().resolve() if args.style_sample else DEFAULT_STYLE_SAMPLE
+    identity = build_review_identity(
+        film_map_path=args.film_map,
+        settings=args,
+        style_sample_path=style_sample_path,
+        story_map_path=args.story_map,
+        video_profile_path=args.video_profile,
+    )
+    setattr(args, "_review_identity", identity)
     session_meta_path = (args.chat_session_meta or (work_dir / "chat_session_meta.json")).expanduser().resolve()
-    initial_url, previous_session, session_warnings = resolve_initial_chat_url(session_meta_path, args.chat_session_policy)
+    initial_url, previous_session, session_warnings = resolve_initial_chat_url(
+        session_meta_path,
+        args.chat_session_policy,
+        identity.core_input_hash,
+    )
     async with PlaywrightChatClient(
         profile_dir,
         headless=args.headless,
@@ -577,6 +574,7 @@ async def run_review(args: argparse.Namespace) -> int:
             title=args.chat_title or args.output.stem,
             previous=previous_session,
             warnings=session_warnings,
+            core_input_hash=identity.core_input_hash,
         )
         save_chat_session(session_meta_path, session_meta)
     return 0
@@ -588,7 +586,7 @@ def main() -> int:
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
     try:
         return asyncio.run(run_review(args))
-    except (ReviewError, ReviewInputError, PlaywrightChatError, ValueError) as exc:
+    except (ReviewError, ReviewInputError, PlaywrightChatError, OSError, ValueError) as exc:
         parser.exit(2, f"review: error: {exc}\n")
 
 

@@ -42,6 +42,24 @@ def test_correct_transcript_glossary_writes_cache(tmp_path: Path) -> None:
     assert updated.correction_mode == "glossary"
     assert updated.correction_warnings
     assert cache.has("transcript_corrected.json")
+    assert cache.has("transcript_correction.meta.json")
+
+
+def test_correction_does_not_overwrite_aligned_transcript(tmp_path: Path) -> None:
+    glossary_path = tmp_path / "glossary.txt"
+    glossary_path.write_text("문지현 => 황준현\n", encoding="utf-8")
+    cache = StageCache(tmp_path / "work")
+    cache.prepare()
+    original = [TranscriptSegment(id=0, tc_start=0, tc_end=1, ko="문지현")]
+    cache.write_json("transcript_aligned.json", original)
+    args = argparse.Namespace(transcript_correction="glossary", glossary=glossary_path, correction_model="gpt-4.1-mini")
+    quality = TranscriptQuality(asr_provider="manual", timecode_quality="approximate", approximate_timecodes=True)
+
+    corrected, _ = correct_transcript(cache, original, quality, args, Logger())
+
+    aligned = [TranscriptSegment.model_validate(item) for item in cache.read_json("transcript_aligned.json")]
+    assert aligned[0].ko == "문지현"
+    assert corrected[0].ko == "황준현"
 
 
 def test_correct_transcript_openai_uses_corrector(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

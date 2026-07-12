@@ -84,6 +84,10 @@ class FilmMapMeta(BaseModel):
     transcript_correction_warnings: list[str] = Field(default_factory=list)
     source_language: SourceLanguage = "ko"
     translate_mode: TranslateMode = "ko-en"
+    input_hash: str | None = None
+    config_hash: str | None = None
+    video_profile_hash: str | None = None
+    cache_version: str | None = None
 
 class TranscriptQuality(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -250,6 +254,12 @@ class ReviewMeta(BaseModel):
     micro_beat_split_ids: list[int] = Field(default_factory=list)
     micro_beat_warnings: list[str] = Field(default_factory=list)
     qa_rewrite_limited: bool = False
+    film_map_hash: str | None = None
+    film_map_meta_hash: str | None = None
+    story_map_hash: str | None = None
+    video_profile_hash: str | None = None
+    config_hash: str | None = None
+    cache_version: str | None = None
 
 
 class BeatTiming(BaseModel):
@@ -361,6 +371,9 @@ class VideoProfile(BaseModel):
     created_at: datetime
     warnings: list[str] = Field(default_factory=list)
     cache_hits: list[str] = Field(default_factory=list)
+    input_hash: str | None = None
+    config_hash: str | None = None
+    cache_version: str | None = None
 
 
 class StorySection(BaseModel):
@@ -404,6 +417,10 @@ class StoryMapMeta(BaseModel):
     created_at: datetime
     cache_hits: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    film_map_hash: str | None = None
+    video_profile_hash: str | None = None
+    config_hash: str | None = None
+    cache_version: str | None = None
 
 class ReviewIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")

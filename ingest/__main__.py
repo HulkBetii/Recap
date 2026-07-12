@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.media import MediaError, extract_audio, probe_duration, require_ffmpeg
+from common.integrity import file_hash, media_identity_hash, stable_hash
 from common.schema import (
     FilmMapMeta,
     TranslatedSegment,
@@ -22,6 +23,15 @@ from ingest.cache import StageCache
 from ingest.correction import OpenAITranscriptCorrector, apply_glossary_replacements, load_glossary
 from ingest.film_map import build_film_map
 from ingest.gaps import detect_silent_gaps, select_gaps_for_vision, split_long_gaps
+from ingest.integrity import (
+    INGEST_CACHE_VERSION,
+    audio_cache_key,
+    correction_cache_key,
+    ingest_config_hash,
+    transcript_cache_key,
+    translation_cache_key,
+    vision_cache_key,
+)
 from ingest.llm import OpenAIIngestClient
 from ingest.transcribe import transcribe_korean, transcribe_openai_chunked, transcribe_openai_gpt4o
 from ingest.vision import describe_gaps
@@ -65,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--correction-model", default="gpt-4.1-mini")
     parser.add_argument("--drop-non-korean-intro-s", default=30.0, type=float)
     parser.add_argument("--drop-visual-before-s", default=0.0, type=float, help="Drop/suppress visual gap segments before this source time, useful for episode intros/opening credits")
+    parser.add_argument("--video-profile", default=None, type=Path, help="Optional GĐ0 video_profile.json used to suppress non-story visual gaps")
     parser.add_argument("--vad-filter", action="store_true", default=True)
     parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false")
     parser.add_argument("--work-dir", default=Path("work"), type=Path)
@@ -146,8 +157,7 @@ def load_transcript(
         drop_non_korean_intro_s=args.drop_non_korean_intro_s,
     )
     cache.write_json("transcript_text.json", transcript)
-    transcript, quality = correct_transcript(cache, transcript, quality, args, logger)
-    warnings = quality.warnings + qc_warnings + quality.correction_warnings + detect_transcript_warnings(transcript)
+    warnings = quality.warnings + qc_warnings + detect_transcript_warnings(transcript)
     quality = quality.model_copy(update={"warnings": warnings})
     cache.write_json("transcript_aligned.json", transcript)
     cache.write_json("transcript_quality.json", quality)
@@ -166,7 +176,14 @@ def correct_transcript(
     if cache.has("transcript_corrected.json"):
         logger.info("[2/6] Using cached transcript_corrected.json")
         corrected = [TranscriptSegment.model_validate(item) for item in cache.read_json("transcript_corrected.json")]
-        return corrected, quality.model_copy(update={"correction_mode": mode, "correction_model": getattr(args, "correction_model", None) if mode == "openai" else None})
+        correction_meta = cache.read_json("transcript_correction.meta.json")
+        correction_warnings = list(correction_meta.get("warnings", []))
+        return corrected, quality.model_copy(update={
+            "correction_mode": mode,
+            "correction_model": correction_meta.get("model"),
+            "correction_warnings": correction_warnings,
+            "warnings": quality.warnings + correction_warnings,
+        })
     glossary = load_glossary(getattr(args, "glossary", None))
     logger.info("[2/6] Correcting transcript with mode: %s", mode)
     corrected, correction_warnings = apply_glossary_replacements(transcript, glossary)
@@ -180,7 +197,13 @@ def correct_transcript(
         correction_warnings.extend(openai_warnings)
     corrected = [segment.model_copy(update={"id": index}) for index, segment in enumerate(corrected)]
     cache.write_json("transcript_corrected.json", corrected)
-    return corrected, quality.model_copy(update={"correction_mode": mode, "correction_model": correction_model, "correction_warnings": correction_warnings})
+    cache.write_json("transcript_correction.meta.json", {"mode": mode, "model": correction_model, "warnings": correction_warnings})
+    return corrected, quality.model_copy(update={
+        "correction_mode": mode,
+        "correction_model": correction_model,
+        "correction_warnings": correction_warnings,
+        "warnings": quality.warnings + correction_warnings,
+    })
 
 def load_translations(
     cache: StageCache,
@@ -331,18 +354,56 @@ def run_ingest(args: argparse.Namespace) -> int:
 
     logger.info("[0/6] Probing input video")
     duration = probe_duration(input_path)
+    input_hash = media_identity_hash(input_path)
+    stage_audio_key = audio_cache_key(input_hash)
     audio_path = cache.path("audio.wav")
-    if cache.has("audio.wav"):
+    if cache.stage_current("audio", stage_audio_key, ("audio.wav",)) and cache.has("audio.wav"):
         logger.info("[1/6] Using cached audio.wav")
     else:
         logger.info("[1/6] Extracting mono 16kHz audio")
         extract_audio(input_path, audio_path)
+        cache.commit_stage("audio", stage_audio_key)
 
     warnings_count = 0
+    stage_transcript_key = transcript_cache_key(stage_audio_key, args)
+    transcript_cached = cache.stage_current(
+        "transcript",
+        stage_transcript_key,
+        ("transcript_aligned.json", "transcript_quality.json"),
+    )
     transcript, transcript_quality = load_transcript(cache, audio_path, duration, args, logger)
+    if not transcript_cached:
+        cache.commit_stage("transcript", stage_transcript_key)
+
+    aligned_hash = file_hash(cache.path("transcript_aligned.json"))
+    if aligned_hash is None:
+        raise IngestError("transcript_aligned.json was not written")
+    stage_correction_key = correction_cache_key(aligned_hash, args)
+    correction_required = () if args.transcript_correction == "off" else ("transcript_corrected.json", "transcript_correction.meta.json")
+    correction_cached = cache.stage_current("correction", stage_correction_key, correction_required)
+    transcript, transcript_quality = correct_transcript(cache, transcript, transcript_quality, args, logger)
+    if not correction_cached:
+        cache.commit_stage("correction", stage_correction_key)
+
+    final_transcript_hash = stable_hash([item.model_dump(mode="json") for item in transcript])
+    stage_translation_key = translation_cache_key(final_transcript_hash, args)
+    translation_cached = cache.stage_current("translation", stage_translation_key, ("translated.json",))
     translated, translation_warnings = load_translations(cache, transcript, client, logger, translate_mode=args.translate_mode)
+    if not translation_cached:
+        cache.commit_stage("translation", stage_translation_key)
     warnings_count += translation_warnings
     video_profile = load_video_profile(args.video_profile)
+    video_profile_hash = file_hash(args.video_profile) if args.video_profile else None
+    translated_hash = file_hash(cache.path("translated.json"))
+    if translated_hash is None:
+        raise IngestError("translated.json was not written")
+    stage_vision_key = vision_cache_key(
+        input_hash=input_hash,
+        translated_hash=translated_hash,
+        video_profile_hash=video_profile_hash,
+        settings=args,
+    )
+    vision_cached = cache.stage_current("vision", stage_vision_key, ("vision.json",))
     vision_segments, vision_warnings = load_vision(
         cache=cache,
         input_path=input_path,
@@ -356,6 +417,8 @@ def run_ingest(args: argparse.Namespace) -> int:
         drop_visual_before_s=args.drop_visual_before_s,
         video_profile=video_profile,
     )
+    if not vision_cached:
+        cache.commit_stage("vision", stage_vision_key)
     warnings_count += vision_warnings
 
     logger.info("[6/6] Building and validating film_map.json")
@@ -387,6 +450,10 @@ def run_ingest(args: argparse.Namespace) -> int:
         transcript_correction_warnings=transcript_quality.correction_warnings,
         source_language=args.source_language,
         translate_mode=args.translate_mode,
+        input_hash=input_hash,
+        config_hash=ingest_config_hash(args),
+        video_profile_hash=video_profile_hash,
+        cache_version=INGEST_CACHE_VERSION,
     )
     write_json(output_path.with_name(f"{output_path.stem}.meta.json"), meta)
     logger.info("Done: %s", output_path)

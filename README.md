@@ -112,12 +112,14 @@ Dùng `--device cuda` nếu máy có CUDA phù hợp với `faster-whisper`.
 Artifacts trung gian nằm trong `--work-dir`:
 
 - `audio.wav`
-- `transcript_raw.json`
+- `transcript_aligned.json` + `transcript_quality.json`
+- `transcript_corrected.json` + `transcript_correction.meta.json`
 - `translated.json`
 - `frames/`
 - `vision.json`
+- `cache_manifest.json`
 
-Chạy lại sẽ dùng cache nếu artifact tồn tại. Thêm `--force` để chạy lại toàn bộ artifacts GĐ1.
+GĐ1 chỉ reuse cache khi manifest khớp film/config/artifact. Đổi ASR giữ audio; đổi glossary/correction giữ transcript aligned; đổi translation giữ transcript; đổi `video_profile.json` hoặc vision config chỉ rebuild vision. Cache legacy thiếu manifest sẽ rebuild một lần. Thêm `--force` để xóa toàn bộ cache GĐ1.
 
 ## Test
 
@@ -161,8 +163,9 @@ Artifacts cache GĐ2:
 - `work/review/narration_style_checked.json`
 - `work/review/revisions/`
 - `work/review/style_revisions/`
+- `work/review/cache_manifest.json`
 
-Thêm `--force` để rebuild cache GĐ2.
+Manifest GĐ2 hash nội dung `film_map`, metadata, story map, video profile, style sample và generation config. Thay đổi semantic input sẽ xóa đồng nhất toàn bộ artifact review; browser profile/headless/timeout không làm đổi cache. Thêm `--force` để rebuild cache GĐ2.
 ## Chạy GĐ3
 
 GĐ3 nhận `review_script.json` và tạo `audio/<beat_id>.mp3`, `voiceover.mp3`, `beats_timing.json`, `tts_meta.json`.
@@ -444,7 +447,7 @@ python -m ingest --input film.mp4 --output out\film_map.json --max-visual-gap-s 
 
 GĐ2 có deterministic narration consistency pass sau khi ChatGPT viết narration: pass này dùng glossary để chuẩn hóa alias tên/entity như `Choi Seon/Sung/Song -> Choi Seong` hoặc `Hwang Junhyun -> Hwang Jun-hyun`. Artifact cache: `work/review/narration_consistent.json`.
 
-GĐ2 lưu session ChatGPT theo từng video/run để tránh trộn ngữ cảnh giữa video khác nhau. Mặc định `--chat-session-policy auto` sẽ resume `work/review/chat_session_meta.json` nếu có, nếu chưa có thì mở chat mới. Có thể ép chat mới bằng:
+GĐ2 lưu session ChatGPT theo từng video/run để tránh trộn ngữ cảnh giữa video khác nhau. Mặc định `--chat-session-policy auto` chỉ resume `work/review/chat_session_meta.json` khi core input hash không đổi; nếu `film_map`, metadata, story map hoặc video profile đổi thì tự mở chat mới. Policy `resume` vẫn giữ URL cũ nhưng ghi warning khi input đã đổi. Có thể ép chat mới bằng:
 
 ```powershell
 python -m review `
@@ -508,6 +511,8 @@ python -m preflight `
 ```
 
 `heuristic` is conservative and does not hard-exclude without enough evidence. For local visual classification, install `pip install -e ".[video-profile]"` and run `--classifier openclip`. Manual `--skip-intro` / `--drop-visual-before-s` remain debug overrides only.
+
+`video_profile.json` records film identity, preflight config hash, and cache version. GĐ1 receives this artifact through `--video-profile`; legacy profiles without integrity metadata are rebuilt once. Preflight frame samples are also invalidated when the film or sampling/classifier config changes.
 
 ### Current intro/opening policy
 

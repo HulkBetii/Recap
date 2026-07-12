@@ -169,3 +169,14 @@ def test_orchestrator_passes_drop_visual_before_option(tmp_path: Path) -> None:
     config = load_config(config_path)
     command = build_command("ingest", build_paths(tmp_path / "run"), tmp_path / "film.mp4", config, force=False, python_exe="python")
     assert command[command.index("--drop-visual-before-s") + 1] == "120"
+
+
+def test_orchestrator_passes_video_profile_to_ingest(tmp_path: Path) -> None:
+    paths = build_paths(tmp_path / "run")
+    paths.run_dir.mkdir(parents=True)
+    paths.video_profile.write_text("{}", encoding="utf-8")
+    config = load_config(None)
+
+    command = build_command("ingest", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+
+    assert command[command.index("--video-profile") + 1] == str(paths.video_profile)
