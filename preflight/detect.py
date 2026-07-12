@@ -34,6 +34,8 @@ def sample_frames(input_path: Path, frames_dir: Path, *, max_intro_s: float, sam
     time_s = 0.0
     index = 0
     while time_s <= limit + 1e-6:
+        if time_s >= duration_s - 1e-6:
+            break
         path = frames_dir / f"intro-{index:03d}.jpg"
         if not path.exists():
             subprocess.run([

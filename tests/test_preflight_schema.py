@@ -8,6 +8,7 @@ import pytest
 
 from common.schema import IntroDetection, NonStoryRange, VideoProfile
 from preflight.__main__ import run_preflight
+from preflight.detect import sample_frames
 from preflight.integrity import preflight_identity
 
 
@@ -35,7 +36,7 @@ def test_preflight_identity_changes_with_film_or_config(tmp_path: Path) -> None:
     film.write_bytes(b"film-v1")
     first = preflight_identity(film, classifier="heuristic", max_intro_s=240, sample_every_s=5, confidence_threshold=0.75, uncertain_threshold=0.55)
     changed_config = preflight_identity(film, classifier="heuristic", max_intro_s=180, sample_every_s=5, confidence_threshold=0.75, uncertain_threshold=0.55)
-    film.write_bytes(b"film-v2")
+    film.write_bytes(b"film-v2-longer")
     changed_film = preflight_identity(film, classifier="heuristic", max_intro_s=240, sample_every_s=5, confidence_threshold=0.75, uncertain_threshold=0.55)
 
     assert first[1] != changed_config[1]
@@ -71,3 +72,24 @@ def test_preflight_work_cache_is_reused_only_for_matching_identity(monkeypatch, 
     run_preflight(args)
 
     assert sentinel_states == [False, True, False]
+
+
+def test_preflight_frame_sampling_never_seeks_exact_eof(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    seek_times: list[float] = []
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        seek_times.append(float(command[command.index("-ss") + 1]))
+        Path(command[-1]).write_bytes(b"jpg")
+
+    monkeypatch.setattr("preflight.detect.subprocess.run", fake_run)
+
+    samples = sample_frames(
+        tmp_path / "clip.mp4",
+        tmp_path / "frames",
+        max_intro_s=30,
+        sample_every_s=5,
+        duration_s=30,
+    )
+
+    assert len(samples) == 6
+    assert seek_times == [0, 5, 10, 15, 20, 25]

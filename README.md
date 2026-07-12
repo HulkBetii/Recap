@@ -60,6 +60,21 @@ python run.py --input path\to\film.mp4 --run-dir runs\movie-visual01 --config co
 
 `movie-visual` gom WhisperX, BGE-M3 và SigLIP2 cho preset visual. OpenCLIP intro detection vẫn là dependency riêng: `python -m pip install -e ".[video-profile]"`.
 
+## Release Candidate Gate
+
+Gate offline dùng chung cho local và GitHub Actions Windows:
+
+```powershell
+# CI-equivalent, không cần media/API/GPU
+powershell -ExecutionPolicy Bypass -File scripts/release_check.ps1 -SkipMediaSmoke
+
+# Gate local bắt buộc trước khi tag, cần ffmpeg và một phim thật
+powershell -ExecutionPolicy Bypass -File scripts/release_check.ps1 `
+  -MediaPath "C:\path\to\movie.mp4"
+```
+
+Gate kiểm tra secret trong tracked tree + Git history, full test/compile, editable metadata, wheel content/install/import, CLI help, production dry-run và optional real-media GĐ0/GĐ1 cache smoke không API. Báo cáo nằm ở `work/release-gate/report.json`; tiêu chí chốt `v1.0.0` nằm trong `RELEASE_CHECKLIST.md`.
+
 Preset video/phim nguồn tiếng Việt, không dịch KO→EN:
 
 ```powershell

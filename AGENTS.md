@@ -490,3 +490,13 @@ repo/
 - GĐ2 dùng `work/review/cache_manifest.json` hash nội dung film map/meta, story map, video profile, style sample và generation settings. Operational browser settings không làm đổi cache.
 - `chat_session_policy=auto` mở conversation mới khi core review input đổi. Explicit `resume` tiếp tục session cũ nhưng phải ghi warning input mismatch.
 - Upstream stale buộc downstream chạy lại nhưng không tự truyền `--force`; selective cache của stage con vẫn được giữ. Chỉ user `--force`/`--force-stage` mới yêu cầu xóa cache stage.
+
+## 38. RELEASE CANDIDATE GATE
+
+- Release gate chuẩn chạy bằng `scripts/release_check.ps1`; mặc định yêu cầu worktree sạch và `-MediaPath`. CI Windows dùng `-SkipMediaSmoke`; `-AllowDirty` chỉ dành cho phát triển gate, không hợp lệ để quyết định release.
+- Gate offline bắt buộc secret scan tracked tree + full Git history, `git diff --check`, full pytest, compileall, editable-install dry-run, wheel build/content/install/import smoke, CLI help và production preset dry-run.
+- GitHub Actions dùng `windows-latest`, Python 3.11, full-history checkout, `permissions: contents: read`; không được đọc repository secrets, cài browser hoặc GPU extras.
+- Local media gate cắt 30 giây vào `work/release-gate`, xóa `OPENAI_API_KEY`, `VIVOO_API_KEY`, `GENMAX_API_KEY` khỏi subprocess và chỉ chạy GĐ0/GĐ1 bằng manual transcript, translation/vision offline.
+- Cache smoke phải chứng minh unchanged reuse, profile-only vision invalidation, glossary giữ aligned transcript, và film identity rebuild toàn bộ artifacts GĐ1.
+- `work/release-gate/report.json` là audit artifact gitignored. Không ghi key/token; secret findings luôn redact.
+- Không bump version/tag `v1.0.0` trong task gate. Chỉ release khi CI xanh, local media gate xanh không `-AllowDirty`, report pass, secret scan sạch và main đồng bộ remote.

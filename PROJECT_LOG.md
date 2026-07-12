@@ -776,3 +776,12 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Added content-hash integrity to film-map/story-map/review metadata and orchestrator skip validation. Upstream invalidation reruns downstream without clearing stage caches unless the user explicitly forces them.
 - Replaced partial GĐ2 style invalidation with one review input manifest covering every generated artifact. ChatGPT `auto` sessions start fresh when core input changes; explicit `resume` warns and continues.
 - Validation includes selective invalidation, legacy/corrupt artifact recovery, profile-only vision invalidation, review cache cleanup, session rollover, and orchestrator propagation tests; full `python -m pytest -q` -> `333 passed`, compileall/diff check and production dry-run passed.
+
+### 2026-07-12 - Release candidate gate before v1.0.0
+
+- Added a single Windows PowerShell release gate for secret/history scanning, tests, compileall, editable metadata, wheel build/content/install/import, CLI help, production dry-run, and optional real-media cache smoke.
+- Added Windows/Python 3.11 GitHub Actions with read-only repository permission, full history checkout, no secrets, no browser install, and no GPU extras.
+- Added a no-API 30-second GĐ0/GĐ1 smoke using manual transcript. Subprocesses remove OpenAI/AI33/Genmax keys and assert unchanged reuse, profile-only vision invalidation, glossary-only downstream invalidation, and full rebuild after film identity change.
+- The first real-media smoke exposed GĐ0 seeking a frame at exact EOF when clip duration equaled `max_intro_s`; frame sampling now stops before EOF and has regression coverage.
+- Release artifacts are written under `work/release-gate`; project version remains `0.1.0` until CI and a clean local media gate pass for the release commit.
+- Validation: full `python -m pytest -q` -> `343 passed`; CI-mode gate passed wheel/import/CLI/dry-run checks; `Ba-Mat-Lat-Keo.mp4` media gate passed all 33 cache assertions on a 30-second clip with no API environment available.
