@@ -785,3 +785,4 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - The first real-media smoke exposed GĐ0 seeking a frame at exact EOF when clip duration equaled `max_intro_s`; frame sampling now stops before EOF and has regression coverage.
 - Release artifacts are written under `work/release-gate`; project version remains `0.1.0` until CI and a clean local media gate pass for the release commit.
 - Validation: full `python -m pytest -q` -> `343 passed`; CI-mode gate passed wheel/import/CLI/dry-run checks; `Ba-Mat-Lat-Keo.mp4` media gate passed all 33 cache assertions on a 30-second clip with no API environment available.
+- The first GitHub Actions run exposed a test-only dependency leak: semantic device coverage imported Torch even though the offline CI contract intentionally excludes GPU extras. The test now mocks both missing-Torch and CUDA-unavailable states; the no-Torch suite passes with `344 passed`.

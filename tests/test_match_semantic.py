@@ -203,11 +203,35 @@ def test_bge_missing_dependency_fails_clearly(monkeypatch: pytest.MonkeyPatch, t
         scorer.score([beat()], [shot(0, 0, 5)], [seg(0, 0, 5, "hero")])
 
 
-def test_resolve_device_cpu_and_cuda_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert resolve_device("cpu") == "cpu"
-    import torch
+def test_resolve_device_cpu_and_torch_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
 
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if name == "torch":
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert resolve_device("cpu") == "cpu"
+    assert resolve_device("auto") == "cpu"
+    with pytest.raises(SemanticError, match="requires torch"):
+        resolve_device("cuda")
+
+
+def test_resolve_device_cuda_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch())
     assert resolve_device("auto") == "cpu"
     with pytest.raises(SemanticError, match="CUDA"):
         resolve_device("cuda")
