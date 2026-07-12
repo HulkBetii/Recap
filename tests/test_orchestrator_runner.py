@@ -425,6 +425,7 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     assert ingest[ingest.index("--device") + 1] == "cuda"
     assert ingest[ingest.index("--aligner") + 1] == "whisperx"
     assert tts[tts.index("--provider-mode") + 1] == "auto"
+    assert tts[tts.index("--genmax-voice-id") + 1] == "VU16byTywsWv5JpI8rbc"
     assert tts[tts.index("--openai-model") + 1] == "gpt-4o-mini-tts"
     assert tts[tts.index("--openai-voice") + 1] == "coral"
     assert tts[tts.index("--concurrency") + 1] == "1"

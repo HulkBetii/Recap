@@ -766,3 +766,4 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Added production-only dependency/CUDA preflight plus cost-summary provider availability without exposing credentials.
 - Live smoke succeeded for AI33/VBee (`2.482s`) and OpenAI `gpt-4o-mini-tts/coral` (`2.256s`); both outputs were valid non-empty MP3 files under `work/tts-live-smoke`.
 - Validation: targeted TTS/orchestrator suites passed; full `python -m pytest -q` -> `316 passed`; production dependency/CUDA preflight, editable metadata, compileall, and `git diff --check` passed.
+- Genmax live integration reused the `auto_YT` contract and voice `VU16byTywsWv5JpI8rbc`. Initial Python submit hit Cloudflare `403 error 1010`; adding `User-Agent: Mozilla/5.0` to JSON requests fixed it, and the rerun produced a valid `3.318s` MP3.

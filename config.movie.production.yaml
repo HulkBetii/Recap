@@ -86,7 +86,7 @@ review:
 tts:
   voice_id: vbee_hn_female_ngochuyen_full_24k-st
   provider_mode: auto
-  genmax_voice_id: null
+  genmax_voice_id: VU16byTywsWv5JpI8rbc
   model: eleven_multilingual_v2
   openai_model: gpt-4o-mini-tts
   openai_voice: coral

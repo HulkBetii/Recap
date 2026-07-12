@@ -150,6 +150,7 @@ def test_provider_ai33_mode_does_not_fallback(tmp_path, monkeypatch) -> None:  #
 
 def test_http_json_retries_transient_gateway_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls = 0
+    captured_headers = {}
 
     class Response:
         def __enter__(self):  # type: ignore[no-untyped-def]
@@ -164,6 +165,7 @@ def test_http_json_retries_transient_gateway_error(monkeypatch) -> None:  # type
     def fake_urlopen(request, timeout):  # type: ignore[no-untyped-def]
         nonlocal calls
         calls += 1
+        captured_headers.update(dict(request.header_items()))
         if calls == 1:
             raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, io.BytesIO(b""))
         return Response()
@@ -173,6 +175,7 @@ def test_http_json_retries_transient_gateway_error(monkeypatch) -> None:  # type
 
     assert http_json("https://example.com") == {"status": "ok"}
     assert calls == 2
+    assert captured_headers["User-agent"] == "Mozilla/5.0"
 
 
 def test_http_json_retries_socket_timeout(monkeypatch) -> None:  # type: ignore[no-untyped-def]

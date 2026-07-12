@@ -182,7 +182,8 @@ def synthesize_openai(text: str, voice_id: str, model: str, speed: float, output
 
 def http_json(url: str, *, method: str = "GET", headers: dict[str, str] | None = None, data: bytes | None = None) -> dict:
     for attempt in range(HTTP_MAX_ATTEMPTS):
-        request = urllib.request.Request(url, method=method, headers=headers or {}, data=data)
+        request_headers = {"User-Agent": "Mozilla/5.0", **(headers or {})}
+        request = urllib.request.Request(url, method=method, headers=request_headers, data=data)
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 return json.loads(response.read().decode("utf-8"))

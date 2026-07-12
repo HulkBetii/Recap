@@ -330,6 +330,7 @@ repo/
 - AI33/Genmax HTTP JSON calls retry transient `429/5xx` and network errors with exponential backoff.
 - GĐ3 saves `work/tts/manifest.json` after every completed beat so a later provider failure can resume successful audio instead of synthesizing the whole batch again.
 - CDN `https://cdn.ai33.pro/...` có thể trả `403` nếu tải không có `User-Agent`; downloader hiện gửi `User-Agent: Mozilla/5.0` và thêm `xi-api-key` cho domain `ai33.pro` khi có `VIVOO_API_KEY`.
+- Genmax/AI33 JSON requests cũng phải gửi `User-Agent: Mozilla/5.0`; Genmax Cloudflare có thể trả `403 error 1010` cho Python urllib request thiếu header này.
 - Không commit `VIVOO_API_KEY`; chỉ set env runtime hoặc `.env` gitignored.
 
 ## 25. EPISODE INTRO / OPENING EXCLUSION
@@ -475,5 +476,5 @@ repo/
 
 - `config.movie.production.yaml` là preset production cho phim Hàn trên máy CUDA: Faster Whisper + WhisperX, ChatGPT Playwright review, AI33/Genmax/OpenAI TTS, ffmpeg-scene batch shots, End-Credit Guard, SigLIP2 Visual Index, BGE-M3 matching và GĐ6 1080p.
 - Production preset bật `orchestrator.runtime_preflight=true`; thiếu optional module trong `movie-visual` hoặc CUDA phải fail-fast trước khi chạy stage nặng.
-- TTS production dùng voice AI33 `vbee_hn_female_ngochuyen_full_24k-st`, OpenAI fallback `gpt-4o-mini-tts/coral`, concurrency `1`. `TtsMeta` có diagnostics optional/backward-compatible cho provider usage và fallback count.
+- TTS production dùng voice AI33 `vbee_hn_female_ngochuyen_full_24k-st`, Genmax `VU16byTywsWv5JpI8rbc`, OpenAI fallback `gpt-4o-mini-tts/coral`, concurrency `1`. `TtsMeta` có diagnostics optional/backward-compatible cho provider usage và fallback count.
 - Stable/visual presets cũ vẫn tương thích và không bị tự động chuyển sang production behavior.

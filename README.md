@@ -167,7 +167,7 @@ Thêm `--force` để rebuild cache GĐ2.
 
 GĐ3 nhận `review_script.json` và tạo `audio/<beat_id>.mp3`, `voiceover.mp3`, `beats_timing.json`, `tts_meta.json`.
 
-Provider mặc định là `auto`: thử AI33.PRO Vivoo V3, sau đó Genmax khi có key + voice riêng, rồi OpenAI `gpt-4o-mini-tts` khi có `OPENAI_API_KEY`. Provider thiếu key được bỏ qua; GĐ3 fail-fast nếu không có provider nào và dùng cache theo toàn bộ provider/model/voice chain.
+Provider mặc định là `auto`: thử AI33.PRO Vivoo V3, sau đó Genmax khi có key + voice riêng, rồi OpenAI `gpt-4o-mini-tts` khi có `OPENAI_API_KEY`. Production preset dùng Genmax voice `VU16byTywsWv5JpI8rbc`; provider thiếu key được bỏ qua, và GĐ3 fail-fast nếu không có provider nào.
 
 Env vars:
 
