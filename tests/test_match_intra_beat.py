@@ -3,9 +3,13 @@ from __future__ import annotations
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
 from match.intra_beat import (
     AlignmentChunk,
+    apply_hook_leading_brightness_guard,
     coalesce_alignment_chunks,
     estimate_sentence_timings,
     fill_local_window,
+    long_beat_alignment_required,
+    merge_low_confidence_transitions,
+    prepare_intra_beat_alignment_sentences,
     prepare_opening_alignment_sentences,
     recompute_reuse_flags,
     select_monotonic_anchors,
@@ -143,6 +147,23 @@ def test_local_fill_splits_contiguous_source_without_tiny_tail_or_false_repeat()
     assert all(not item.reused for item in placements)
 
 
+def test_local_fill_reserves_minimum_duration_for_final_shot() -> None:
+    placements = fill_local_window(
+        beat_id=1,
+        tl_start=0.0,
+        tl_end=13.823,
+        window_start=0.0,
+        window_end=20.0,
+        shots=[shot(0, 0.0, 7.258), shot(1, 7.258, 13.661), shot(2, 14.0, 20.0)],
+        max_clip=5.0,
+        min_visual_clip=0.6,
+    )
+
+    assert placements[-1].shot_index == 2
+    assert all(item.tl_end - item.tl_start >= 0.6 - 1e-6 for item in placements)
+    assert placements[-1].tl_end == 13.823
+
+
 def test_opening_alignment_falls_back_for_hook_approximate_or_tfidf() -> None:
     assert prepare_opening_alignment_sentences(
         beats=[beat(hook=True)],
@@ -152,6 +173,122 @@ def test_opening_alignment_falls_back_for_hook_approximate_or_tfidf() -> None:
         strict_timecodes=True,
         opening_guard_s=120,
     ) == {}
+
+
+def test_prepare_intra_beat_alignment_includes_full_non_opening_long_beat() -> None:
+    current_beat = beat(source_end=180.0)
+    current_timing = BeatTiming(
+        beat_id=1,
+        audio_path="audio/1.mp3",
+        tl_start=200.0,
+        tl_end=260.0,
+        duration=60.0,
+    )
+
+    result = prepare_intra_beat_alignment_sentences(
+        beats=[current_beat],
+        timings=[current_timing],
+        enabled=True,
+        semantic_mode="bge-m3",
+        strict_timecodes=True,
+        opening_guard_s=120.0,
+    )
+
+    assert len(result[1]) == 4
+    assert result[1][-1].tl_end == 260.0
+
+
+def test_long_beat_alignment_requires_large_baseline_drift() -> None:
+    current_beat = beat(source_end=180.0)
+    current_timing = timing(duration=60.0)
+    placements = [
+        EdlPlacement(tl_start=10, tl_end=15, src="film.mp4", src_in=0, src_out=5, beat_id=1, shot_index=0, speed=1),
+        EdlPlacement(tl_start=60, tl_end=70, src="film.mp4", src_in=50, src_out=60, beat_id=1, shot_index=1, speed=1),
+    ]
+
+    required, drift = long_beat_alignment_required(
+        beat=current_beat,
+        timing=current_timing,
+        placements=placements,
+        max_source_drift_s=12.0,
+    )
+
+    assert required is True
+    assert drift > 18.0
+
+
+def test_monotonic_anchor_can_use_dark_only_shot_for_ending_event() -> None:
+    current_beat = beat(source_end=30.0)
+    current_timing = timing(duration=60.0)
+    sentences = estimate_sentence_timings(current_beat, current_timing)
+    shots = [
+        shot(0, 0, 10),
+        shot(1, 10, 20),
+        shot(2, 20, 30).model_copy(
+            update={"is_usable": False, "brightness": 0.05, "unusable_reasons": ["too_dark"]}
+        ),
+    ]
+    scores = {
+        (1, sentence.sentence_index, shot_index): (0.9 if sentence.sentence_index == 3 and shot_index == 2 else 0.5)
+        for sentence in sentences
+        for shot_index in range(3)
+    }
+
+    chunks = select_monotonic_anchors(
+        beat=current_beat,
+        timing=current_timing,
+        sentences=sentences,
+        shots=shots,
+        query_shot_scores=scores,
+        allow_dark_fallback=True,
+        min_visual_clip=0.6,
+    )
+
+    assert chunks[-1].anchor_shot_index == 2
+
+
+def test_hook_leading_brightness_guard_replaces_dark_first_placement() -> None:
+    current_beat = beat(hook=True, source_end=30.0)
+    shots = [
+        shot(0, 0, 5).model_copy(update={"brightness": 0.05}),
+        shot(1, 5, 15).model_copy(update={"brightness": 0.4}),
+        shot(2, 20, 25).model_copy(update={"brightness": 0.4}),
+    ]
+    baseline = [
+        EdlPlacement(tl_start=0, tl_end=5, src="film.mp4", src_in=0, src_out=5, beat_id=1, shot_index=0, speed=1),
+        EdlPlacement(tl_start=5, tl_end=10, src="film.mp4", src_in=20, src_out=25, beat_id=1, shot_index=2, speed=1),
+    ]
+
+    result = apply_hook_leading_brightness_guard(
+        beat=current_beat,
+        baseline_placements=baseline,
+        shots=shots,
+        min_brightness=0.1,
+        max_clip=5.0,
+        min_visual_clip=0.6,
+    )
+
+    assert result.used is True
+    assert result.original_shot_index == 0
+    assert result.replacement_shot_ids == [1]
+    assert result.placements[0].shot_index == 1
+    assert result.placements[0].src_in == 5.0
+
+
+def test_low_confidence_transition_merges_into_next_strong_anchor() -> None:
+    current_beat = beat(source_end=180.0)
+    chunks = [
+        AlignmentChunk(1, (0,), "transition", 0.0, 7.0, 0, 30.0, 0.40, 45.0),
+        AlignmentChunk(1, (1,), "specific event", 7.0, 17.0, 1, 90.0, 0.65, 60.0),
+    ]
+
+    result = merge_low_confidence_transitions(current_beat, chunks)
+
+    assert len(result) == 1
+    assert result[0].sentence_indices == (0, 1)
+    assert result[0].anchor_shot_index == 1
+    assert result[0].tl_start == 0.0
+    assert result[0].tl_end == 17.0
     assert prepare_opening_alignment_sentences(
         beats=[beat()],
         timings=[timing()],

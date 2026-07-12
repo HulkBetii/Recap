@@ -12,7 +12,7 @@ from match.anchors import plan_content_anchors
 from match.cache import MatchCache, file_hash, stable_hash
 from match.fill import assign_timeline, chronology_tier, fill_beat, fill_timeline_gaps, split_long_placements
 from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
-from match.intra_beat import alignment_queries, apply_opening_intra_beat_alignment, prepare_opening_alignment_sentences, update_reuse_counts
+from match.intra_beat import alignment_queries, apply_hook_leading_brightness_guard, apply_intra_beat_alignment, long_beat_alignment_required, prepare_intra_beat_alignment_sentences, update_reuse_counts
 from match.qa import build_edl_qa
 from match.review_html import write_review_html
 from match.scoring import ScoringWeights, score_shot
@@ -99,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-opening-ordered-fill", dest="opening_ordered_fill", action="store_false")
     parser.add_argument("--opening-intra-beat-align", action="store_true", default=False)
     parser.add_argument("--no-opening-intra-beat-align", dest="opening_intra_beat_align", action="store_false")
+    parser.add_argument("--hook-min-brightness", default=0.0, type=float)
     parser.add_argument("--ordered-fill-by-audio-progress", action="store_true", default=True)
     parser.add_argument("--no-ordered-fill-by-audio-progress", dest="ordered_fill_by_audio_progress", action="store_false")
     parser.add_argument("--no-exclude-non-story", dest="exclude_non_story", action="store_false")
@@ -135,6 +136,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "semantic_cache_dir": str(args.semantic_cache_dir) if args.semantic_cache_dir else None,
         "content_anchors": args.content_anchors,
         "opening_intra_beat_align": args.opening_intra_beat_align,
+        "hook_min_brightness": args.hook_min_brightness,
         "visual_index": visual_index_artifact_hash(args.visual_index.expanduser().resolve()) if args.visual_index and args.visual_index.expanduser().resolve().is_file() else None,
         "visual_mode": args.visual_mode,
         "visual_cache_dir": str(args.visual_cache_dir) if args.visual_cache_dir else None,
@@ -150,7 +152,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "sync_qa": True,
         "review_thumbs_per_beat": args.review_thumbs_per_beat,
         "repeat_guard": [args.max_repeat_per_beat, args.max_repeat_ratio_per_beat, args.min_repeat_alternative_score_ratio, args.adjacent_shot_repeat_penalty],
-        "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill, args.ordered_fill_by_audio_progress, args.opening_story_visual_start],
+        "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill, args.ordered_fill_by_audio_progress, args.opening_story_visual_start, args.hook_min_brightness],
     })
 
 
@@ -187,6 +189,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError("--chronology-weight must be >= 0")
     if args.max_source_drift_s <= 0:
         raise MatchError("--max-source-drift-s must be > 0")
+    if not 0 <= args.hook_min_brightness <= 1:
+        raise MatchError("--hook-min-brightness must be between 0 and 1")
     if args.semantic_batch_size <= 0:
         raise MatchError("--semantic-batch-size must be > 0")
     if args.review_thumbs_per_beat < 0:
@@ -300,6 +304,8 @@ def run_match(args: argparse.Namespace) -> int:
         args.opening_ordered_fill = True
     if not hasattr(args, "opening_intra_beat_align"):
         args.opening_intra_beat_align = False
+    if not hasattr(args, "hook_min_brightness"):
+        args.hook_min_brightness = 0.0
     if not hasattr(args, "ordered_fill_by_audio_progress"):
         args.ordered_fill_by_audio_progress = True
     if not hasattr(args, "opening_story_visual_start"):
@@ -386,7 +392,7 @@ def run_match(args: argparse.Namespace) -> int:
     use_content_anchors = args.content_anchors and strict_timecodes
     if args.content_anchors and args.film_map is not None and not use_content_anchors:
         warnings.append("content anchors disabled because film_map timecodes are not strict")
-    opening_alignment_sentences = prepare_opening_alignment_sentences(
+    intra_beat_alignment_sentences = prepare_intra_beat_alignment_sentences(
         beats=review_beats,
         timings=timings,
         enabled=args.opening_intra_beat_align,
@@ -410,7 +416,7 @@ def run_match(args: argparse.Namespace) -> int:
                 cache_dir=semantic_cache_dir,
                 score_segments=use_content_anchors,
             ),
-            alignment_queries=alignment_queries(opening_alignment_sentences),
+            alignment_queries=alignment_queries(intra_beat_alignment_sentences),
         )
         semantic_scores = semantic_result.scores
     if args.visual_mode != "off" and args.visual_index is not None and args.visual_index.expanduser().resolve().is_file():
@@ -505,28 +511,54 @@ def run_match(args: argparse.Namespace) -> int:
         )
         beat_placements = assign_timeline(result.fragments, timing)
         intra_beat_result = None
+        alignment_mode = None
+        alignment_trigger_drift = None
+        long_alignment_required = False
+        if beat.beat_id in intra_beat_alignment_sentences and not in_opening_guard and anchor_plan is None:
+            long_alignment_required, alignment_trigger_drift = long_beat_alignment_required(
+                beat=beat,
+                timing=timing,
+                placements=beat_placements,
+                max_source_drift_s=args.max_source_drift_s,
+            )
         if (
-            beat.beat_id in opening_alignment_sentences
+            beat.beat_id in intra_beat_alignment_sentences
+            and (in_opening_guard or long_alignment_required)
             and semantic_result is not None
             and semantic_result.provider == "bge-m3"
             and semantic_result.query_shot_scores
         ):
-            intra_beat_result = apply_opening_intra_beat_alignment(
+            alignment_mode = "opening" if in_opening_guard else "long_beat"
+            intra_beat_result = apply_intra_beat_alignment(
                 beat=beat,
                 timing=timing,
                 baseline_placements=beat_placements,
-                sentences=opening_alignment_sentences[beat.beat_id],
+                sentences=intra_beat_alignment_sentences[beat.beat_id],
                 shots=shots,
                 query_shot_scores=semantic_result.query_shot_scores,
                 reuse_counts_before=reuse_counts_before,
                 max_clip=args.max_clip,
                 min_visual_clip=args.min_visual_clip,
                 allow_dark_fallback=args.allow_dark_fallback,
+                mode=alignment_mode,
             )
             beat_placements = intra_beat_result.placements
             result.warnings.extend(intra_beat_result.warnings)
             if intra_beat_result.used:
                 update_reuse_counts(reuse_counts, reuse_counts_before, beat_placements)
+
+        hook_guard_result = apply_hook_leading_brightness_guard(
+            beat=beat,
+            baseline_placements=beat_placements,
+            shots=shots,
+            min_brightness=args.hook_min_brightness,
+            max_clip=args.max_clip,
+            min_visual_clip=args.min_visual_clip,
+        )
+        beat_placements = hook_guard_result.placements
+        result.warnings.extend(hook_guard_result.warnings)
+        if hook_guard_result.used:
+            update_reuse_counts(reuse_counts, reuse_counts_before, beat_placements)
 
         selected_candidate_ids = list(result.candidate_shot_ids)
         if intra_beat_result is not None:
@@ -535,6 +567,7 @@ def run_match(args: argparse.Namespace) -> int:
                 for diagnostic in intra_beat_result.diagnostics
                 for shot_index in diagnostic.get("selected_shot_ids", [])
             )
+        selected_candidate_ids.extend(hook_guard_result.replacement_shot_ids)
         candidate_shot_ids[beat.beat_id] = list(dict.fromkeys(selected_candidate_ids))
         candidate_diagnostics[beat.beat_id] = {
             "window_start": result.window_start,
@@ -555,9 +588,18 @@ def run_match(args: argparse.Namespace) -> int:
             "content_anchor_segment_ids": anchor_plan.segment_ids if anchor_plan else [],
             "content_anchor_threshold": anchor_plan.threshold if anchor_plan else None,
             "content_anchor_capacity_s": anchor_plan.capacity_s if anchor_plan else None,
-            "opening_intra_beat_align_used": bool(intra_beat_result and intra_beat_result.used),
-            "opening_intra_beat_chunks": intra_beat_result.diagnostics if intra_beat_result else [],
-            "opening_intra_beat_replaced_ranges": [list(item) for item in intra_beat_result.replaced_ranges] if intra_beat_result else [],
+            "opening_intra_beat_align_used": bool(alignment_mode == "opening" and intra_beat_result and intra_beat_result.used),
+            "opening_intra_beat_chunks": intra_beat_result.diagnostics if alignment_mode == "opening" and intra_beat_result else [],
+            "opening_intra_beat_replaced_ranges": [list(item) for item in intra_beat_result.replaced_ranges] if alignment_mode == "opening" and intra_beat_result else [],
+            "intra_beat_align_used": bool(intra_beat_result and intra_beat_result.used),
+            "intra_beat_align_mode": alignment_mode,
+            "intra_beat_trigger_drift_s": alignment_trigger_drift,
+            "intra_beat_chunks": intra_beat_result.diagnostics if intra_beat_result else [],
+            "intra_beat_replaced_ranges": [list(item) for item in intra_beat_result.replaced_ranges] if intra_beat_result else [],
+            "hook_leading_guard_used": hook_guard_result.used,
+            "hook_leading_min_brightness": args.hook_min_brightness,
+            "hook_leading_original_shot": hook_guard_result.original_shot_index,
+            "hook_leading_replacement_shots": hook_guard_result.replacement_shot_ids,
         }
         n_dark_fallback_beats += int(bool(result.dark_selected_ids))
         n_capacity_exhausted_beats += int(result.capacity_exhausted)
@@ -585,7 +627,8 @@ def run_match(args: argparse.Namespace) -> int:
                 result.warnings.append(f"beat {beat.beat_id} opening_short_fill {filled_duration:.3f}/{timing.duration:.3f}s")
         if result.widened:
             n_beats_widened += 1
-        n_reused += sum(1 for placement in beat_placements if placement.reused) if intra_beat_result and intra_beat_result.used else result.reused_count
+        adjusted_placements = bool((intra_beat_result and intra_beat_result.used) or hook_guard_result.used)
+        n_reused += sum(1 for placement in beat_placements if placement.reused) if adjusted_placements else result.reused_count
         n_speedfit += result.speedfit_count
         warnings.extend(result.warnings)
         placements.extend(beat_placements)

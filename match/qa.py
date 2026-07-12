@@ -77,7 +77,7 @@ def build_edl_qa(
         anchor_interval_weights = [float(item) for item in candidate_info.get("content_anchor_interval_weights", [])]
         intra_beat_chunks = [
             item
-            for item in candidate_info.get("opening_intra_beat_chunks", [])
+            for item in candidate_info.get("intra_beat_chunks", candidate_info.get("opening_intra_beat_chunks", []))
             if isinstance(item, dict) and item.get("replaced")
         ]
         beat_drifts: list[float] = []
@@ -142,6 +142,7 @@ def build_edl_qa(
                 "drift_tier": chronology_tier(shot, expected_src_position, max_source_drift_s=max_source_drift_s)[0] if shot else None,
                 "dark_fallback": placement.shot_index in dark_candidate_ids,
                 "opening_intra_beat_chunk": intra_beat_chunk,
+                "intra_beat_chunk": intra_beat_chunk,
             }
             if shot is not None:
                 entry.update({
@@ -269,6 +270,15 @@ def build_edl_qa(
             "opening_intra_beat_align_used": bool(candidate_info.get("opening_intra_beat_align_used", False)),
             "opening_intra_beat_chunks": candidate_info.get("opening_intra_beat_chunks", []),
             "opening_intra_beat_replaced_ranges": candidate_info.get("opening_intra_beat_replaced_ranges", []),
+            "intra_beat_align_used": bool(candidate_info.get("intra_beat_align_used", False)),
+            "intra_beat_align_mode": candidate_info.get("intra_beat_align_mode"),
+            "intra_beat_trigger_drift_s": candidate_info.get("intra_beat_trigger_drift_s"),
+            "intra_beat_chunks": candidate_info.get("intra_beat_chunks", []),
+            "intra_beat_replaced_ranges": candidate_info.get("intra_beat_replaced_ranges", []),
+            "hook_leading_guard_used": bool(candidate_info.get("hook_leading_guard_used", False)),
+            "hook_leading_min_brightness": candidate_info.get("hook_leading_min_brightness"),
+            "hook_leading_original_shot": candidate_info.get("hook_leading_original_shot"),
+            "hook_leading_replacement_shots": candidate_info.get("hook_leading_replacement_shots", []),
             "ordered_fill_used": ordered_fill_used,
             "chronology_mismatch": chronology_mismatch,
             "intent_match_score": 1.0 if section is not None else 0.0,

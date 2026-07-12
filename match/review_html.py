@@ -114,14 +114,23 @@ def write_review_html(
             )
             anchor_info = f" | Content anchor: {escape(intervals)}"
         intra_beat_info = ""
-        if isinstance(qa_beat, dict) and qa_beat.get("opening_intra_beat_align_used"):
-            intra_beat_info = f" | Intra-beat aligned: {len(qa_beat.get('opening_intra_beat_replaced_ranges', []))} range(s)"
-        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}{visual_query}{capacity_info}{anchor_info}{intra_beat_info}</div>")
+        if isinstance(qa_beat, dict) and qa_beat.get("intra_beat_align_used", qa_beat.get("opening_intra_beat_align_used")):
+            ranges = qa_beat.get("intra_beat_replaced_ranges", qa_beat.get("opening_intra_beat_replaced_ranges", []))
+            mode = qa_beat.get("intra_beat_align_mode") or "opening"
+            intra_beat_info = f" | Intra-beat aligned ({escape(str(mode))}): {len(ranges)} range(s)"
+        hook_guard_info = ""
+        if isinstance(qa_beat, dict) and qa_beat.get("hook_leading_guard_used"):
+            hook_guard_info = (
+                f" | Hook brightness guard: shot {escape(_fmt(qa_beat.get('hook_leading_original_shot')))}"
+                f" -> {escape(str(qa_beat.get('hook_leading_replacement_shots', [])))}"
+            )
+        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}{visual_query}{capacity_info}{anchor_info}{intra_beat_info}{hook_guard_info}</div>")
         if beat_warnings:
             parts.append("<ul class=\"warn\">" + "".join(f"<li>{escape(str(warning))}</li>" for warning in beat_warnings) + "</ul>")
-        intra_beat_chunks = qa_beat.get("opening_intra_beat_chunks", []) if isinstance(qa_beat, dict) else []
+        intra_beat_chunks = qa_beat.get("intra_beat_chunks", qa_beat.get("opening_intra_beat_chunks", [])) if isinstance(qa_beat, dict) else []
         if intra_beat_chunks:
-            parts.append("<h3>Opening intra-beat alignment</h3><div class=\"grid\">")
+            mode = qa_beat.get("intra_beat_align_mode") or "opening"
+            parts.append(f"<h3>{escape(str(mode).replace('_', ' ').title())} intra-beat alignment</h3><div class=\"grid\">")
             for chunk in intra_beat_chunks:
                 if not isinstance(chunk, dict):
                     continue

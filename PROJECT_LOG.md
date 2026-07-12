@@ -726,3 +726,17 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Final render is H.264/AAC, `1920x1080`, approximately `30fps`, `1418.443s`, `duration_match=true`, with a 21-frame nonblack freeze tail. Cached rerender encoded only 3 changed clips.
 - Playwright reviewed the HTML opening, action, warning-heavy beat 23, climax, and ending; thumbnails matched the narrated subject, while beat 23 remains the weakest section because it widened three times and reached repeat ratio `0.500`.
 - Validation: targeted TTS/match tests passed; full `python -m pytest -q` -> `254 passed`.
+
+### 2026-07-12 - Ba Mat Lat Keo Korean E2E
+
+- Ran the Korean visual preset on `Ba-Mat-Lat-Keo.mp4`; G0, strict Faster Whisper + WhisperX ingest, 200-frame vision, G2 ChatGPT Playwright review, G4, SigLIP2 Visual Index, BGE-M3 match, and G6 completed.
+- G3 exposed a direct socket `TimeoutError` during AI33 submit. Extended the production HTTP retry/backoff path to cover socket timeouts and added a regression test. AI33 still timed out for a tiny live smoke request, so this run used a gitignored OpenAI TTS fallback to produce 23 cached beats and a `2173.204s` voiceover.
+- G4 produced 1,332 shots; Visual Index completed in `259.442s`; G5 produced 528 placements in `69.694s` with zero reuse, zero widen, zero timeline gaps/overlaps, and one `0.117s` sync warning at the beat 1/2 boundary.
+- G6 completed in `628.209s`; output is H.264/AAC, `1920x1080`, `30fps`, `2173.204s`, `duration_match=true`, with a `1.034s` nonblack freeze tail.
+- Playwright loaded all 296 QA thumbnails with zero broken images and sought the rendered MP4 through a range-capable localhost player. Confirmed a black opening interval at `0.30-3.33s` and an ending mismatch: `2092-2120s` uses an unrelated Superman/arrest scene, while the final phone-home source at `7198-7202s` is never selected.
+- Validation: targeted TTS provider tests -> `7 passed`; full `python -m pytest -q` -> `284 passed`.
+- G5 algorithm v5 generalized the opt-in sentence alignment to high-drift long beats without touching beats that already have content-anchor plans. Beat 22 now follows monotonic election, three-billion-won, action, and phone-home blocks; max QA drift dropped from `46.081s` to `0.019s` with no repeat, overlap, source-order mismatch, or sub-0.6s clip.
+- Added visual-preset `hook_min_brightness=0.10`; beat 0 replaces dark shot 9 with brighter chronological shot 10, removing the measured `0.30-3.33s` black opening.
+- Final forced G6 rerender completed in `605.936s`: H.264/AAC, `1920x1080`, `30fps`, `2173.204s`, `duration_match=true`, with a nonblack `1.136s` freeze tail.
+- Playwright verified visible opening footage at `1.0s`, the election at `2092.3s`, the final action sequence at `2124.3-2144.3s`, and phone-home footage at `2169.3s`; the old Superman scene is gone. Native end-credit frames remain interleaved with the movie's post-credit action source.
+- Final HTML audit loaded `296/296` thumbnails with zero broken images and no browser console errors. Full validation: `python -m pytest -q` -> `290 passed`; opening blackdetect reported no black interval.

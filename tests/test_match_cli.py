@@ -69,7 +69,7 @@ def test_match_cli_outputs_valid_edl_and_meta(tmp_path) -> None:
     meta = json.loads((tmp_path / "edl.meta.json").read_text(encoding="utf-8"))
     assert meta["n_beats_widened"] >= 1
     assert meta["n_placements"] > 0
-    assert meta["algorithm_version"] == "4"
+    assert meta["algorithm_version"] == "5"
     qa = json.loads((tmp_path / "edl.qa.json").read_text(encoding="utf-8"))
     assert "candidate_capacity_s" in qa["beats"][0]
     edl = json.loads((tmp_path / "edl.json").read_text(encoding="utf-8"))

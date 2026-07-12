@@ -212,8 +212,9 @@ repo/
 - Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding qua optional deps `semantic-embed`; `tfidf` van la fallback nhe. Semantic la soft bonus, khong hard filter.
 - `content_anchors=true` uses narration-only beat-to-segment semantic scores for beats whose source span is at least 4x the audio duration. G5 restricts fill/chronology to the relevant timecode clusters; compact beats and failed anchors keep legacy matching.
 - Content anchors require strict timecodes; G5 disables them automatically when sibling `film_map.meta.json` has `approximate_timecodes=true`.
-- `opening_intra_beat_align` is experimental and enabled only by `config.movie.visual.yaml`. For the first eligible non-hook opening beat, G5 estimates sentence timing from real TTS duration, scores sentence-to-shot contexts with BGE-M3, chooses monotonic anchors, and splices only confident local ranges into the baseline EDL.
-- Opening intra-beat alignment requires strict timecodes, `semantic_mode=bge-m3`, audio at least 45s, and source/audio ratio at least 3. It analyzes at most the first 30s, keeps stable presets disabled, never widens local anchor windows, and preserves baseline placements outside replaced ranges.
+- `opening_intra_beat_align` remains the backward-compatible opt-in flag for sentence-level alignment in `config.movie.visual.yaml`. It still analyzes at most the first 30s of the first eligible opening beat, and now prepares full-beat anchors for non-opening beats whose source/audio ratio is at least 2.5.
+- Non-opening alignment runs only with strict timecodes + BGE-M3, no existing content-anchor plan, and baseline drift above `max(18s, 1.5 * max_source_drift_s)`. Same-anchor sentences are coalesced, low-confidence transitions attach to the next strong anchor, dark-only ending shots remain eligible, and source windows stay monotonic without overlap.
+- G5 `--hook-min-brightness` replaces only the first hook placement when its shot-average brightness is below the configured threshold and a brighter chronological local fill exists. Stable/default config keeps `0.0`; `config.movie.visual.yaml` uses `0.10`.
 - Movie matching mac dinh dung `match_strategy=chronological`: bam source timecode/chronology truoc; semantic/story/intent chi la soft tie-breaker de tranh audio mot noi hinh mot noi. `semantic` strategy chi dung cho debug/experiment.
 - `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse, `expected_src_position`, `source_drift_s`, `chronology_score` va warnings `low semantic match`/`high source drift` theo beat.
 - `edl.review.html` la QA artifact truc quan tu `match/review_html.py`, dung thumbnails san co trong `shots.json`, hien narration/source span/selected clip metrics/drift/warnings de review nhanh bang browser.
@@ -226,7 +227,7 @@ repo/
 - Fallback thiếu footage tính capacity theo `sum(min(max_clip, source_intersection))`, bỏ candidate ngắn hơn `min_visual_clip`; thử usable rồi dark-only trong window hiện tại trước khi widen đúng tối đa `max_widen` cấp.
 - `allow_dark_fallback=true` mặc định cho stable/visual presets; chỉ shot story bị loại duy nhất vì `too_dark` được relax. Non-story, no-frame, transition spike và too-short luôn bị loại cứng.
 - Repeat fallback dùng phần source chưa dùng trong shot trước, sau đó mới chọn span overlap thấp nhất; tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier.
-- `edl.meta.json` ghi `algorithm_version` và counters dark/capacity/reuse; orchestrator buộc rerun GĐ5 + downstream khi version cũ.
+- `edl.meta.json` ghi `algorithm_version` và counters dark/capacity/reuse; algorithm version 5 invalidates artifacts created before long-beat alignment and the hook brightness guard.
 - Cache GD5 nam trong `--work-dir/plan.json`; embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
 - Match `algorithm_version=3` invalidates artifacts created before content-anchor matching; QA/HTML record anchor intervals, segment ids, threshold and capacity.
 - Test tu dong dung JSON fixtures/mock; khong dung video/ffmpeg/API.

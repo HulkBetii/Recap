@@ -344,7 +344,8 @@ Nguyên tắc GĐ5:
 - Khi thiếu footage, GĐ5 tính diversity capacity theo tối đa một clip `max_clip` cho mỗi shot. Nó thử shot usable rồi shot story chỉ bị loại vì tối trong cùng source window trước khi widen, và không vượt quá `max_widen`.
 - Repeat fallback ưu tiên phần source chưa dùng của các shot đã chọn, tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier, rồi mới dùng span có overlap thấp nhất.
 - `edl.qa.json`/HTML hiển thị capacity, widen count, dark fallback, unused-source reuse và overlapping repeat; `edl.meta.json.algorithm_version` làm stale artifact tự rebuild qua orchestrator.
-- Visual preset bật `opening_intra_beat_align`: GĐ5 chỉ xét non-hook opening beat đầu tiên đủ dài, ước lượng timeline từng câu theo TTS thật, dùng BGE-M3 + monotonic DP để tìm anchor và splice cục bộ. Stable preset giữ tắt; timecode approximate, TF-IDF/off, confidence thấp hoặc local window thiếu footage đều giữ nguyên EDL baseline.
+- Visual preset bật `opening_intra_beat_align` cho cả opening và long-beat hardening. Opening vẫn chỉ phân tích 30 giây đầu; non-opening beat chỉ splice khi timecode strict, dùng BGE-M3, chưa có content-anchor plan và baseline drift vượt `max(18s, 1.5 * max_source_drift_s)`. Các câu cùng anchor được gộp, transition confidence thấp gắn vào anchor mạnh kế tiếp, source window giữ thứ tự và không overlap.
+- `hook_min_brightness=0.10` trong visual preset tránh mở video bằng placement quá tối; stable/default giữ `0.0`. QA HTML/JSON ghi mode, trigger drift, replaced ranges, source windows và shot thay thế hook.
 - Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic, `content_anchors`, `opening_intra_beat_align` và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
 
 ## Chạy GĐ6

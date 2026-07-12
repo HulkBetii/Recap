@@ -85,3 +85,30 @@ def test_http_json_retries_transient_gateway_error(monkeypatch) -> None:  # type
 
     assert http_json("https://example.com") == {"status": "ok"}
     assert calls == 2
+
+
+def test_http_json_retries_socket_timeout(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls = 0
+
+    class Response:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *args):  # type: ignore[no-untyped-def]
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"status": "ok"}).encode("utf-8")
+
+    def fake_urlopen(_request, timeout):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("read operation timed out")
+        return Response()
+
+    monkeypatch.setattr("tts.providers.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("tts.providers.time.sleep", lambda _seconds: None)
+
+    assert http_json("https://example.com") == {"status": "ok"}
+    assert calls == 2

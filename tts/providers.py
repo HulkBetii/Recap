@@ -82,9 +82,10 @@ def http_json(url: str, *, method: str = "GET", headers: dict[str, str] | None =
             body = exc.read().decode("utf-8", errors="replace")
             if exc.code not in RETRYABLE_HTTP_CODES or attempt == HTTP_MAX_ATTEMPTS - 1:
                 raise TtsProviderError(f"HTTP {exc.code}: {body}") from exc
-        except urllib.error.URLError as exc:
+        except (TimeoutError, urllib.error.URLError) as exc:
             if attempt == HTTP_MAX_ATTEMPTS - 1:
-                raise TtsProviderError(f"Network error: {exc.reason}") from exc
+                reason = exc.reason if isinstance(exc, urllib.error.URLError) else str(exc)
+                raise TtsProviderError(f"Network error: {reason}") from exc
         time.sleep(HTTP_RETRY_BASE_DELAY_S * (2 ** attempt))
     raise AssertionError("HTTP retry loop exhausted unexpectedly")
 
