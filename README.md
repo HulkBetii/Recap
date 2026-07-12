@@ -23,7 +23,7 @@ Yêu cầu:
 py -3.11 -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install --upgrade pip
-python -m pip install -e .[dev]
+python -m pip install -e ".[dev]"
 ```
 
 
@@ -47,9 +47,11 @@ python run.py --input path\to\film.mp4 --run-dir runs\movie01 --config config.mo
 Preset phim lẻ có visual index/rerank thử nghiệm:
 
 ```powershell
-python -m pip install -e .[visual-index]
+python -m pip install -e ".[movie-visual,dev]"
 python run.py --input path\to\film.mp4 --run-dir runs\movie-visual01 --config config.movie.visual.yaml
 ```
+
+`movie-visual` gom WhisperX, BGE-M3 và SigLIP2 cho preset visual. OpenCLIP intro detection vẫn là dependency riêng: `python -m pip install -e ".[video-profile]"`.
 
 Preset video/phim nguồn tiếng Việt, không dịch KO→EN:
 

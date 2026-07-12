@@ -42,6 +42,47 @@ visual-index = [
     "Pillow>=10,<12",
     "safetensors>=0.4,<1",
 ]
+movie-visual = [
+    "torch>=2.8",
+    "torchaudio>=2.8",
+    "whisperx>=3.8,<4",
+    "sentence-transformers>=3.0,<5",
+    "transformers>=4.53,<5",
+    "Pillow>=10,<12",
+    "safetensors>=0.4,<1",
+]
+
+[tool.setuptools]
+py-modules = ["run"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "common*",
+    "ingest*",
+    "match*",
+    "orchestrator*",
+    "preflight*",
+    "render*",
+    "review*",
+    "shots*",
+    "storymap*",
+    "tts*",
+    "visual_index*",
+]
+exclude = [
+    "tests*",
+    "runs*",
+    "work*",
+    "data*",
+    "broll*",
+    "tts_align*",
+    "__pycache__*",
+    "build*",
+    "dist*",
+    "*.egg-info*",
+]
+namespaces = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

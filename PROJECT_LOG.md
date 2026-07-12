@@ -750,3 +750,10 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - `Ba-Mat-Lat-Keo` rebuilt Visual Index in `270.162s`, GĐ5 in `42.824s`, and GĐ6 in `614.427s`. The final EDL has 534 placements, excludes all 24 marked shots, keeps repeat at zero, minimum clip `0.601s`, and beat-22 max drift `8.554s`.
 - Playwright verified `2107.3s` now shows the money scene instead of a credit-only frame, while `2124.3s` preserves the action scene with credit overlay. HTML loaded `296/296` thumbnails with no console errors; render is `1920x1080`, `30fps`, `2173.204s`, `duration_match=true`.
 - Validation: targeted suites -> `85 passed`; full `python -m pytest -q` -> `298 passed`; compileall and `git diff --check` completed without code errors.
+
+### 2026-07-12 - Local editable packaging hardening
+
+- Replaced setuptools flat-layout auto-discovery with an explicit runtime package allowlist and included `run.py` as a py-module, preventing local artifact/build directories from being treated as packages or dirtying git status.
+- Added `movie-visual` as the deduplicated dependency union for WhisperX, BGE-M3, and SigLIP2; OpenCLIP remains opt-in through `video-profile`.
+- Updated install guidance and added static packaging regression tests for package discovery, exclusions, and dependency composition.
+- Validation: editable metadata dry-run succeeded; wheel build/import and `ingest`/`match`/`visual_index` help smokes passed; wheel contained all 12 required runtime roots and no excluded roots; full `python -m pytest -q` -> `300 passed`; compileall and `git diff --check` passed.

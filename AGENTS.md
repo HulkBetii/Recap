@@ -462,3 +462,10 @@ repo/
 - GĐ5 luôn ghi `edl.visual.qa.json`; khi visual disabled/missing thì artifact ghi `visual_enabled=false` và matching fallback text-only.
 - GĐ5 `edl.qa.json` và `edl.review.html` hiển thị thêm visual score/rank/query để debug hình có khớp narration hay không.
 - V1 chưa làm VLM caption top-K, OCR đầy đủ, hoặc face/entity cluster; các hướng này là phase sau và vẫn phải giữ chronology/timecode là prior chính.
+
+## 35. LOCAL EDITABLE PACKAGING
+
+- Setuptools package discovery dùng allowlist cho các runtime package: `common`, `ingest`, `match`, `orchestrator`, `preflight`, `render`, `review`, `shots`, `storymap`, `tts`, `visual_index`; `run.py` được đóng gói như py-module.
+- Không package `tests`, `runs`, `work`, `data`, `broll`, `tts_align`, `build`, `dist`, egg-info hoặc cache directories. Runtime/build artifacts phải nằm trong các thư mục gitignored hiện có.
+- Extra `movie-visual` là bộ dependency local đầy đủ cho WhisperX + BGE-M3 + SigLIP2. OpenCLIP/video profile vẫn cài riêng bằng extra `video-profile`.
+- Packaging v1 chỉ hỗ trợ editable install và wheel/import smoke trong repo; không cung cấp global `recap` console command và không package config/style assets để chạy từ thư mục bất kỳ.
