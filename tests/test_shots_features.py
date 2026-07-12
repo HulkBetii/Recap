@@ -3,7 +3,7 @@
 import numpy as np
 
 from shots.detect import ShotSpan
-from shots.features import FeatureConfig, build_frame_sample_requests, compute_features_from_frames, frame_index_for_timestamp, shot_sample_times
+from shots.features import FeatureConfig, FrameSampleRequest, build_frame_sample_requests, compute_features_from_frames, frame_index_for_timestamp, initial_batch_position, shot_sample_times
 
 
 class FakeFaceDetector:
@@ -51,3 +51,19 @@ def test_frame_sample_requests_are_sorted_and_clamped() -> None:
 
     assert [(request.shot_index, request.frame_index) for request in requests] == [(1, 5), (2, 19)]
     assert frame_index_for_timestamp(9.0, fps=10.0, frame_count=20) == 19
+
+
+def test_tail_batch_sampling_seeks_to_first_request() -> None:
+    class FakeCapture:
+        def __init__(self) -> None:
+            self.positions: list[int] = []
+
+        def set(self, _property, value):  # type: ignore[no-untyped-def]
+            self.positions.append(int(value))
+
+    capture = FakeCapture()
+    requests = [FrameSampleRequest(shot_index=10, timestamp=90.0, frame_index=2700)]
+
+    assert initial_batch_position(capture, requests, seek_to_first_request=True) == 2700
+    assert capture.positions == [2700]
+    assert initial_batch_position(capture, requests, seek_to_first_request=False) == 0

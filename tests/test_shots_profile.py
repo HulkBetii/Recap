@@ -51,3 +51,4 @@ def test_apply_video_profile_without_profile_keeps_story() -> None:
 def test_profile_cache_key_changes_only_with_profile_hash() -> None:
     assert profile_cache_key("features-a", "profile-a") == profile_cache_key("features-a", "profile-a")
     assert profile_cache_key("features-a", "profile-a") != profile_cache_key("features-a", "profile-b")
+    assert profile_cache_key("features-a", "profile-a", "credit-a") != profile_cache_key("features-a", "profile-a", "credit-b")

@@ -39,6 +39,8 @@ def build_edl_qa(
     candidate_shot_ids: dict[int, list[int]] | None = None,
     candidate_drift_tiers: dict[tuple[int, int], int] | None = None,
     candidate_diagnostics: dict[int, dict[str, Any]] | None = None,
+    end_credit_guard_enabled: bool = False,
+    excluded_end_credit_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     review_intents = review_intents or {}
     story_sections = story_sections or {}
@@ -46,6 +48,7 @@ def build_edl_qa(
     candidate_shot_ids = candidate_shot_ids or {}
     candidate_drift_tiers = candidate_drift_tiers or {}
     candidate_diagnostics = candidate_diagnostics or {}
+    excluded_end_credit_ids = excluded_end_credit_ids or []
     shots_by_index = {shot.index: shot for shot in shots}
     placements_by_beat: dict[int, list[EdlPlacement]] = defaultdict(list)
     for placement in placements:
@@ -156,6 +159,8 @@ def build_edl_qa(
                     "is_story": shot.is_story,
                     "exclude_reason": shot.exclude_reason,
                     "selected_from_non_story": not shot.is_story,
+                    "is_end_credit": shot.is_end_credit,
+                    "credit_like_score": shot.credit_like_score,
                 })
             selected.append(entry)
         n_reused = sum(1 for placement in beat_selected if placement.reused)
@@ -224,6 +229,8 @@ def build_edl_qa(
                     ) if shot is not None else None,
                     "selected_keyframe": visual_result.selected_keyframes.get((beat_id, shot_index)),
                     "drift_tier": candidate_drift_tiers.get((beat_id, shot_index)),
+                    "is_end_credit": shot.is_end_credit if shot is not None else None,
+                    "credit_like_score": shot.credit_like_score if shot is not None else None,
                 })
             alternatives.sort(key=lambda item: (item["total_score_no_reuse"] or 0.0, item["visual_score"]), reverse=True)
             alternatives = alternatives[:5]
@@ -279,6 +286,7 @@ def build_edl_qa(
             "hook_leading_min_brightness": candidate_info.get("hook_leading_min_brightness"),
             "hook_leading_original_shot": candidate_info.get("hook_leading_original_shot"),
             "hook_leading_replacement_shots": candidate_info.get("hook_leading_replacement_shots", []),
+            "excluded_end_credit_ids": candidate_info.get("excluded_end_credit_ids", []),
             "ordered_fill_used": ordered_fill_used,
             "chronology_mismatch": chronology_mismatch,
             "intent_match_score": 1.0 if section is not None else 0.0,
@@ -287,7 +295,7 @@ def build_edl_qa(
         })
     excluded_intro = [shot.index for shot in shots if not shot.is_story]
     return {
-        "version": 9,
+        "version": 10,
         "match_strategy": match_strategy,
         "max_source_drift_s": max_source_drift_s,
         "semantic_enabled": bool(semantic_scores),
@@ -305,6 +313,9 @@ def build_edl_qa(
         "short_clip_threshold_s": short_clip_threshold_s,
         "n_intro_excluded": len(excluded_intro),
         "excluded_intro_candidates": excluded_intro[:200],
+        "end_credit_guard_enabled": end_credit_guard_enabled,
+        "n_end_credit_excluded": len(excluded_end_credit_ids),
+        "excluded_end_credit_candidates": excluded_end_credit_ids[:200],
         "selected_from_non_story": any((not shots_by_index.get(item.shot_index, Shot(src="unknown", index=0, tc_start=0, tc_end=1, duration=1, thumb="unknown", motion_score=0, face_count=0, face_area=0, brightness=0, is_usable=False)).is_story) for item in placements),
         "beats": beat_reports,
     }

@@ -145,6 +145,8 @@ def iter_batch_sampled_frames(
     spans: list[ShotSpan],
     sample_count: int,
     max_width: int = DEFAULT_FRAME_SAMPLE_WIDTH,
+    *,
+    seek_to_first_request: bool = False,
 ) -> Iterator[tuple[ShotSpan, list[SampledFrame]]]:
     import cv2
 
@@ -170,7 +172,11 @@ def iter_batch_sampled_frames(
         current_shot = ordered_spans[0].index
         current_samples: list[SampledFrame] = []
         span_cursor = 0
-        current_position = 0
+        current_position = initial_batch_position(
+            cap,
+            requests,
+            seek_to_first_request=seek_to_first_request,
+        )
         for request, frame, current_position in _iter_request_frames(
             cap,
             requests,
@@ -202,6 +208,21 @@ def iter_batch_sampled_frames(
             span_cursor += 1
     finally:
         cap.release()
+
+
+def initial_batch_position(
+    cap,  # type: ignore[no-untyped-def]
+    requests: list[FrameSampleRequest],
+    *,
+    seek_to_first_request: bool,
+) -> int:
+    if not seek_to_first_request or not requests:
+        return 0
+    import cv2
+
+    frame_index = requests[0].frame_index
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+    return frame_index
 
 def _iter_request_frames(
     cap,  # type: ignore[no-untyped-def]

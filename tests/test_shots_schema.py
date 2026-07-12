@@ -68,6 +68,8 @@ def test_validate_shots_requires_continuous_index_and_bounds() -> None:
 def test_shot_unusable_reasons_are_optional_and_normalized() -> None:
     legacy = make_shot(0, 0.0, 1.0)
     assert legacy.unusable_reasons == []
+    assert legacy.is_end_credit is False
+    assert legacy.credit_like_score == 0.0
 
     dark = legacy.model_copy(update={"is_usable": False, "unusable_reasons": [" too_dark ", "too_dark"]})
     reparsed = Shot.model_validate(dark.model_dump())

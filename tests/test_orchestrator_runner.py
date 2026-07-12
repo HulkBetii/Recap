@@ -85,11 +85,15 @@ def write_stage_outputs(command: list[str]) -> None:
     elif stage == "shots":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"src":"film.mp4","index":0,"tc_start":0,"tc_end":2,"duration":2,"thumb":"shots/film-000.jpg","motion_score":0.5,"face_count":0,"face_area":0,"brightness":0.5,"is_usable":True}]), encoding="utf-8")
-        output.with_name("shots.meta.json").write_text(json.dumps({"src":"film.mp4","duration_s":2,"n_shots":1,"n_usable":1,"detector":"adaptive","feature_config":{},"model_versions":{},"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
+        feature_config = {"end_credit_guard": "--end-credit-guard" in command}
+        if feature_config["end_credit_guard"]:
+            feature_config["end_credit_tail_s"] = float(command[command.index("--end-credit-tail-s") + 1])
+            feature_config["end_credit_threshold"] = float(command[command.index("--end-credit-threshold") + 1])
+        output.with_name("shots.meta.json").write_text(json.dumps({"src":"film.mp4","duration_s":2,"n_shots":1,"n_usable":1,"detector":"adaptive","feature_config":feature_config,"model_versions":{},"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
     elif stage == "match":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")
-        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[],"algorithm_version":"5"}), encoding="utf-8")
+        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[],"algorithm_version":"6"}), encoding="utf-8")
         output.with_name("edl.qa.json").write_text(json.dumps({"version":1,"semantic_enabled":True,"min_semantic_score":0.12,"beats":[]}), encoding="utf-8")
         flag(command, "--output-sync-qa").write_text(json.dumps({"version":1,"summary":{},"beats":[]}), encoding="utf-8")
         flag(command, "--output-visual-qa").write_text(json.dumps({"version":1,"visual_mode":"off","visual_enabled":False,"beats":[]}), encoding="utf-8")
@@ -185,6 +189,23 @@ def test_stale_match_algorithm_reruns_match_and_render(tmp_path: Path, monkeypat
     assert calls == ["match", "render"]
 
 
+def test_end_credit_policy_change_reruns_shots_and_downstream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    config = json.loads(args.config.read_text(encoding="utf-8"))
+    config["shots"] = {"end_credit_guard": True, "end_credit_tail_s": 600, "end_credit_threshold": 0.6}
+    config["match"] = {"exclude_end_credits": True}
+    args.config.write_text(json.dumps(config), encoding="utf-8")
+    calls: list[str] = []
+
+    run_pipeline(args, executor=lambda command, log_path: (calls.append(stage_name(command)), write_stage_outputs(command)))
+
+    assert calls == ["shots", "match", "render"]
+
+
 def test_force_stage_match_reruns_match_and_render_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "x")
     monkeypatch.setenv("VIVOO_API_KEY", "x")
@@ -258,6 +279,24 @@ def test_shots_command_passes_frame_sampling(tmp_path: Path) -> None:
     command = build_command("shots", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
 
     assert command[command.index("--frame-sampling") + 1] == "batch"
+
+
+def test_visual_policy_wires_end_credit_guard(tmp_path: Path) -> None:
+    from orchestrator.graph import build_paths
+    from orchestrator.runner import build_command
+
+    paths = build_paths(tmp_path / "run")
+    config = load_config(write_config(tmp_path))
+    config["shots"].update({"end_credit_guard": True, "end_credit_tail_s": 600, "end_credit_threshold": 0.6})
+    config["match"]["exclude_end_credits"] = True
+
+    shots_command = build_command("shots", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+    match_command = build_command("match", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+
+    assert "--end-credit-guard" in shots_command
+    assert shots_command[shots_command.index("--end-credit-tail-s") + 1] == "600"
+    assert shots_command[shots_command.index("--end-credit-threshold") + 1] == "0.6"
+    assert "--exclude-end-credits" in match_command
 
 def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None:
     from orchestrator.graph import build_paths

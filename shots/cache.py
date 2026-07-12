@@ -20,7 +20,7 @@ class ShotsCache:
 
     def prepare(self) -> None:
         if self.force and self.work_dir.exists():
-            for name in ("detection.json", "features.json", "profile_marking.json"):
+            for name in ("detection.json", "features.json", "end_credit_marking.json", "profile_marking.json"):
                 path = self.work_dir / name
                 if path.exists():
                     path.unlink()

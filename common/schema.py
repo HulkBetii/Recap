@@ -611,6 +611,8 @@ class Shot(BaseModel):
     unusable_reasons: list[str] = Field(default_factory=list)
     is_story: bool = True
     exclude_reason: str | None = None
+    is_end_credit: bool = False
+    credit_like_score: float = Field(default=0.0, ge=0, le=1)
 
     @field_validator("src", "thumb")
     @classmethod
@@ -648,6 +650,7 @@ class ShotsMeta(BaseModel):
     video_profile_path: str | None = None
     video_profile_hash: str | None = None
     n_non_story: int = Field(default=0, ge=0)
+    n_end_credit: int = Field(default=0, ge=0)
     intro_detection: dict[str, Any] | None = None
     story_start_s: float = Field(default=0.0, ge=0)
     created_at: datetime
@@ -700,6 +703,7 @@ class EdlMeta(BaseModel):
     n_empty_beats: int = Field(default=0, ge=0)
     n_high_repeat_beats: int = Field(default=0, ge=0)
     n_dark_fallback_beats: int = Field(default=0, ge=0)
+    n_end_credit_excluded: int = Field(default=0, ge=0)
     n_capacity_exhausted_beats: int = Field(default=0, ge=0)
     n_unused_source_reuse: int = Field(default=0, ge=0)
     n_overlapping_repeats: int = Field(default=0, ge=0)

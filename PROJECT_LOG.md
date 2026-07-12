@@ -740,3 +740,13 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Final forced G6 rerender completed in `605.936s`: H.264/AAC, `1920x1080`, `30fps`, `2173.204s`, `duration_match=true`, with a nonblack `1.136s` freeze tail.
 - Playwright verified visible opening footage at `1.0s`, the election at `2092.3s`, the final action sequence at `2124.3-2144.3s`, and phone-home footage at `2169.3s`; the old Superman scene is gone. Native end-credit frames remain interleaved with the movie's post-credit action source.
 - Final HTML audit loaded `296/296` thumbnails with zero broken images and no browser console errors. Full validation: `python -m pytest -q` -> `290 passed`; opening blackdetect reported no black interval.
+
+### 2026-07-12 - GĐ4/GĐ5 end-credit guard
+
+- Added backward-compatible `Shot.is_end_credit` / `credit_like_score` plus a deterministic OpenCV tail classifier. It samples only the final 600 seconds, detects blank or credit-only frames, and preserves post-credit scenes with a substantial story-image region.
+- Added `end_credit_marking.json` as a separate GĐ4 cache. Tail sampling now seeks directly to the first requested frame instead of decoding from frame zero; changing guard settings does not invalidate shot detection/features.
+- GĐ5 algorithm v6 hard-excludes marked credits before semantic/visual scoring, anchors, dark fallback, repeat, and pause filler. Visual preset enables the guard; stable/default presets remain off.
+- Real GĐ4 acceptance marked 24 shots in `Ba-Mat-Lat-Keo`, 40 in `Toan-Tri-Doc-Gia`, 0 in `Ngoai-Vong-Phap-Luat`, and 11 in `Gang-To-Tai-Xuat`; no previously selected shot was falsely removed in the three regression runs.
+- `Ba-Mat-Lat-Keo` rebuilt Visual Index in `270.162s`, GĐ5 in `42.824s`, and GĐ6 in `614.427s`. The final EDL has 534 placements, excludes all 24 marked shots, keeps repeat at zero, minimum clip `0.601s`, and beat-22 max drift `8.554s`.
+- Playwright verified `2107.3s` now shows the money scene instead of a credit-only frame, while `2124.3s` preserves the action scene with credit overlay. HTML loaded `296/296` thumbnails with no console errors; render is `1920x1080`, `30fps`, `2173.204s`, `duration_match=true`.
+- Validation: targeted suites -> `85 passed`; full `python -m pytest -q` -> `298 passed`; compileall and `git diff --check` completed without code errors.

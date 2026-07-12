@@ -245,6 +245,9 @@ python -m shots `
   --scene-scale-width 640 `
   --max-shot-len 8 `
   --frame-sampling batch `
+  --end-credit-guard `
+  --end-credit-tail-s 600 `
+  --end-credit-threshold 0.60 `
   --face-detection off
 ```
 
@@ -254,6 +257,7 @@ Cache GĐ4:
 
 - `work/shots/detection.json` — shot spans, không phụ thuộc `video_profile.json`.
 - `work/shots/features.json` — motion/brightness/face/thumb feature, không phụ thuộc `video_profile.json`.
+- `work/shots/end_credit_marking.json` — tail-only deterministic credit score; đổi guard không recompute detection/features.
 - `work/shots/profile_marking.json` — apply `video_profile.json` để set `is_story=false` / `exclude_reason`.
 - `work/shots/thumbs/`
 
@@ -346,6 +350,7 @@ Nguyên tắc GĐ5:
 - `edl.qa.json`/HTML hiển thị capacity, widen count, dark fallback, unused-source reuse và overlapping repeat; `edl.meta.json.algorithm_version` làm stale artifact tự rebuild qua orchestrator.
 - Visual preset bật `opening_intra_beat_align` cho cả opening và long-beat hardening. Opening vẫn chỉ phân tích 30 giây đầu; non-opening beat chỉ splice khi timecode strict, dùng BGE-M3, chưa có content-anchor plan và baseline drift vượt `max(18s, 1.5 * max_source_drift_s)`. Các câu cùng anchor được gộp, transition confidence thấp gắn vào anchor mạnh kế tiếp, source window giữ thứ tự và không overlap.
 - `hook_min_brightness=0.10` trong visual preset tránh mở video bằng placement quá tối; stable/default giữ `0.0`. QA HTML/JSON ghi mode, trigger drift, replaced ranges, source windows và shot thay thế hook.
+- Visual preset bật `end_credit_guard` ở GĐ4 và `exclude_end_credits` ở GĐ5. Guard chỉ hard-exclude blank/credit-only trong 600 giây cuối; cảnh post-credit có story image và credit overlay vẫn được giữ. Credit-only không quay lại qua dark fallback, repeat hoặc pause filler.
 - Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic, `content_anchors`, `opening_intra_beat_align` và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
 
 ## Chạy GĐ6

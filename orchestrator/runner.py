@@ -140,6 +140,17 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
         return False
     try:
         validate_stage(paths, stage)
+        if stage == "shots" and config is not None:
+            section = config.get("shots", {})
+            meta = ShotsMeta.model_validate(load_json(paths.shots_meta))
+            expected_guard = bool(section.get("end_credit_guard", False))
+            if bool(meta.feature_config.get("end_credit_guard", False)) != expected_guard:
+                return False
+            if expected_guard:
+                if float(meta.feature_config.get("end_credit_tail_s", 0.0)) != float(section.get("end_credit_tail_s", 600.0)):
+                    return False
+                if float(meta.feature_config.get("end_credit_threshold", 0.0)) != float(section.get("end_credit_threshold", 0.60)):
+                    return False
         if stage == "visual_index" and film is not None and config is not None:
             section = config.get("visual_index", {})
             config_hash = visual_index_config_hash(
@@ -229,8 +240,9 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--input", str(film), "--output", str(paths.shots), "--thumb-dir", str(paths.shots_dir)]
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
-        for key in ("detector", "min_shot_len", "sample_frames", "frame_sampling", "face_detection", "min_brightness", "skip_intro", "skip_outro", "downscale", "scene_threshold", "scene_scale_width", "scene_min_gap", "max_shot_len", "log_level"):
+        for key in ("detector", "min_shot_len", "sample_frames", "frame_sampling", "face_detection", "min_brightness", "end_credit_tail_s", "end_credit_threshold", "skip_intro", "skip_outro", "downscale", "scene_threshold", "scene_scale_width", "scene_min_gap", "max_shot_len", "log_level"):
             add_option(command, key, section.get(key))
+        command.append("--end-credit-guard" if section.get("end_credit_guard", False) else "--no-end-credit-guard")
     elif stage == "visual_index":
         command += ["--film", str(film), "--shots", str(paths.shots), "--output", str(paths.shot_visual_index), "--asset-dir", str(paths.visual_index_dir)]
         for key in ("embedding_mode", "embedding_model", "device", "batch_size", "keyframes_per_shot", "frame_sampling", "log_level"):
@@ -273,6 +285,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command.append("--allow-repeat" if section.get("allow_repeat", True) else "--no-allow-repeat")
         command.append("--allow-speedfit" if section.get("allow_speedfit", False) else "--no-allow-speedfit")
         command.append("--exclude-non-story" if section.get("exclude_non_story", True) else "--no-exclude-non-story")
+        command.append("--exclude-end-credits" if section.get("exclude_end_credits", False) else "--no-exclude-end-credits")
         command.append("--opening-story-visual-start" if section.get("opening_story_visual_start", True) else "--no-opening-story-visual-start")
         command.append("--opening-allow-short-fill" if section.get("opening_allow_short_fill", True) else "--no-opening-allow-short-fill")
         command.append("--opening-ordered-fill" if section.get("opening_ordered_fill", True) else "--no-opening-ordered-fill")

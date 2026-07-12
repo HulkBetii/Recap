@@ -69,7 +69,7 @@ def test_match_cli_outputs_valid_edl_and_meta(tmp_path) -> None:
     meta = json.loads((tmp_path / "edl.meta.json").read_text(encoding="utf-8"))
     assert meta["n_beats_widened"] >= 1
     assert meta["n_placements"] > 0
-    assert meta["algorithm_version"] == "5"
+    assert meta["algorithm_version"] == "6"
     qa = json.loads((tmp_path / "edl.qa.json").read_text(encoding="utf-8"))
     assert "candidate_capacity_s" in qa["beats"][0]
     edl = json.loads((tmp_path / "edl.json").read_text(encoding="utf-8"))
@@ -108,3 +108,26 @@ def test_content_anchors_are_disabled_for_corrupt_timecode_meta(tmp_path) -> Non
     film_map.with_name("film_map.meta.json").write_text("{broken", encoding="utf-8")
 
     assert content_anchors_allowed(film_map) is False
+
+
+def test_match_cli_hard_excludes_end_credit_shots(tmp_path) -> None:
+    review = tmp_path / "review.json"
+    timing = tmp_path / "timing.json"
+    shots = tmp_path / "shots.json"
+    review.write_text(json.dumps([{"beat_id": 0, "narration": "ending", "from_seg_id": 0, "to_seg_id": 0, "src_tc_start": 0, "src_tc_end": 10, "is_hook": False}]), encoding="utf-8")
+    timing.write_text(json.dumps([{"beat_id": 0, "audio_path": "0.mp3", "tl_start": 0, "tl_end": 5, "duration": 5}]), encoding="utf-8")
+    shots.write_text(json.dumps([
+        {"src": "film.mp4", "index": 0, "tc_start": 0, "tc_end": 5, "duration": 5, "thumb": "0.jpg", "motion_score": 1.0, "face_count": 0, "face_area": 0, "brightness": 0.5, "is_usable": True, "is_end_credit": True, "credit_like_score": 1.0},
+        {"src": "film.mp4", "index": 1, "tc_start": 5, "tc_end": 10, "duration": 5, "thumb": "1.jpg", "motion_score": 0.2, "face_count": 0, "face_area": 0, "brightness": 0.5, "is_usable": True},
+    ]), encoding="utf-8")
+    args = make_args(tmp_path, [review, timing, shots])
+    args.exclude_end_credits = True
+
+    assert run_match(args) == 0
+    edl = json.loads((tmp_path / "edl.json").read_text(encoding="utf-8"))
+    meta = json.loads((tmp_path / "edl.meta.json").read_text(encoding="utf-8"))
+    qa = json.loads((tmp_path / "edl.qa.json").read_text(encoding="utf-8"))
+    assert {item["shot_index"] for item in edl} == {1}
+    assert meta["n_end_credit_excluded"] == 1
+    assert qa["end_credit_guard_enabled"] is True
+    assert qa["excluded_end_credit_candidates"] == [0]

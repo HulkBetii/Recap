@@ -198,12 +198,14 @@ repo/
 - Package thực tế:
   - `shots/`: detection, thumbnail extraction, feature computation, cache và CLI orchestration.
   - `common/schema.py`: có thêm `Shot`, `ShotsMeta`, `validate_shots`.
-- Cache GĐ4 nằm trong `--work-dir`: `detection.json`, `features.json`, `profile_marking.json`, `thumbs/`.
+- Cache GĐ4 nằm trong `--work-dir`: `detection.json`, `features.json`, `end_credit_marking.json`, `profile_marking.json`, `thumbs/`.
 - `detection.json` và `features.json` không phụ thuộc `video_profile.json`; khi chỉ đổi profile, GĐ4 chỉ re-apply `profile_marking.json` để set `is_story=false` / `exclude_reason`.
 - CLI có `--profile-only` để debug re-apply profile từ cache; thiếu cache features thì fail-fast.
 - Test tự động dùng mock/frame synthetic; real clip smoke test sẽ chạy khi có video mẫu.
 - GĐ4 has `--frame-sampling per-shot|batch`; default `per-shot` keeps legacy behavior, while `batch` opens the video once, samples frames in timeline order, and reuses those frames for features + thumbnails. `config.movie.visual.yaml` enables `batch`.
 - `Shot.unusable_reasons` là optional/backward-compatible; GĐ4 ghi `too_dark`, `too_short`, `transition_spike` hoặc `no_frames` để GĐ5 chỉ relax đúng nguyên nhân cho phép.
+- `Shot.is_end_credit` và `credit_like_score` là optional/backward-compatible. Visual preset bật tail-only OpenCV heuristic trong 600 giây cuối; classifier chỉ đánh dấu blank/credit-only, không loại cảnh post-credit có vùng story rõ.
+- End-credit marking có cache riêng và chỉ sample tail shots; thay config guard không invalidate detection/features toàn phim. `--profile-only` fail-fast nếu guard bật nhưng cache marking chưa có.
 
 ## 14. GD5 IMPLEMENTATION HIEN TAI
 
@@ -226,10 +228,10 @@ repo/
   - `common/schema.py`: co them `EdlPlacement`, `EdlMeta`, `validate_edl`.
 - Fallback thiếu footage tính capacity theo `sum(min(max_clip, source_intersection))`, bỏ candidate ngắn hơn `min_visual_clip`; thử usable rồi dark-only trong window hiện tại trước khi widen đúng tối đa `max_widen` cấp.
 - `allow_dark_fallback=true` mặc định cho stable/visual presets; chỉ shot story bị loại duy nhất vì `too_dark` được relax. Non-story, no-frame, transition spike và too-short luôn bị loại cứng.
+- `--exclude-end-credits` hard-exclude `is_end_credit=true` trước semantic/visual, anchors, dark fallback, repeat và pause filler. Visual preset bật policy; stable/default tắt. Khi thiếu footage, GĐ5 warning/underfill thay vì dùng credit-only.
 - Repeat fallback dùng phần source chưa dùng trong shot trước, sau đó mới chọn span overlap thấp nhất; tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier.
-- `edl.meta.json` ghi `algorithm_version` và counters dark/capacity/reuse; algorithm version 5 invalidates artifacts created before long-beat alignment and the hook brightness guard.
+- `edl.meta.json` ghi `algorithm_version` và counters dark/capacity/reuse/end-credit; algorithm version 6 invalidates artifacts created before end-credit exclusion.
 - Cache GD5 nam trong `--work-dir/plan.json`; embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
-- Match `algorithm_version=3` invalidates artifacts created before content-anchor matching; QA/HTML record anchor intervals, segment ids, threshold and capacity.
 - Test tu dong dung JSON fixtures/mock; khong dung video/ffmpeg/API.
 
 

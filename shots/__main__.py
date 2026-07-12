@@ -10,6 +10,12 @@ from common.media import MediaError, require_ffmpeg
 from common.schema import Shot, ShotsMeta, VideoProfile, validate_shots, write_json
 from shots.cache import ShotsCache, stable_hash
 from shots.detect import ShotSpan, detect_shots
+from shots.end_credits import (
+    END_CREDIT_CLASSIFIER_VERSION,
+    apply_end_credit_marking,
+    credit_like_score,
+    tail_shot_spans,
+)
 from shots.features import (
     DEFAULT_FRAME_SAMPLE_WIDTH,
     FaceDetector,
@@ -30,6 +36,8 @@ DEFAULT_SCENE_THRESHOLD = 0.3
 DEFAULT_SCENE_SCALE_WIDTH = 640
 DEFAULT_SCENE_MIN_GAP = 0.3
 DEFAULT_FRAME_SAMPLING = "per-shot"
+DEFAULT_END_CREDIT_TAIL_S = 600.0
+DEFAULT_END_CREDIT_THRESHOLD = 0.60
 
 
 class ShotsError(RuntimeError):
@@ -56,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frame-sampling", default=DEFAULT_FRAME_SAMPLING, choices=["per-shot", "batch"])
     parser.add_argument("--face-detection", default="on", choices=["on", "off"])
     parser.add_argument("--min-brightness", default=DEFAULT_MIN_BRIGHTNESS, type=float)
+    parser.add_argument("--end-credit-guard", action="store_true", default=False)
+    parser.add_argument("--no-end-credit-guard", dest="end_credit_guard", action="store_false")
+    parser.add_argument("--end-credit-tail-s", default=DEFAULT_END_CREDIT_TAIL_S, type=float)
+    parser.add_argument("--end-credit-threshold", default=DEFAULT_END_CREDIT_THRESHOLD, type=float)
     parser.add_argument("--scene-threshold", default=DEFAULT_SCENE_THRESHOLD, type=float, help="ffmpeg-scene detector threshold")
     parser.add_argument("--scene-scale-width", default=DEFAULT_SCENE_SCALE_WIDTH, type=int, help="Scale width for ffmpeg-scene; 0 disables scaling")
     parser.add_argument("--scene-min-gap", default=DEFAULT_SCENE_MIN_GAP, type=float, help="Minimum seconds between ffmpeg-scene boundaries")
@@ -114,6 +126,26 @@ def feature_cache_key(spans: list[ShotSpan], args: argparse.Namespace) -> str:
         "face_detection": args.face_detection,
         "min_brightness": args.min_brightness,
         "min_shot_len": args.min_shot_len,
+    })
+
+
+def end_credit_cache_key(
+    input_path: Path,
+    spans: list[ShotSpan],
+    *,
+    duration_s: float,
+    sample_frames: int,
+    tail_s: float,
+    threshold: float,
+) -> str:
+    return stable_hash({
+        "classifier_version": END_CREDIT_CLASSIFIER_VERSION,
+        "input": input_signature(input_path),
+        "duration_s": duration_s,
+        "spans": [span.__dict__ for span in tail_shot_spans(spans, duration_s=duration_s, tail_s=tail_s)],
+        "sample_frames": sample_frames,
+        "tail_s": tail_s,
+        "threshold": threshold,
     })
 
 
@@ -227,6 +259,12 @@ def run_shots(args: argparse.Namespace) -> int:
         args.max_shot_len = 0.0
     if not hasattr(args, "frame_sampling"):
         args.frame_sampling = DEFAULT_FRAME_SAMPLING
+    if not hasattr(args, "end_credit_guard"):
+        args.end_credit_guard = False
+    if not hasattr(args, "end_credit_tail_s"):
+        args.end_credit_tail_s = DEFAULT_END_CREDIT_TAIL_S
+    if not hasattr(args, "end_credit_threshold"):
+        args.end_credit_threshold = DEFAULT_END_CREDIT_THRESHOLD
     input_path = args.input.expanduser().resolve()
     output_path = args.output.expanduser().resolve()
     thumb_dir = args.thumb_dir.expanduser().resolve()
@@ -241,6 +279,10 @@ def run_shots(args: argparse.Namespace) -> int:
         raise ShotsError("--frame-sampling must be per-shot or batch")
     if not 0 <= args.min_brightness <= 1:
         raise ShotsError("--min-brightness must be between 0 and 1")
+    if args.end_credit_tail_s <= 0:
+        raise ShotsError("--end-credit-tail-s must be > 0")
+    if not 0 < args.end_credit_threshold <= 1:
+        raise ShotsError("--end-credit-threshold must be between 0 and 1")
     if not 0 < args.scene_threshold < 1:
         raise ShotsError("--scene-threshold must be between 0 and 1")
     if args.scene_scale_width < 0:
@@ -309,14 +351,57 @@ def run_shots(args: argparse.Namespace) -> int:
         )
         cache.write_cached("features.json", feature_key, {str(key): value for key, value in features_by_index.items()})
 
-    logger.info("[3/4] Applying video profile")
-    profile_key = profile_cache_key(feature_key, profile_hash)
+    logger.info("[3/4] Applying end-credit guard and video profile")
+    end_credit_key = "end-credit-disabled"
+    end_credit_scores: dict[int, float] = {}
+    if args.end_credit_guard:
+        end_credit_key = end_credit_cache_key(
+            input_path,
+            spans,
+            duration_s=duration_s,
+            sample_frames=args.sample_frames,
+            tail_s=args.end_credit_tail_s,
+            threshold=args.end_credit_threshold,
+        )
+        cached_end_credit = cache.read_cached("end_credit_marking.json", end_credit_key)
+        if cached_end_credit is not None:
+            end_credit_scores = {int(key): float(value) for key, value in cached_end_credit.items()}
+        else:
+            if args.profile_only:
+                raise ShotsError("profile-only requires existing end-credit marking cache")
+            tail_spans = tail_shot_spans(spans, duration_s=duration_s, tail_s=args.end_credit_tail_s)
+            total_tail = len(tail_spans)
+            for count, (span, samples) in enumerate(
+                iter_batch_sampled_frames(
+                    input_path,
+                    tail_spans,
+                    args.sample_frames,
+                    max_width=DEFAULT_FRAME_SAMPLE_WIDTH,
+                    seek_to_first_request=True,
+                ),
+                start=1,
+            ):
+                end_credit_scores[span.index] = credit_like_score([sample.frame for sample in samples])
+                if count % 100 == 0 or count == total_tail:
+                    logger.info("[3/4] End-credit sampled %s/%s tail shots", count, total_tail)
+            cache.write_cached(
+                "end_credit_marking.json",
+                end_credit_key,
+                {str(key): value for key, value in end_credit_scores.items()},
+            )
+    profile_key = profile_cache_key(feature_key, profile_hash, end_credit_key)
     cached_profile = cache.read_cached("profile_marking.json", profile_key)
     if cached_profile is not None:
         shots = [Shot.model_validate(item) for item in cached_profile["shots"]]
         n_non_story = int(cached_profile["n_non_story"])
     else:
         base_shots = features_to_shots(input_path, output_path, thumb_dir, spans, features_by_index)
+        if args.end_credit_guard:
+            base_shots = apply_end_credit_marking(
+                base_shots,
+                end_credit_scores,
+                threshold=args.end_credit_threshold,
+            )
         shots, n_non_story = apply_video_profile_to_shots(base_shots, profile)
         cache.write_cached("profile_marking.json", profile_key, {"n_non_story": n_non_story, "shots": [shot.model_dump(mode="json") for shot in shots]})
     shots = validate_shots(clamp_shots_to_duration(shots, duration_s), duration_s)
@@ -335,6 +420,9 @@ def run_shots(args: argparse.Namespace) -> int:
             "face_detection": args.face_detection,
             "min_brightness": args.min_brightness,
             "min_shot_len": args.min_shot_len,
+            "end_credit_guard": args.end_credit_guard,
+            "end_credit_tail_s": args.end_credit_tail_s,
+            "end_credit_threshold": args.end_credit_threshold,
             "skip_intro": args.skip_intro,
             "skip_outro": args.skip_outro,
             "downscale": args.downscale,
@@ -343,10 +431,14 @@ def run_shots(args: argparse.Namespace) -> int:
             "scene_min_gap": args.scene_min_gap,
             "max_shot_len": args.max_shot_len,
         },
-        model_versions={"face_detector": face_detector_version},
+        model_versions={
+            "face_detector": face_detector_version,
+            "end_credit_classifier": END_CREDIT_CLASSIFIER_VERSION if args.end_credit_guard else "off",
+        },
         video_profile_path=str(args.video_profile.expanduser().resolve()) if args.video_profile else None,
         video_profile_hash=profile_hash,
         n_non_story=n_non_story,
+        n_end_credit=sum(1 for shot in shots if shot.is_end_credit),
         intro_detection=profile.intro.model_dump(mode="json") if profile else None,
         created_at=datetime.now(timezone.utc),
         cache_hits=cache.cache_hits,

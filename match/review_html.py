@@ -78,7 +78,7 @@ def write_review_html(
         "</head><body>",
         "<h1>EDL Review</h1>",
         "<section class=\"summary\">",
-        f"<div><b>Total beats:</b> {len(beats)} | <b>placements:</b> {len(placements)} | <b>intro excluded:</b> {escape(_fmt(qa.get('n_intro_excluded')))}</div>",
+        f"<div><b>Total beats:</b> {len(beats)} | <b>placements:</b> {len(placements)} | <b>intro excluded:</b> {escape(_fmt(qa.get('n_intro_excluded')))} | <b>end-credit excluded:</b> {escape(_fmt(qa.get('n_end_credit_excluded')))}</div>",
         f"<div><b>selected_from_non_story:</b> {escape(_fmt(qa.get('selected_from_non_story')))} | <b>avg semantic:</b> {avg_semantic:.3f} | <b>min semantic:</b> {min_semantic:.3f} | <b>avg visual:</b> {avg_visual:.3f} | <b>warnings:</b> {warnings_count}</div>",
         "</section>",
     ]
@@ -190,6 +190,7 @@ def write_review_html(
                 f"expected={escape(_fmt(qa_selected.get('expected_src_position') if qa_selected else None))} drift={escape(_fmt(qa_selected.get('source_drift_s') if qa_selected else None))} chrono={escape(_fmt(qa_selected.get('chronology_score') if qa_selected else None))}<br>"
                 f"drift tier={escape(_fmt(qa_selected.get('drift_tier') if qa_selected else None))}<br>"
                 f"dark fallback={escape(_fmt(qa_selected.get('dark_fallback') if qa_selected else None))}<br>"
+                f"end credit={escape(_fmt(shot.is_end_credit if shot else None))} score={escape(_fmt(shot.credit_like_score if shot else None))}<br>"
                 f"motion={escape(_fmt(shot.motion_score if shot else None))} bright={escape(_fmt(shot.brightness if shot else None))} face={escape(_fmt(shot.face_count if shot else None))}<br>"
                 f"is_story={escape(_fmt(shot.is_story if shot else None))} reason={escape(_fmt(shot.exclude_reason if shot else None))}"
                 "</div></article>"
@@ -211,7 +212,7 @@ def write_review_html(
                     "<article class=\"clip\">"
                     + image_html
                     + "<div class=\"meta\">"
-                    + f"shot {shot_index} | tier={escape(_fmt(alternative.get('drift_tier')))}<br>visual={escape(_fmt(alternative.get('visual_score')))} raw={escape(_fmt(alternative.get('visual_raw_cosine')))}<br>combined={escape(_fmt(alternative.get('total_score_no_reuse')))}"
+                    + f"shot {shot_index} | tier={escape(_fmt(alternative.get('drift_tier')))}<br>visual={escape(_fmt(alternative.get('visual_score')))} raw={escape(_fmt(alternative.get('visual_raw_cosine')))}<br>combined={escape(_fmt(alternative.get('total_score_no_reuse')))}<br>end credit={escape(_fmt(alternative.get('is_end_credit')))} score={escape(_fmt(alternative.get('credit_like_score')))}"
                     + "</div></article>"
                 )
             parts.append("</div>")

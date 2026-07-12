@@ -83,6 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chronology-weight", default=0.70, type=float)
     parser.add_argument("--max-source-drift-s", default=12.0, type=float)
     parser.add_argument("--exclude-non-story", action="store_true", default=True)
+    parser.add_argument("--exclude-end-credits", action="store_true", default=False)
+    parser.add_argument("--no-exclude-end-credits", dest="exclude_end_credits", action="store_false")
     parser.add_argument("--max-repeat-per-beat", default=2, type=int)
     parser.add_argument("--max-repeat-ratio-per-beat", default=0.35, type=float)
     parser.add_argument("--min-repeat-alternative-score-ratio", default=0.75, type=float)
@@ -148,6 +150,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "chronology_weight": args.chronology_weight,
         "max_source_drift_s": args.max_source_drift_s,
         "exclude_non_story": args.exclude_non_story,
+        "exclude_end_credits": args.exclude_end_credits,
         "review_html": args.review_html,
         "sync_qa": True,
         "review_thumbs_per_beat": args.review_thumbs_per_beat,
@@ -291,6 +294,8 @@ def run_match(args: argparse.Namespace) -> int:
     logger = logging.getLogger("match")
     if not hasattr(args, "exclude_non_story"):
         args.exclude_non_story = True
+    if not hasattr(args, "exclude_end_credits"):
+        args.exclude_end_credits = False
     for name, default in (("max_repeat_per_beat", 2), ("max_repeat_ratio_per_beat", 0.35), ("min_repeat_alternative_score_ratio", 0.75), ("adjacent_shot_repeat_penalty", 0.50), ("opening_guard_s", 0.0), ("opening_max_repeat_ratio", 0.20), ("opening_max_repeat_per_shot", 1), ("opening_min_unique_shots", 4), ("chronology_weight", 0.70), ("max_source_drift_s", 12.0)):
         if not hasattr(args, name):
             setattr(args, name, default)
@@ -376,7 +381,15 @@ def run_match(args: argparse.Namespace) -> int:
     timings = load_beats_timing(args.beats_timing.expanduser().resolve())
     all_shots = load_shots(args.shots.expanduser().resolve())
     n_intro_excluded = sum(1 for shot in all_shots if not shot.is_story)
-    shots = [shot for shot in all_shots if shot.is_story] if args.exclude_non_story else all_shots
+    end_credit_shot_ids = {
+        shot.index for shot in all_shots
+        if args.exclude_end_credits and shot.is_end_credit
+    }
+    shots = [
+        shot for shot in all_shots
+        if (not args.exclude_non_story or shot.is_story)
+        and shot.index not in end_credit_shot_ids
+    ]
     beats_by_id = {beat.beat_id: beat for beat in review_beats}
     timings_by_id = {timing.beat_id: timing for timing in timings}
     missing = sorted(set(beats_by_id) ^ set(timings_by_id))
@@ -569,6 +582,16 @@ def run_match(args: argparse.Namespace) -> int:
             )
         selected_candidate_ids.extend(hook_guard_result.replacement_shot_ids)
         candidate_shot_ids[beat.beat_id] = list(dict.fromkeys(selected_candidate_ids))
+        excluded_end_credit_ids = sorted(
+            shot.index for shot in all_shots
+            if shot.index in end_credit_shot_ids
+            and shot.tc_start < result.window_end
+            and result.window_start < shot.tc_end
+        )
+        if result.capacity_exhausted and excluded_end_credit_ids:
+            result.warnings.append(
+                f"beat {beat.beat_id} end-credit guard excluded {len(excluded_end_credit_ids)} shot(s) while footage was insufficient"
+            )
         candidate_diagnostics[beat.beat_id] = {
             "window_start": result.window_start,
             "window_end": result.window_end,
@@ -600,6 +623,7 @@ def run_match(args: argparse.Namespace) -> int:
             "hook_leading_min_brightness": args.hook_min_brightness,
             "hook_leading_original_shot": hook_guard_result.original_shot_index,
             "hook_leading_replacement_shots": hook_guard_result.replacement_shot_ids,
+            "excluded_end_credit_ids": excluded_end_credit_ids,
         }
         n_dark_fallback_beats += int(bool(result.dark_selected_ids))
         n_capacity_exhausted_beats += int(result.capacity_exhausted)
@@ -635,7 +659,7 @@ def run_match(args: argparse.Namespace) -> int:
 
     total_duration = max((timing.tl_end for timing in timings), default=0.0)
     before_gap_fill = len(placements)
-    placements = fill_timeline_gaps(placements, total_duration, min_visual_clip=args.min_visual_clip, shots=all_shots)
+    placements = fill_timeline_gaps(placements, total_duration, min_visual_clip=args.min_visual_clip, shots=shots)
     pause_fillers = len(placements) - before_gap_fill
     if pause_fillers:
         warnings.append(f"inserted {pause_fillers} pause filler placement(s) to cover TTS inter-beat silence")
@@ -672,6 +696,7 @@ def run_match(args: argparse.Namespace) -> int:
         n_empty_beats=n_empty_beats,
         n_high_repeat_beats=n_high_repeat_beats,
         n_dark_fallback_beats=n_dark_fallback_beats,
+        n_end_credit_excluded=len(end_credit_shot_ids),
         n_capacity_exhausted_beats=n_capacity_exhausted_beats,
         n_unused_source_reuse=n_unused_source_reuse,
         n_overlapping_repeats=n_overlapping_repeats,
@@ -707,6 +732,8 @@ def run_match(args: argparse.Namespace) -> int:
         candidate_shot_ids=candidate_shot_ids,
         candidate_drift_tiers=candidate_drift_tiers,
         candidate_diagnostics=candidate_diagnostics,
+        end_credit_guard_enabled=args.exclude_end_credits,
+        excluded_end_credit_ids=sorted(end_credit_shot_ids),
     )
     sync_qa = build_sync_qa(beats=review_beats, timings=timings, placements=placements, fps=None, short_clip_threshold_s=args.min_visual_clip)
     combined_scores = {

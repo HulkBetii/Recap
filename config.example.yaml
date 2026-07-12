@@ -108,6 +108,9 @@ shots:
   frame_sampling: per-shot
   face_detection: "on"
   min_brightness: 0.06
+  end_credit_guard: false
+  end_credit_tail_s: 600
+  end_credit_threshold: 0.60
   skip_intro: 0
   skip_outro: 0
   downscale: auto
@@ -138,6 +141,7 @@ match:
   allow_repeat: true
   allow_speedfit: false
   exclude_non_story: true
+  exclude_end_credits: false
   max_repeat_per_beat: 2
   max_repeat_ratio_per_beat: 0.35
   min_repeat_alternative_score_ratio: 0.75

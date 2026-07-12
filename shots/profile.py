@@ -17,8 +17,12 @@ def video_profile_hash(path: Path | None) -> str:
     return stable_hash(resolved.read_text(encoding="utf-8"))
 
 
-def profile_cache_key(feature_key: str, profile_hash: str) -> str:
-    return stable_hash({"features": feature_key, "video_profile": profile_hash})
+def profile_cache_key(feature_key: str, profile_hash: str, end_credit_key: str = "end-credit-disabled") -> str:
+    return stable_hash({
+        "features": feature_key,
+        "video_profile": profile_hash,
+        "end_credit": end_credit_key,
+    })
 
 
 def non_story_reason(start: float, end: float, profile: VideoProfile | None) -> str | None:
