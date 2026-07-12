@@ -1,6 +1,6 @@
 # Release Candidate Gate
 
-Project version remains `0.1.0` until every gate below passes on a clean commit.
+Project version is `1.0.0`. The gates below were required before creating the release commit and tag.
 
 ## CI Gate
 
@@ -53,3 +53,9 @@ Version bump, release notes, and tag `v1.0.0` are allowed only when:
 - worktree is clean and `main` is synchronized with `origin/main`.
 
 Do not add VLM/OCR/new matching features between a passing release gate and the v1.0.0 tag.
+
+## Release Status
+
+- GitHub Release Gate passed for pre-release commit `3327fa8` on 2026-07-12.
+- Local media gate passed on the same commit without `-AllowDirty`, with media smoke enabled and zero secret findings.
+- The release commit contains only the version bump, release documentation, and the matching version assertion.

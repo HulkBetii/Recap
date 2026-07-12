@@ -786,3 +786,9 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Release artifacts are written under `work/release-gate`; project version remains `0.1.0` until CI and a clean local media gate pass for the release commit.
 - Validation: full `python -m pytest -q` -> `343 passed`; CI-mode gate passed wheel/import/CLI/dry-run checks; `Ba-Mat-Lat-Keo.mp4` media gate passed all 33 cache assertions on a 30-second clip with no API environment available.
 - The first GitHub Actions run exposed a test-only dependency leak: semantic device coverage imported Torch even though the offline CI contract intentionally excludes GPU extras. The test now mocks both missing-Torch and CUDA-unavailable states; the no-Torch suite passes with `344 passed`.
+
+### 2026-07-12 - v1.0.0 release
+
+- Bumped the package version from `0.1.0` to `1.0.0` and added `RELEASE_NOTES.md`.
+- Confirmed the GitHub Release Gate passed for commit `3327fa8`, with `main` synchronized to `origin/main` before the release commit.
+- Re-ran the clean local media gate on commit `3327fa8`: secret scan found zero issues, all `344` tests passed, packaging/CLI/dry-run checks passed, and media smoke passed all `33` cache assertions without `-AllowDirty`.

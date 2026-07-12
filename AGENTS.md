@@ -499,4 +499,4 @@ repo/
 - Local media gate cắt 30 giây vào `work/release-gate`, xóa `OPENAI_API_KEY`, `VIVOO_API_KEY`, `GENMAX_API_KEY` khỏi subprocess và chỉ chạy GĐ0/GĐ1 bằng manual transcript, translation/vision offline.
 - Cache smoke phải chứng minh unchanged reuse, profile-only vision invalidation, glossary giữ aligned transcript, và film identity rebuild toàn bộ artifacts GĐ1.
 - `work/release-gate/report.json` là audit artifact gitignored. Không ghi key/token; secret findings luôn redact.
-- Không bump version/tag `v1.0.0` trong task gate. Chỉ release khi CI xanh, local media gate xanh không `-AllowDirty`, report pass, secret scan sạch và main đồng bộ remote.
+- Release hiện tại là `1.0.0`, tag `v1.0.0`. Chỉ tạo release/tag tiếp theo khi CI xanh, local media gate xanh không `-AllowDirty`, report pass, secret scan sạch và main đồng bộ remote.
