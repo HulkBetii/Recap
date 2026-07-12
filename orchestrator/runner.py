@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Callable
 
@@ -41,6 +42,7 @@ from orchestrator.config import add_option
 from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
+from tts.providers import TtsProviderError, resolve_provider_order
 from visual_index.integrity import metadata_is_current, validate_visual_index_artifacts, visual_index_config_hash
 from match.version import MATCH_ALGORITHM_VERSION
 
@@ -220,7 +222,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--headless")
     elif stage == "tts":
         command += ["--review-script", str(paths.review_script), "--output-audio", str(paths.voiceover), "--output-timing", str(paths.beats_timing)]
-        for key in ("voice_id", "provider_mode", "genmax_voice_id", "model", "speed", "inter_beat_pause", "concurrency", "cost_per_1k_chars", "log_level"):
+        for key in ("voice_id", "provider_mode", "genmax_voice_id", "model", "openai_model", "openai_voice", "speed", "inter_beat_pause", "concurrency", "cost_per_1k_chars", "log_level"):
             add_option(command, key, section.get(key))
         add_option(command, "tts_text_normalization", section.get("text_normalization"))
         add_option(command, "tts_pronunciation_lexicon", section.get("pronunciation_lexicon"))
@@ -311,6 +313,8 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
     if selected & {"ingest", "tts", "shots", "visual_index", "render"} and not dry_run:
         require_ffmpeg()
     will_run = {stage for stage in selected if stage in forced or not outputs_valid(paths, stage, film=film, config=config)}
+    if not dry_run and config.get("orchestrator", {}).get("runtime_preflight", False):
+        validate_runtime_requirements(will_run, config)
     if cost_policy is not None:
         blocked = disallowed_openai_stages(cost_policy, will_run)
         if blocked:
@@ -327,11 +331,53 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
         tts_config = config["tts"]
         if not tts_config.get("voice_id"):
             raise OrchestratorError("tts.voice_id must be set in config")
-        mode = tts_config.get("provider_mode", "auto")
-        if mode in {"auto", "ai33"} and not os.getenv("VIVOO_API_KEY"):
-            raise OrchestratorError("VIVOO_API_KEY is required for tts provider_mode auto/ai33")
-        if mode in {"auto", "genmax"} and not os.getenv("GENMAX_API_KEY"):
-            raise OrchestratorError("GENMAX_API_KEY is required for tts provider_mode auto/genmax")
+        try:
+            resolve_provider_order(
+                tts_config.get("provider_mode", "auto"),
+                voice_id=str(tts_config.get("voice_id", "")),
+                genmax_voice_id=tts_config.get("genmax_voice_id"),
+            )
+        except TtsProviderError as exc:
+            raise OrchestratorError(str(exc)) from exc
+
+
+def runtime_module_available(module: str) -> bool:
+    return find_spec(module) is not None
+
+
+def runtime_cuda_available() -> bool:
+    try:
+        import torch
+    except ImportError:
+        return False
+    return bool(torch.cuda.is_available())
+
+
+def validate_runtime_requirements(will_run: set[str], config: dict[str, Any]) -> None:
+    modules: set[str] = set()
+    cuda_required = False
+    ingest = config.get("ingest", {})
+    if "ingest" in will_run and ingest.get("aligner") == "whisperx":
+        modules.update({"torch", "torchaudio", "whisperx"})
+        cuda_required = ingest.get("alignment_device") == "cuda"
+    visual_index = config.get("visual_index", {})
+    if "visual_index" in will_run and visual_index.get("enabled", False):
+        modules.update({"torch", "transformers", "PIL"})
+        cuda_required = cuda_required or visual_index.get("device") == "cuda"
+    match = config.get("match", {})
+    if "match" in will_run and match.get("semantic_mode") == "bge-m3":
+        modules.update({"torch", "sentence_transformers"})
+        cuda_required = cuda_required or match.get("semantic_device") == "cuda"
+    if "match" in will_run and match.get("visual_mode") == "rerank":
+        modules.update({"torch", "transformers", "PIL"})
+        cuda_required = cuda_required or match.get("visual_device") == "cuda"
+    missing = sorted(module for module in modules if not runtime_module_available(module))
+    if missing:
+        raise OrchestratorError(
+            "production runtime dependency missing: " + ", ".join(missing) + '; install with pip install -e ".[movie-visual]"'
+        )
+    if cuda_required and not runtime_cuda_available():
+        raise OrchestratorError("production runtime requires CUDA, but torch.cuda.is_available() is false")
 
 
 def run_subprocess(command: list[str], log_path: Path) -> None:

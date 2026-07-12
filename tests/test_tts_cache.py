@@ -40,3 +40,44 @@ def test_tts_cache_force_clears_manifest_and_audio(tmp_path) -> None:
 
     assert not (tmp_path / "manifest.json").exists()
     assert not (tmp_path / "audio" / "0.mp3").exists()
+
+
+def test_tts_cache_key_tracks_provider_chain_models_and_voices() -> None:
+    base = {
+        "mode": "auto",
+        "order": ["ai33", "openai"],
+        "ai33_voice_id": "vbee",
+        "genmax_voice_id": None,
+        "provider_model": "eleven_multilingual_v2",
+        "openai_model": "gpt-4o-mini-tts",
+        "openai_voice": "coral",
+    }
+    first = build_cache_key(
+        provider="auto",
+        voice_id="vbee",
+        model="eleven_multilingual_v2",
+        speed=1.0,
+        narration="hello",
+        normalized=True,
+        provider_config=base,
+    )
+    changed_voice = build_cache_key(
+        provider="auto",
+        voice_id="vbee",
+        model="eleven_multilingual_v2",
+        speed=1.0,
+        narration="hello",
+        normalized=True,
+        provider_config={**base, "openai_voice": "sage"},
+    )
+    changed_order = build_cache_key(
+        provider="auto",
+        voice_id="vbee",
+        model="eleven_multilingual_v2",
+        speed=1.0,
+        narration="hello",
+        normalized=True,
+        provider_config={**base, "order": ["openai"]},
+    )
+
+    assert len({first, changed_voice, changed_order}) == 3

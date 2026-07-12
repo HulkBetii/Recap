@@ -16,6 +16,18 @@ def test_balanced_policy_keeps_preset_and_playwright() -> None:
     assert policy.stages["review"]["backend"] == "chatgpt_playwright"
 
 
+def test_tts_cost_policy_lists_only_available_auto_providers(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("VIVOO_API_KEY", "ai33")
+    monkeypatch.delenv("GENMAX_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    config = load_config(None)
+    config["tts"].update({"voice_id": "vbee", "genmax_voice_id": "genmax"})
+
+    _resolved, policy = resolve_cost_policy(config)
+
+    assert policy.stages["tts"]["available_providers"] == ["ai33", "openai"]
+
+
 def test_low_cost_policy_uses_local_asr_and_disables_vision() -> None:
     config = load_config(None)
     config["orchestrator"]["quality_mode"] = "low_cost"

@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SegmentType = Literal["speech", "visual"]
-ProviderMode = Literal["auto", "ai33", "genmax"]
+ProviderMode = Literal["auto", "ai33", "genmax", "openai"]
 AsrProvider = Literal["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"]
 AlignerProvider = Literal["none", "whisperx", "qwen3"]
 TimecodeQuality = Literal["strict", "approximate"]
@@ -302,6 +302,11 @@ class TtsMeta(BaseModel):
     pronunciation_risk_count: int = Field(default=0, ge=0)
     pronunciation_suggest_backend: str = "off"
     pronunciation_warnings: list[str] = Field(default_factory=list)
+    providers_used: list[str] = Field(default_factory=list)
+    provider_counts: dict[str, int] = Field(default_factory=dict)
+    fallback_count: int = Field(default=0, ge=0)
+    openai_model: str | None = None
+    openai_voice: str | None = None
 
 
 

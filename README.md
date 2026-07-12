@@ -38,7 +38,14 @@ python run.py `
   --config config.example.yaml
 ```
 
-Preset phim lẻ ổn định hiện tại dùng trực tiếp:
+Preset production cho phim Hàn dùng CUDA + WhisperX + Visual Index:
+
+```powershell
+python -m pip install -e ".[movie-visual,dev]"
+python run.py --input path\to\film.mp4 --run-dir runs\movie01 --config config.movie.production.yaml
+```
+
+Preset phim lẻ ổn định không dùng Visual Index:
 
 ```powershell
 python run.py --input path\to\film.mp4 --run-dir runs\movie01 --config config.movie.stable.yaml
@@ -160,12 +167,13 @@ Thêm `--force` để rebuild cache GĐ2.
 
 GĐ3 nhận `review_script.json` và tạo `audio/<beat_id>.mp3`, `voiceover.mp3`, `beats_timing.json`, `tts_meta.json`.
 
-Provider mặc định là `auto`: AI33.PRO Vivoo V3 trước, Genmax fallback nếu AI33 lỗi. GĐ3 dùng cache theo hash narration để tránh tốn lại chi phí TTS khi chạy lại.
+Provider mặc định là `auto`: thử AI33.PRO Vivoo V3, sau đó Genmax khi có key + voice riêng, rồi OpenAI `gpt-4o-mini-tts` khi có `OPENAI_API_KEY`. Provider thiếu key được bỏ qua; GĐ3 fail-fast nếu không có provider nào và dùng cache theo toàn bộ provider/model/voice chain.
 
 Env vars:
 
 - `VIVOO_API_KEY`: dùng cho AI33.PRO.
 - `GENMAX_API_KEY`: dùng cho Genmax fallback hoặc `--provider-mode genmax`.
+- `OPENAI_API_KEY`: dùng cho OpenAI fallback hoặc `--provider-mode openai`.
 
 ```powershell
 python -m tts `
@@ -175,6 +183,8 @@ python -m tts `
   --voice-id <ai33_voice_id> `
   --provider-mode auto `
   --model eleven_multilingual_v2 `
+  --openai-model gpt-4o-mini-tts `
+  --openai-voice coral `
   --inter-beat-pause 0.15 `
   --concurrency 3 `
   --tts-text-normalization vi `
@@ -205,6 +215,8 @@ Artifacts/cache GĐ3:
 - `out/tts_meta.json`
 
 Thêm `--force` để render lại toàn bộ beat.
+
+`tts_meta.json` ghi `providers_used`, số beat theo provider và `fallback_count`; manifest từng beat luôn ghi model/voice thực tế đã tạo audio.
 ## Chạy GĐ4
 
 GĐ4 nhận file phim và tạo `shots.json`, thumbnails, `shots.meta.json`. Stage này chạy offline, không dùng API.

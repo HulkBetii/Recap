@@ -20,7 +20,7 @@ Pipeline tự động end-to-end: nhận **1 tập phim** (drama Hàn) → sinh 
 |----|-----|-------|--------|
 | 1 | Ingest & Hiểu phim | `film.mp4` | `film_map.json` |
 | 2 | Viết review (GPT) + tự duyệt | `film_map.json` | `review_script.json` |
-| 3 | TTS (ElevenLabs) | `review_script.json` | `voiceover.mp3` + `beats_timing.json` |
+| 3 | TTS (AI33/Genmax/OpenAI fallback) | `review_script.json` | `voiceover.mp3` + `beats_timing.json` |
 | 4 | Shot library | `film.mp4` | `shots.json` (+ thumbnails) |
 | 5 | Auto-match & chon footage | `review_script.json` + `beats_timing.json` + `shots.json` + optional `film_map.json` | `edl.json` + `edl.qa.json` |
 | 6 | Render | `edl.json` + `voiceover.mp3` + `film.mp4` | `recap.mp4` |
@@ -96,7 +96,7 @@ Các stage giao tiếp QUA FILE JSON, không truyền object in-memory. Mỗi st
 - Transcript: **Hàn gốc = chuẩn timecode** + **bản dịch Anh** (dịch per-segment, giữ nguyên timecode). KHÔNG chạy Whisper 2 lượt.
 - Hiểu phim: thoại là chính; **vision chỉ chèn vào khe im lặng** > ngưỡng.
 - Viết review: **GPT**, ~**1/3** độ dài phim, giọng **kịch tính kiểu recap VN**, có **cold-open hook**, gắn **timecode nguồn** mỗi beat, có **vòng tự duyệt** đối chiếu transcript.
-- TTS: **ElevenLabs**, giọng **nữ**, tốc độ **chuẩn**.
+- TTS: **AI33/VBee giọng nữ** là primary; Genmax rồi OpenAI `gpt-4o-mini-tts` là fallback theo key khả dụng; tốc độ chuẩn.
 - Footage: chọn **shot động/có mặt người**; cắt vụn **3–5s**.
 - Render: **16:9 1080p**, full-screen, **tắt tiếng gốc**, **không caption**, **không nhạc nền**.
 - Tự động hóa: **một phát ra video** (QA nằm ở vòng tự duyệt GĐ2).
@@ -178,13 +178,14 @@ repo/
 ## 12. GĐ3 IMPLEMENTATION HIỆN TẠI
 
 - GĐ3 là CLI local, chạy bằng `python -m tts`.
-- Provider TTS v1: AI33.PRO Vivoo V3 primary, Genmax fallback/secondary theo pattern từ `D:\VibeCoding\auto_YT\web_2\lib\pipeline\tts.ts`.
-- Env vars: `VIVOO_API_KEY` cho AI33, `GENMAX_API_KEY` cho Genmax.
+- Provider TTS v1: AI33.PRO Vivoo V3 primary, Genmax secondary và OpenAI `gpt-4o-mini-tts` fallback cuối.
+- Env vars: `VIVOO_API_KEY` cho AI33, `GENMAX_API_KEY` cho Genmax, `OPENAI_API_KEY` cho OpenAI fallback.
 - Package thực tế:
   - `tts/`: provider adapters, cache manifest, sanitize, timing builder, concat, cost/meta và CLI orchestration.
   - `common/schema.py`: có thêm `BeatTiming`, `TtsMeta`, `TtsManifestEntry`, `validate_beats_timing`.
   - `common/media.py`: có thêm `normalize_audio`, `generate_silence`, `concat_audio`.
 - GĐ3 cache theo hash provider/voice/model/speed/narration/normalize để không render lại beat không đổi.
+- `provider_mode=auto` chỉ dùng provider có key hợp lệ theo thứ tự AI33 → Genmax → OpenAI; Genmax trong auto còn yêu cầu `genmax_voice_id`. Cache key bao gồm toàn bộ provider chain/model/voice và manifest ghi provider thực tế.
 - `beats_timing.json` luôn dựng từ duration đo bằng ffprobe sau khi audio thật đã render/normalize.
 - Test tự động dùng mock provider và mock ffprobe/concat; không gọi AI33/Genmax thật.
 ## 13. GĐ4 IMPLEMENTATION HIỆN TẠI
@@ -469,3 +470,10 @@ repo/
 - Không package `tests`, `runs`, `work`, `data`, `broll`, `tts_align`, `build`, `dist`, egg-info hoặc cache directories. Runtime/build artifacts phải nằm trong các thư mục gitignored hiện có.
 - Extra `movie-visual` là bộ dependency local đầy đủ cho WhisperX + BGE-M3 + SigLIP2. OpenCLIP/video profile vẫn cài riêng bằng extra `video-profile`.
 - Packaging v1 chỉ hỗ trợ editable install và wheel/import smoke trong repo; không cung cấp global `recap` console command và không package config/style assets để chạy từ thư mục bất kỳ.
+
+## 36. PRODUCTION KOREAN MOVIE PRESET / TTS RUNTIME
+
+- `config.movie.production.yaml` là preset production cho phim Hàn trên máy CUDA: Faster Whisper + WhisperX, ChatGPT Playwright review, AI33/Genmax/OpenAI TTS, ffmpeg-scene batch shots, End-Credit Guard, SigLIP2 Visual Index, BGE-M3 matching và GĐ6 1080p.
+- Production preset bật `orchestrator.runtime_preflight=true`; thiếu optional module trong `movie-visual` hoặc CUDA phải fail-fast trước khi chạy stage nặng.
+- TTS production dùng voice AI33 `vbee_hn_female_ngochuyen_full_24k-st`, OpenAI fallback `gpt-4o-mini-tts/coral`, concurrency `1`. `TtsMeta` có diagnostics optional/backward-compatible cho provider usage và fallback count.
+- Stable/visual presets cũ vẫn tương thích và không bị tự động chuyển sang production behavior.

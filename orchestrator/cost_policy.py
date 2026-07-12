@@ -4,6 +4,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from tts.providers import TtsProviderError, resolve_provider_order
+
 QualityMode = Literal["low_cost", "balanced", "max_quality"]
 ApiBudgetGuard = Literal["off", "warn", "block"]
 
@@ -110,8 +112,17 @@ def describe_ingest(ingest: dict[str, Any]) -> dict[str, Any]:
     }
 
 def describe_tts(tts: dict[str, Any]) -> dict[str, Any]:
+    try:
+        available_providers = resolve_provider_order(
+            tts.get("provider_mode", "auto"),
+            voice_id=str(tts.get("voice_id") or ""),
+            genmax_voice_id=tts.get("genmax_voice_id"),
+        )
+    except TtsProviderError:
+        available_providers = []
     return {
         "provider_mode": tts.get("provider_mode", "auto"),
+        "available_providers": available_providers,
         "text_normalization": tts.get("text_normalization", "vi"),
         "pronunciation_suggest_backend": tts.get("pronunciation_suggest_backend", "off"),
         "backend": "paid_tts_provider",

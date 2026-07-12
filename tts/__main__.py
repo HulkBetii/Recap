@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import shutil
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,7 +14,14 @@ from common.schema import ReviewBeat, TtsManifestEntry, TtsMeta, validate_review
 from tts.cache import TtsCache, build_cache_key, stable_hash
 from tts.concat import concat_voiceover
 from tts.cost import estimate_cost, real_ratio
-from tts.providers import ProviderMode, ProviderResult, TtsProviderClient, TtsProviderError
+from tts.providers import (
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_OPENAI_VOICE,
+    ProviderMode,
+    TtsProviderClient,
+    TtsProviderError,
+    resolve_provider_order,
+)
 from tts.pronunciation_qa import analyze_pronunciation_risks
 from tts.sanitize import normalize_tts_script
 from tts.timing import build_timings
@@ -36,9 +44,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-audio", required=True, type=Path)
     parser.add_argument("--output-timing", required=True, type=Path)
     parser.add_argument("--voice-id", required=True)
-    parser.add_argument("--provider-mode", choices=["auto", "ai33", "genmax"], default=DEFAULT_PROVIDER_MODE)
+    parser.add_argument("--provider-mode", choices=["auto", "ai33", "genmax", "openai"], default=DEFAULT_PROVIDER_MODE)
     parser.add_argument("--genmax-voice-id", default=None)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--openai-model", default=DEFAULT_OPENAI_MODEL)
+    parser.add_argument("--openai-voice", default=DEFAULT_OPENAI_VOICE)
     parser.add_argument("--speed", default=DEFAULT_SPEED, type=float)
     parser.add_argument("--inter-beat-pause", default=DEFAULT_INTER_BEAT_PAUSE, type=float)
     parser.add_argument("--concurrency", default=DEFAULT_CONCURRENCY, type=int)
@@ -100,19 +110,21 @@ async def synthesize_one(
     provider_mode: ProviderMode,
     genmax_voice_id: str | None,
     model: str,
+    openai_model: str,
+    openai_voice: str,
+    provider_config: dict[str, object],
     speed: float,
     normalize: bool,
     semaphore: asyncio.Semaphore,
 ) -> tuple[Path, TtsManifestEntry]:
-    target_provider = provider_mode if provider_mode != "auto" else "auto"
-    selected_voice_id = genmax_voice_id if provider_mode == "genmax" and genmax_voice_id else voice_id
     cache_key = build_cache_key(
-        provider=target_provider,
-        voice_id=selected_voice_id,
+        provider=provider_mode,
+        voice_id=voice_id,
         model=model,
         speed=speed,
         narration=text + "\n__tts_cache_salt__=" + cache_salt,
         normalized=normalize,
+        provider_config=provider_config,
     )
     cached = cache.get_cached(manifest, beat.beat_id, cache_key)
     if cached is not None:
@@ -126,9 +138,18 @@ async def synthesize_one(
             voice_id=voice_id,
             genmax_voice_id=genmax_voice_id,
             model=model,
+            openai_model=openai_model,
+            openai_voice=openai_voice,
             speed=speed,
             provider_mode=provider_mode,
             output_path=raw_path,
+        )
+    if len(result.attempted_providers) > 1:
+        logging.getLogger("tts").warning(
+            "Beat %s used %s after provider fallback chain %s",
+            beat.beat_id,
+            result.provider,
+            " -> ".join(result.attempted_providers),
         )
     if normalize:
         normalize_audio(raw_path, final_path)
@@ -140,7 +161,7 @@ async def synthesize_one(
         narration_hash=stable_hash(text),
         provider=result.provider,
         voice_id=result.voice_id,
-        model=model,
+        model=result.model or model,
         speed=speed,
         normalized=normalize,
         audio_path=final_path.relative_to(cache.work_dir).as_posix(),
@@ -162,6 +183,23 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         raise TtsError("--inter-beat-pause must be >= 0")
     if args.concurrency <= 0:
         raise TtsError("--concurrency must be > 0")
+
+    openai_model = getattr(args, "openai_model", DEFAULT_OPENAI_MODEL)
+    openai_voice = getattr(args, "openai_voice", DEFAULT_OPENAI_VOICE)
+    provider_order = resolve_provider_order(
+        args.provider_mode,
+        voice_id=args.voice_id,
+        genmax_voice_id=args.genmax_voice_id,
+    )
+    provider_config: dict[str, object] = {
+        "mode": args.provider_mode,
+        "order": provider_order,
+        "ai33_voice_id": args.voice_id,
+        "genmax_voice_id": args.genmax_voice_id,
+        "provider_model": args.model,
+        "openai_model": openai_model,
+        "openai_voice": openai_voice,
+    }
 
     require_ffmpeg()
     beats = load_review_script(review_script)
@@ -228,6 +266,9 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
             provider_mode=args.provider_mode,
             genmax_voice_id=args.genmax_voice_id,
             model=args.model,
+            openai_model=openai_model,
+            openai_voice=openai_voice,
+            provider_config=provider_config,
             speed=args.speed,
             normalize=normalize,
             semaphore=semaphore,
@@ -264,14 +305,31 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
     film_duration_s, duration_warnings = load_film_duration(args.film_meta.expanduser().resolve() if args.film_meta else None)
     warnings.extend(duration_warnings)
     warnings.extend(qa_report.warnings)
+    entries = [entry for _path, entry in results]
+    provider_counts = dict(sorted(Counter(entry.provider for entry in entries).items()))
+    fallback_count = sum(count for provider, count in provider_counts.items() if provider != provider_order[0])
+    if fallback_count:
+        warnings.append(
+            f"TTS provider fallback used for {fallback_count}/{len(entries)} beat(s); primary={provider_order[0]}"
+        )
+    primary_provider = provider_order[0]
+    if primary_provider == "openai":
+        primary_voice_id = openai_voice
+        primary_model = openai_model
+    elif primary_provider == "genmax":
+        primary_voice_id = args.genmax_voice_id or args.voice_id
+        primary_model = args.model
+    else:
+        primary_voice_id = args.voice_id
+        primary_model = args.model
 
     logger.info("[4/4] Writing timing and meta")
     write_json(output_timing, timings)
     chars = sum(len(item.tts_text) for item in normalized_items)
     meta = TtsMeta(
-        voice_id=args.voice_id,
+        voice_id=primary_voice_id,
         provider_mode=args.provider_mode,
-        model=args.model,
+        model=primary_model,
         speed=args.speed,
         inter_beat_pause_s=args.inter_beat_pause,
         total_duration_s=expected_total,
@@ -290,6 +348,11 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         pronunciation_risk_count=qa_report.n_risks,
         pronunciation_suggest_backend=qa_report.suggest_backend,
         pronunciation_warnings=qa_report.warnings,
+        providers_used=[provider for provider in provider_order if provider in provider_counts],
+        provider_counts=provider_counts,
+        fallback_count=fallback_count,
+        openai_model=openai_model,
+        openai_voice=openai_voice,
     )
     write_json(output_timing.with_name("tts_meta.json"), meta)
     return timings, meta

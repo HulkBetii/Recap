@@ -757,3 +757,12 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Added `movie-visual` as the deduplicated dependency union for WhisperX, BGE-M3, and SigLIP2; OpenCLIP remains opt-in through `video-profile`.
 - Updated install guidance and added static packaging regression tests for package discovery, exclusions, and dependency composition.
 - Validation: editable metadata dry-run succeeded; wheel build/import and `ingest`/`match`/`visual_index` help smokes passed; wheel contained all 12 required runtime roots and no excluded roots; full `python -m pytest -q` -> `300 passed`; compileall and `git diff --check` passed.
+
+### 2026-07-12 - Production movie preset and resilient TTS runtime
+
+- Added a Korean movie production preset using CUDA Faster Whisper + WhisperX, SigLIP2, BGE-M3, End-Credit Guard, opening intra-beat alignment, and the accepted 1080p render settings.
+- Extended TTS provider mode with OpenAI and changed auto selection to AI33 → configured Genmax → OpenAI, skipping providers without usable credentials instead of requiring every key.
+- TTS cache/manifest/meta now track the actual provider/model/voice and provider-chain fingerprint; optional diagnostics report provider counts and fallback beats while legacy metadata remains valid.
+- Added production-only dependency/CUDA preflight plus cost-summary provider availability without exposing credentials.
+- Live smoke succeeded for AI33/VBee (`2.482s`) and OpenAI `gpt-4o-mini-tts/coral` (`2.256s`); both outputs were valid non-empty MP3 files under `work/tts-live-smoke`.
+- Validation: targeted TTS/orchestrator suites passed; full `python -m pytest -q` -> `316 passed`; production dependency/CUDA preflight, editable metadata, compileall, and `git diff --check` passed.

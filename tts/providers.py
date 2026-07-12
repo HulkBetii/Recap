@@ -2,17 +2,19 @@
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
-ProviderMode = Literal["auto", "ai33", "genmax"]
+ProviderMode = Literal["auto", "ai33", "genmax", "openai"]
 
 AI33_BASE_URL = "https://api.ai33.pro"
 GENMAX_BASE_URL = "https://api.genmax.io"
@@ -20,6 +22,15 @@ RUNNING_STATUSES = {"pending", "queued", "processing", "running", "in_progress",
 RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 HTTP_MAX_ATTEMPTS = 3
 HTTP_RETRY_BASE_DELAY_S = 1.0
+OPENAI_MAX_ATTEMPTS = 3
+OPENAI_RETRY_BASE_DELAY_S = 1.0
+OPENAI_TIMEOUT_S = 300.0
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
+DEFAULT_OPENAI_VOICE = "coral"
+OPENAI_VI_INSTRUCTIONS = (
+    "Speak in natural Vietnamese with a clear female recap-review delivery. "
+    "Keep names accurate, use dramatic but controlled pacing, and do not add words."
+)
 
 
 class TtsProviderError(RuntimeError):
@@ -31,6 +42,45 @@ class ProviderResult:
     provider: str
     voice_id: str
     audio_url: str
+    model: str | None = None
+    attempted_providers: tuple[str, ...] = ()
+
+
+def resolve_provider_order(
+    provider_mode: ProviderMode,
+    *,
+    voice_id: str,
+    genmax_voice_id: str | None,
+    environ: Mapping[str, str] | None = None,
+) -> list[str]:
+    env = environ if environ is not None else os.environ
+    if provider_mode not in {"auto", "ai33", "genmax", "openai"}:
+        raise TtsProviderError(f"unsupported provider_mode: {provider_mode}")
+    if provider_mode == "ai33":
+        if not env.get("VIVOO_API_KEY", "").strip():
+            raise TtsProviderError("VIVOO_API_KEY env var is required for provider_mode=ai33")
+        return ["ai33"]
+    if provider_mode == "genmax":
+        if not env.get("GENMAX_API_KEY", "").strip():
+            raise TtsProviderError("GENMAX_API_KEY env var is required for provider_mode=genmax")
+        return ["genmax"]
+    if provider_mode == "openai":
+        if not env.get("OPENAI_API_KEY", "").strip():
+            raise TtsProviderError("OPENAI_API_KEY env var is required for provider_mode=openai")
+        return ["openai"]
+
+    providers: list[str] = []
+    if voice_id and env.get("VIVOO_API_KEY", "").strip():
+        providers.append("ai33")
+    if genmax_voice_id and env.get("GENMAX_API_KEY", "").strip():
+        providers.append("genmax")
+    if env.get("OPENAI_API_KEY", "").strip():
+        providers.append("openai")
+    if not providers:
+        raise TtsProviderError(
+            "provider_mode=auto requires VIVOO_API_KEY, GENMAX_API_KEY with --genmax-voice-id, or OPENAI_API_KEY"
+        )
+    return providers
 
 
 class TtsProviderClient:
@@ -41,23 +91,42 @@ class TtsProviderClient:
         voice_id: str,
         genmax_voice_id: str | None,
         model: str,
+        openai_model: str = DEFAULT_OPENAI_MODEL,
+        openai_voice: str = DEFAULT_OPENAI_VOICE,
         speed: float,
         provider_mode: ProviderMode,
         output_path: Path,
     ) -> ProviderResult:
-        if provider_mode == "ai33":
-            return await self._synthesize_ai33(text, voice_id, speed, output_path)
-        if provider_mode == "genmax":
-            gx_voice_id = genmax_voice_id or voice_id
-            return await self._synthesize_genmax(text, gx_voice_id, model, output_path)
-        try:
-            return await self._synthesize_ai33(text, voice_id, speed, output_path)
-        except Exception as ai33_error:
-            gx_voice_id = genmax_voice_id or voice_id
+        provider_order = resolve_provider_order(
+            provider_mode,
+            voice_id=voice_id,
+            genmax_voice_id=genmax_voice_id,
+        )
+        errors: list[str] = []
+        attempted: list[str] = []
+        for provider in provider_order:
+            attempted.append(provider)
             try:
-                return await self._synthesize_genmax(text, gx_voice_id, model, output_path)
-            except Exception as genmax_error:
-                raise TtsProviderError(f"All TTS providers failed. AI33: {ai33_error}; Genmax: {genmax_error}") from genmax_error
+                if provider == "ai33":
+                    result = await self._synthesize_ai33(text, voice_id, speed, output_path)
+                    actual_model = result.model or model
+                elif provider == "genmax":
+                    result = await self._synthesize_genmax(text, genmax_voice_id or voice_id, model, output_path)
+                    actual_model = result.model or model
+                else:
+                    result = await self._synthesize_openai(
+                        text,
+                        openai_voice,
+                        openai_model,
+                        speed,
+                        output_path,
+                    )
+                    actual_model = result.model or openai_model
+                return replace(result, model=actual_model, attempted_providers=tuple(attempted))
+            except Exception as exc:  # noqa: BLE001 - provider chain must continue on provider-specific failures
+                errors.append(f"{provider}: {exc}")
+                logging.getLogger("tts.providers").warning("TTS provider %s failed; trying next provider: %s", provider, exc)
+        raise TtsProviderError("All configured TTS providers failed. " + "; ".join(errors))
 
     async def _synthesize_ai33(self, text: str, voice_id: str, speed: float, output_path: Path) -> ProviderResult:
         task_id = await asyncio.to_thread(submit_ai33, text, voice_id, speed)
@@ -69,7 +138,46 @@ class TtsProviderClient:
         task_id = await asyncio.to_thread(submit_genmax, text, voice_id, model)
         audio_url = await poll_genmax(task_id)
         await asyncio.to_thread(download_file, audio_url, output_path)
-        return ProviderResult(provider="genmax", voice_id=voice_id, audio_url=audio_url)
+        return ProviderResult(provider="genmax", voice_id=voice_id, audio_url=audio_url, model=model)
+
+    async def _synthesize_openai(
+        self,
+        text: str,
+        voice_id: str,
+        model: str,
+        speed: float,
+        output_path: Path,
+    ) -> ProviderResult:
+        await asyncio.to_thread(synthesize_openai, text, voice_id, model, speed, output_path)
+        return ProviderResult(provider="openai", voice_id=voice_id, audio_url="openai://audio/speech", model=model)
+
+
+def synthesize_openai(text: str, voice_id: str, model: str, speed: float, output_path: Path) -> None:
+    from openai import OpenAI
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_suffix(output_path.suffix + ".part")
+    client = OpenAI(max_retries=0, timeout=OPENAI_TIMEOUT_S)
+    for attempt in range(OPENAI_MAX_ATTEMPTS):
+        try:
+            with client.audio.speech.with_streaming_response.create(
+                model=model,
+                voice=voice_id,
+                input=text,
+                instructions=OPENAI_VI_INSTRUCTIONS,
+                response_format="mp3",
+                speed=speed,
+                timeout=OPENAI_TIMEOUT_S,
+            ) as response:
+                response.stream_to_file(temp_path)
+            temp_path.replace(output_path)
+            return
+        except Exception:  # noqa: BLE001 - OpenAI SDK exposes multiple transport/API exception types
+            if temp_path.exists():
+                temp_path.unlink()
+            if attempt == OPENAI_MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(OPENAI_RETRY_BASE_DELAY_S * (2 ** attempt))
 
 
 def http_json(url: str, *, method: str = "GET", headers: dict[str, str] | None = None, data: bytes | None = None) -> dict:

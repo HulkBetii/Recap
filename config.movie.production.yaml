@@ -6,7 +6,7 @@ orchestrator:
   fallback_on_timecode_warn: true
   fallback_ingest_asr_provider: openai-gpt4o-hybrid
   fallback_max_vision_frames: 0
-  runtime_preflight: false
+  runtime_preflight: true
   python: null
   log_level: INFO
 
@@ -28,10 +28,10 @@ ingest:
   source_language: ko
   translate_mode: ko-en
   vision_model: gpt-4.1-mini
-  device: cpu
+  device: cuda
   asr_policy: preset
   asr_provider: faster-whisper
-  aligner: none
+  aligner: whisperx
   transcript_input: null
   timecode_quality: strict
   max_segment_s: 30
@@ -71,6 +71,7 @@ review:
   chat_session_policy: auto
   chat_session_meta: null
   chat_title: null
+  reply_timeout_s: 900
   style_sample: examples/style/viral_recap_vi.cleaned.txt
   style_preset: viral-recap-vi
   style_strength: strong
@@ -83,7 +84,7 @@ review:
   log_level: INFO
 
 tts:
-  voice_id: null
+  voice_id: vbee_hn_female_ngochuyen_full_24k-st
   provider_mode: auto
   genmax_voice_id: null
   model: eleven_multilingual_v2
@@ -91,7 +92,7 @@ tts:
   openai_voice: coral
   speed: 1.0
   inter_beat_pause: 0.15
-  concurrency: 3
+  concurrency: 1
   normalize: true
   cost_per_1k_chars: 0.0
   text_normalization: vi
@@ -105,13 +106,13 @@ tts:
   log_level: INFO
 
 shots:
-  detector: adaptive
+  detector: ffmpeg-scene
   min_shot_len: 0.4
   sample_frames: 5
-  frame_sampling: per-shot
+  frame_sampling: batch
   face_detection: "on"
   min_brightness: 0.06
-  end_credit_guard: false
+  end_credit_guard: true
   end_credit_tail_s: 600
   end_credit_threshold: 0.60
   skip_intro: 0
@@ -120,17 +121,17 @@ shots:
   scene_threshold: 0.3
   scene_scale_width: 640
   scene_min_gap: 0.3
-  max_shot_len: 0
+  max_shot_len: 8
   log_level: INFO
 
 visual_index:
-  enabled: false
+  enabled: true
   embedding_mode: siglip2
   embedding_model: google/siglip2-base-patch16-384
-  device: auto
+  device: cuda
   batch_size: 16
   keyframes_per_shot: 2
-  frame_sampling: per-frame
+  frame_sampling: batch
   log_level: INFO
 
 match:
@@ -144,7 +145,7 @@ match:
   allow_repeat: true
   allow_speedfit: false
   exclude_non_story: true
-  exclude_end_credits: false
+  exclude_end_credits: true
   max_repeat_per_beat: 2
   max_repeat_ratio_per_beat: 0.35
   min_repeat_alternative_score_ratio: 0.75
@@ -168,14 +169,14 @@ match:
   max_source_drift_s: 12
   semantic_mode: bge-m3
   semantic_model: BAAI/bge-m3
-  semantic_device: auto
+  semantic_device: cuda
   semantic_batch_size: 16
   semantic_cache_dir: null
-  visual_mode: off
+  visual_mode: rerank
   visual_index: auto
   visual_cache_dir: null
-  visual_device: null
-  visual_batch_size: null
+  visual_device: cuda
+  visual_batch_size: 32
   output_visual_qa: null
   film_map: auto
   output_qa: null
@@ -185,8 +186,8 @@ match:
   review_intent: auto
   story_map: auto
   opening_ordered_fill: true
-  opening_intra_beat_align: false
-  hook_min_brightness: 0.0
+  opening_intra_beat_align: true
+  hook_min_brightness: 0.10
   ordered_fill_by_audio_progress: true
   review_html: true
   log_level: INFO
@@ -201,4 +202,3 @@ render:
   concurrency: 4
   audio_delay_s: 0.0
   log_level: INFO
-

@@ -14,7 +14,7 @@ STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "vis
 TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "orchestrator": {"python": None, "log_level": "INFO", "quality_mode": "balanced", "text_llm_backend": "chatgpt_playwright", "api_budget_guard": "warn", "auto_fallback": False, "fallback_on_timecode_warn": True, "fallback_ingest_asr_provider": "openai-gpt4o-hybrid", "fallback_max_vision_frames": 0},
+    "orchestrator": {"python": None, "log_level": "INFO", "quality_mode": "balanced", "text_llm_backend": "chatgpt_playwright", "api_budget_guard": "warn", "auto_fallback": False, "fallback_on_timecode_warn": True, "fallback_ingest_asr_provider": "openai-gpt4o-hybrid", "fallback_max_vision_frames": 0, "runtime_preflight": False},
     "preflight": {
         "enabled": True,
         "max_intro_s": 240.0,
@@ -95,6 +95,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "provider_mode": "auto",
         "genmax_voice_id": None,
         "model": "eleven_multilingual_v2",
+        "openai_model": "gpt-4o-mini-tts",
+        "openai_voice": "coral",
         "speed": 1.0,
         "inter_beat_pause": 0.15,
         "concurrency": 3,

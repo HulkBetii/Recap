@@ -10,6 +10,8 @@ import numpy as np
 import pytest
 
 from orchestrator.config import load_config
+from orchestrator.graph import build_paths
+from orchestrator.runner import OrchestratorError, build_command, preflight, validate_runtime_requirements
 from run import run_pipeline
 from visual_index.integrity import PREPROCESSING_VERSION, media_identity_hash, sha256_file, visual_index_config_hash
 
@@ -407,6 +409,64 @@ def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:
     config = load_config(path)
     assert config["match"]["match_strategy"] == "hybrid"
     assert config["match"]["w_semantic"] == 0.45
+
+
+def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(tmp_path: Path) -> None:
+    config = load_config(Path("config.movie.production.yaml"))
+    film = tmp_path / "film.mp4"
+    film.write_bytes(b"film")
+    paths = build_paths(tmp_path / "run")
+
+    ingest = build_command("ingest", paths, film, config, force=False)
+    tts = build_command("tts", paths, film, config, force=False)
+    visual = build_command("visual_index", paths, film, config, force=False)
+    match = build_command("match", paths, film, config, force=False)
+
+    assert ingest[ingest.index("--device") + 1] == "cuda"
+    assert ingest[ingest.index("--aligner") + 1] == "whisperx"
+    assert tts[tts.index("--provider-mode") + 1] == "auto"
+    assert tts[tts.index("--openai-model") + 1] == "gpt-4o-mini-tts"
+    assert tts[tts.index("--openai-voice") + 1] == "coral"
+    assert tts[tts.index("--concurrency") + 1] == "1"
+    assert visual[visual.index("--device") + 1] == "cuda"
+    assert "--exclude-end-credits" in match
+    assert match[match.index("--visual-mode") + 1] == "rerank"
+
+
+def test_tts_auto_preflight_accepts_openai_as_only_available_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    film = tmp_path / "film.mp4"
+    film.write_bytes(b"film")
+    config = load_config(None)
+    config["tts"].update({"voice_id": "vbee", "provider_mode": "auto", "genmax_voice_id": None})
+    monkeypatch.delenv("VIVOO_API_KEY", raising=False)
+    monkeypatch.delenv("GENMAX_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+
+    preflight(
+        film=film,
+        selected={"tts"},
+        forced=set(),
+        paths=build_paths(tmp_path / "run"),
+        config=config,
+    )
+
+
+def test_production_runtime_preflight_reports_missing_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = load_config(Path("config.movie.production.yaml"))
+    monkeypatch.setattr("orchestrator.runner.runtime_module_available", lambda module: module != "whisperx")
+
+    with pytest.raises(OrchestratorError, match="whisperx"):
+        validate_runtime_requirements({"ingest", "visual_index", "match"}, config)
+
+
+def test_production_runtime_preflight_requires_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = load_config(Path("config.movie.production.yaml"))
+    monkeypatch.setattr("orchestrator.runner.runtime_module_available", lambda _module: True)
+    monkeypatch.setattr("orchestrator.runner.runtime_cuda_available", lambda: False)
+
+    with pytest.raises(OrchestratorError, match="requires CUDA"):
+        validate_runtime_requirements({"ingest", "visual_index", "match"}, config)
 
 
 

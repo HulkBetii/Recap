@@ -21,6 +21,7 @@ def build_cache_key(
     speed: float,
     narration: str,
     normalized: bool,
+    provider_config: dict[str, object] | None = None,
 ) -> str:
     return stable_hash(json.dumps({
         "provider": provider,
@@ -29,6 +30,7 @@ def build_cache_key(
         "speed": speed,
         "narration": narration,
         "normalized": normalized,
+        "provider_config": provider_config,
     }, ensure_ascii=False, sort_keys=True))
 
 

@@ -28,6 +28,12 @@ class FakeProvider(TtsProviderClient):
         output_path.write_bytes(f"genmax:{text}".encode("utf-8"))
         return ProviderResult(provider="genmax", voice_id=voice_id, audio_url="file://genmax")
 
+    async def _synthesize_openai(self, text: str, voice_id: str, model: str, speed: float, output_path: Path) -> ProviderResult:
+        self.calls.append("openai")
+        self.texts.append(text)
+        output_path.write_bytes(f"openai:{text}".encode("utf-8"))
+        return ProviderResult(provider="openai", voice_id=voice_id, audio_url="openai://fake", model=model)
+
 
 class FailSecondProvider(FakeProvider):
     async def _synthesize_ai33(self, text: str, voice_id: str, speed: float, output_path: Path) -> ProviderResult:
@@ -57,6 +63,8 @@ def make_args(tmp_path, review_script, film_meta=None, force=False):  # type: ig
         provider_mode="auto",
         genmax_voice_id="gxvoice",
         model="eleven_multilingual_v2",
+        openai_model="gpt-4o-mini-tts",
+        openai_voice="coral",
         speed=1.0,
         inter_beat_pause=0.15,
         concurrency=2,
@@ -89,6 +97,9 @@ def test_tts_cli_mock_end_to_end(tmp_path, monkeypatch) -> None:  # type: ignore
         return 3.15
 
     monkeypatch.setattr("tts.__main__.probe_duration", fake_probe)
+    monkeypatch.setenv("VIVOO_API_KEY", "ai33")
+    monkeypatch.setenv("GENMAX_API_KEY", "genmax")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     import asyncio
 
@@ -115,6 +126,9 @@ def test_tts_cli_cache_skips_second_run(tmp_path, monkeypatch) -> None:  # type:
     monkeypatch.setattr("tts.__main__.normalize_audio", lambda src, dst: dst.write_bytes(src.read_bytes()))
     monkeypatch.setattr("tts.__main__.concat_voiceover", lambda paths, pause, work_dir, output: output.write_bytes(b"voiceover"))
     monkeypatch.setattr("tts.__main__.probe_duration", lambda path: 1.0 if Path(path).suffix == ".mp3" else 1.0)
+    monkeypatch.setenv("VIVOO_API_KEY", "ai33")
+    monkeypatch.setenv("GENMAX_API_KEY", "genmax")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     import asyncio
 
@@ -134,6 +148,9 @@ def test_tts_cli_auto_uses_genmax_fallback(tmp_path, monkeypatch) -> None:  # ty
     monkeypatch.setattr("tts.__main__.normalize_audio", lambda src, dst: dst.write_bytes(src.read_bytes()))
     monkeypatch.setattr("tts.__main__.concat_voiceover", lambda paths, pause, work_dir, output: output.write_bytes(b"voiceover"))
     monkeypatch.setattr("tts.__main__.probe_duration", lambda path: 1.0)
+    monkeypatch.setenv("VIVOO_API_KEY", "ai33")
+    monkeypatch.setenv("GENMAX_API_KEY", "genmax")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     import asyncio
 
@@ -143,6 +160,48 @@ def test_tts_cli_auto_uses_genmax_fallback(tmp_path, monkeypatch) -> None:  # ty
     assert provider.calls == ["ai33", "genmax", "ai33", "genmax"]
 
 
+def test_tts_cli_auto_uses_openai_when_genmax_is_unavailable(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    review_script, film_meta = write_review_script(tmp_path)
+    monkeypatch.setattr("tts.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("tts.__main__.normalize_audio", lambda src, dst: dst.write_bytes(src.read_bytes()))
+    monkeypatch.setattr("tts.__main__.concat_voiceover", lambda paths, pause, work_dir, output: output.write_bytes(b"voiceover"))
+    monkeypatch.setattr("tts.__main__.probe_duration", lambda path: 1.0)
+    monkeypatch.setenv("VIVOO_API_KEY", "ai33")
+    monkeypatch.delenv("GENMAX_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+
+    import asyncio
+
+    provider = FakeProvider(fail_ai33=True)
+    _timings, meta = asyncio.run(run_tts_with_client(make_args(tmp_path, review_script, film_meta), provider))
+
+    assert provider.calls == ["ai33", "openai", "ai33", "openai"]
+    assert meta.provider_counts == {"openai": 2}
+    assert meta.fallback_count == 2
+
+
+def test_tts_cli_explicit_openai_records_actual_primary_model_and_voice(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    review_script, film_meta = write_review_script(tmp_path)
+    args = make_args(tmp_path, review_script, film_meta)
+    args.provider_mode = "openai"
+    monkeypatch.setattr("tts.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("tts.__main__.normalize_audio", lambda src, dst: dst.write_bytes(src.read_bytes()))
+    monkeypatch.setattr("tts.__main__.concat_voiceover", lambda paths, pause, work_dir, output: output.write_bytes(b"voiceover"))
+    monkeypatch.setattr("tts.__main__.probe_duration", lambda path: 1.0)
+    monkeypatch.delenv("VIVOO_API_KEY", raising=False)
+    monkeypatch.delenv("GENMAX_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+
+    import asyncio
+
+    _timings, meta = asyncio.run(run_tts_with_client(args, FakeProvider()))
+
+    assert meta.voice_id == "coral"
+    assert meta.model == "gpt-4o-mini-tts"
+    assert meta.providers_used == ["openai"]
+    assert meta.provider_counts == {"openai": 2}
+
+
 def test_tts_cli_persists_completed_beats_before_later_failure(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     review_script, film_meta = write_review_script(tmp_path)
     args = make_args(tmp_path, review_script, film_meta)
@@ -150,6 +209,7 @@ def test_tts_cli_persists_completed_beats_before_later_failure(tmp_path, monkeyp
     args.concurrency = 1
     monkeypatch.setattr("tts.__main__.require_ffmpeg", lambda: None)
     monkeypatch.setattr("tts.__main__.normalize_audio", lambda src, dst: dst.write_bytes(src.read_bytes()))
+    monkeypatch.setenv("VIVOO_API_KEY", "ai33")
 
     import asyncio
     import pytest
