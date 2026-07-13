@@ -828,3 +828,21 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Live canonical-profile smoke completed outline, narration, and QA on a 24-segment film map in one new ChatGPT conversation; output validated with 5 beats and `coverage_pct=0.7917`.
 - The smoke process had no `OPENAI_API_KEY` while fallback remained configured. `openai_usage.json` recorded `triggered=false`, `request_count=0`, `playwright_attempts=1`, and no browser error. QA was intentionally audit-only (`max_qa_iterations=0`), so this validates runtime/session routing rather than final narration quality.
 - Validation: targeted Playwright/fallback/orchestrator suites passed; full `python -m pytest -q` -> `383 passed`; review CLI help, compileall, production dry-run, live canonical-profile smoke, and `git diff --check` passed.
+
+### 2026-07-13 - Full production G2 QA rewrite run
+
+- Ran G2 against the full `Toan-Tri-Doc-Gia` film map with production QA rewriting enabled and the canonical Playwright profile. The dedicated ChatGPT conversation is `https://chatgpt.com/c/6a545601-2a18-83ec-a32d-178f7e2d354b`.
+- Produced 18 validated beats at `runs/toan-tri-doc-gia-gd2-production-qa-20260713/review_script.json`; coverage is `0.8841`, above the required `0.85`, and deterministic opening/readability checks passed with no readability warnings.
+- QA rewriting reduced the report from 14 issues to 2, then 3, then 1 after three rewrite iterations. Final model QA still flags beat 0 as an unclear movie opening, although the deterministic opening check passes and the beat names the protagonist, train setting, TLS123 warning, 7 PM deadline, and imminent catastrophe.
+- Final narration is 27,055 characters versus a 24,392-character budget (`10.9%` over). Beats 6, 10, and 8 are the only beats above 2,000 characters, at 2,450, 2,402, and 2,200 characters respectively.
+- Playwright completed outline, narration, and initial QA. A revision response failed to appear after the primary wait and same-response recovery, so the classified `response_not_started` failure exhausted two Playwright attempts and correctly activated the configured OpenAI circuit breaker.
+- OpenAI fallback used `gpt-4.1-mini` for 12 requests: 126,954 input tokens and 3,615 output tokens. Usage and trigger details are recorded in `work/review/openai_usage.json`; no API request occurred before the classified Playwright failure.
+
+### 2026-07-13 - Targeted G2 production cleanup
+
+- Cleaned beat 0 and shortened beats 6, 8, and 10 in a separate preserved run at `runs/toan-tri-doc-gia-gd2-production-qa-cleanup-20260713`.
+- The cleanup exposed a resume race: the prompt box could appear before existing conversation history, causing a previously loaded assistant message to be mistaken for the new response. Playwright now waits for resumed history to stabilize before counting assistant messages; regression coverage was added.
+- The canonical Playwright request received no new response after the full 900-second wait plus 60-second same-response recovery. Only then did the persisted circuit breaker activate `gpt-4.1-mini` for the remaining cleanup and exact-artifact QA requests.
+- Final narration has 18 beats and 24,530 characters versus the 24,392-character budget (`0.57%` over). Beat lengths are 421 for beat 0, 1,465 for beat 6, 1,507 for beat 8, and 1,436 for beat 10.
+- Final exact-artifact QA passed with zero issues. Coverage remains `0.8841`; schema, review intents, deterministic opening coherence, and readability all pass.
+- Cleanup fallback totals: 6 requests, 108,604 input tokens, and 2,433 output tokens. Full validation: `python -m pytest -q` -> `384 passed`; compileall and `git diff --check` passed.

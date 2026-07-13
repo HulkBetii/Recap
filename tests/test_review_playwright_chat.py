@@ -16,6 +16,17 @@ class _CountLocator:
         return value
 
 
+class _HistoryPage:
+    url = "https://chatgpt.com/c/existing-conversation"
+
+    def __init__(self) -> None:
+        self.messages = _CountLocator([0, 2, 6, 6, 6, 6])
+
+    def locator(self, selector: str) -> _CountLocator:
+        assert selector == '[data-message-author-role]'
+        return self.messages
+
+
 class _TextLocator:
     def __init__(self, values: list[str]) -> None:
         self.values = values
@@ -120,6 +131,18 @@ def test_wait_streaming_done_waits_for_a_new_assistant_message(monkeypatch) -> N
 
     monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
     asyncio.run(playwright_chat._wait_streaming_done(_FakePage(), 5, previous_assistant_count=2))
+
+
+def test_wait_conversation_history_stable_before_counting_existing_messages(monkeypatch) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
+    page = _HistoryPage()
+
+    asyncio.run(playwright_chat._wait_conversation_history_stable(page, timeout_s=5))
+
+    assert page.messages.index == 6
 
 
 def test_wait_text_stable_returns_the_latest_complete_text(monkeypatch) -> None:

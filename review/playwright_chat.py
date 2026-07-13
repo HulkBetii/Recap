@@ -22,6 +22,9 @@ POLL_INTERVAL_S = 2
 TEXT_STABLE_SAMPLES = 3
 TEXT_STABLE_INTERVAL_S = 2
 TEXT_STABLE_TIMEOUT_S = 60
+HISTORY_STABLE_SAMPLES = 3
+HISTORY_STABLE_INTERVAL_S = 0.5
+HISTORY_LOAD_TIMEOUT_S = 15
 DISCONNECT_ERROR_MARKERS = (
     "target page, context or browser has been closed",
     "browser has been closed",
@@ -124,6 +127,24 @@ async def _wait_streaming_done(page, timeout_s: int, previous_assistant_count: i
         retryable=True,
         fallback_eligible=True,
     )
+
+
+async def _wait_conversation_history_stable(page, timeout_s: float = HISTORY_LOAD_TIMEOUT_S) -> None:  # type: ignore[no-untyped-def]
+    if "/c/" not in str(page.url):
+        return
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    previous_count = -1
+    stable_count = 0
+    while asyncio.get_event_loop().time() < deadline:
+        count = await page.locator('[data-message-author-role]').count()
+        if count > 0 and count == previous_count:
+            stable_count += 1
+            if stable_count >= HISTORY_STABLE_SAMPLES:
+                return
+        else:
+            previous_count = count
+            stable_count = 0
+        await asyncio.sleep(HISTORY_STABLE_INTERVAL_S)
 
 
 async def _get_last_assistant_text(page) -> str:
@@ -232,6 +253,7 @@ class PlaywrightChatClient:
                 retryable=False,
                 fallback_eligible=False,
             ) from exc
+        await _wait_conversation_history_stable(self._page)
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
