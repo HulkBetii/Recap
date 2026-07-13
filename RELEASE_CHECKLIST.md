@@ -1,6 +1,6 @@
 # Release Candidate Gate
 
-Project version is `1.0.0`. The gates below were required before creating the release commit and tag.
+Project version is `1.0.1`. The gates below are required before creating or pushing the release tag.
 
 ## CI Gate
 
@@ -42,9 +42,9 @@ Required cache assertions:
 - glossary change reuses aligned transcript and rebuilds correction/translation/vision;
 - film identity change rebuilds audio, transcript, correction, translation, and vision artifacts.
 
-## v1.0.0 Decision
+## Release Decision
 
-Version bump, release notes, and tag `v1.0.0` are allowed only when:
+The release tag is allowed only when:
 
 - GitHub Release Gate is green for the intended commit;
 - local media gate passes without `-AllowDirty`;
@@ -52,10 +52,11 @@ Version bump, release notes, and tag `v1.0.0` are allowed only when:
 - secret scan has zero findings;
 - worktree is clean and `main` is synchronized with `origin/main`.
 
-Do not add VLM/OCR/new matching features between a passing release gate and the v1.0.0 tag.
+Do not add VLM/OCR/new matching features between a passing release gate and the release tag.
 
 ## Release Status
 
 - GitHub Release Gate passed for pre-release commit `3327fa8` on 2026-07-12.
 - Local media gate passed on the same commit without `-AllowDirty`, with media smoke enabled and zero secret findings.
-- The release commit contains only the version bump, release documentation, and the matching version assertion.
+- Tag `v1.0.0` remains attached to release commit `42d0e99`.
+- The `v1.0.1` release contains Playwright response hardening, opt-in review fallback reporting, and GĐ5 intra-beat splice safety fixes.

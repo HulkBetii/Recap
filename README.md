@@ -73,7 +73,7 @@ powershell -ExecutionPolicy Bypass -File scripts/release_check.ps1 `
   -MediaPath "C:\path\to\movie.mp4"
 ```
 
-Gate kiểm tra secret trong tracked tree + Git history, full test/compile, editable metadata, wheel content/install/import, CLI help, production dry-run và optional real-media GĐ0/GĐ1 cache smoke không API. Báo cáo nằm ở `work/release-gate/report.json`; tiêu chí chốt `v1.0.0` nằm trong `RELEASE_CHECKLIST.md`.
+Gate kiểm tra secret trong tracked tree + Git history, full test/compile, editable metadata, wheel content/install/import, CLI help, production dry-run và optional real-media GĐ0/GĐ1 cache smoke không API. Báo cáo nằm ở `work/release-gate/report.json`; tiêu chí chốt release nằm trong `RELEASE_CHECKLIST.md`.
 
 Preset video/phim nguồn tiếng Việt, không dịch KO→EN:
 

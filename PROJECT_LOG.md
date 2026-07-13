@@ -808,4 +808,11 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Hardened GĐ5 intra-beat splicing so replacement boundaries preserve the minimum visual clip length instead of leaving tiny baseline fragments; regression coverage was added.
 - Final EDL has 391 placements, no timeline gaps/overlaps, and 52.641s maximum source drift. Intra-beat alignment ran on beats 1, 10, 11, 13, 14, and 15; 12 beats still carry high-drift warnings and beat 1 retains a chronology mismatch warning.
 - Final render is H.264 1920x1080 at 30fps with AAC stereo, duration 1307.791s, and `duration_match=true`. Playwright QA loaded all 138 EDL thumbnails and four representative 1920x1080 frames without broken images.
-- Validation: full `python -m pytest -q` -> `349 passed`; compileall and `git diff --check` passed.
+- Validation: full `python -m pytest -q` -> `350 passed`; compileall and `git diff --check` passed.
+
+### 2026-07-13 - v1.0.1 patch release
+
+- Bumped the package version from `1.0.0` to `1.0.1` and prepended patch release notes while preserving the historical v1.0.0 notes.
+- The patch includes Playwright response-race and bounded-wait fixes, opt-in OpenAI review circuit-breaker/usage reporting, historical fallback reporting across partial reruns, and minimum-length-safe GĐ5 intra-beat splicing.
+- Stage JSON contracts remain unchanged; OpenAI review fallback remains disabled by default.
+- Tag `v1.0.0` is immutable and remains attached to its original release commit; `v1.0.1` may be tagged only after the clean local media gate and GitHub Release Gate pass for the intended release commit.
