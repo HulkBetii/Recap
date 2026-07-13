@@ -17,6 +17,7 @@ DEFAULT_REPLY_TIMEOUT_S = 600
 POLL_INTERVAL_S = 2
 TEXT_STABLE_SAMPLES = 3
 TEXT_STABLE_INTERVAL_S = 2
+TEXT_STABLE_TIMEOUT_S = 60
 
 
 class PlaywrightChatError(RuntimeError):
@@ -43,15 +44,20 @@ async def _click_send(page) -> None:
     await page.locator(PROMPT_INPUT_SEL).first.press("Enter")
 
 
-async def _wait_streaming_done(page, timeout_s: int) -> None:
+async def _wait_streaming_done(page, timeout_s: int, previous_assistant_count: int) -> None:
     deadline = asyncio.get_event_loop().time() + timeout_s
+    response_started = False
     while asyncio.get_event_loop().time() < deadline:
         try:
-            if await page.locator(STOP_BUTTON_SEL).count() == 0:
+            assistant_count = await page.locator(ASSISTANT_MSG_SEL).count()
+            response_started = response_started or assistant_count > previous_assistant_count
+            if response_started and await page.locator(STOP_BUTTON_SEL).count() == 0:
                 return
         except Exception:
-            return
+            pass
         await asyncio.sleep(POLL_INTERVAL_S)
+    if not response_started:
+        raise PlaywrightChatError(f"No new assistant response appeared after {timeout_s}s")
     raise PlaywrightChatError(f"ChatGPT response still streaming after {timeout_s}s")
 
 
@@ -67,11 +73,12 @@ async def _get_last_assistant_text(page) -> str:
     return cleaned
 
 
-async def _wait_text_stable(page) -> str:
+async def _wait_text_stable(page, timeout_s: int = TEXT_STABLE_TIMEOUT_S) -> str:
     stable_count = 0
     previous = ""
     latest = ""
-    while stable_count < TEXT_STABLE_SAMPLES:
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while stable_count < TEXT_STABLE_SAMPLES and asyncio.get_event_loop().time() < deadline:
         latest = await _get_last_assistant_text(page)
         if latest == previous and latest:
             stable_count += 1
@@ -79,6 +86,8 @@ async def _wait_text_stable(page) -> str:
             stable_count = 0
             previous = latest
         await asyncio.sleep(TEXT_STABLE_INTERVAL_S)
+    if not latest:
+        raise PlaywrightChatError(f"Assistant response did not become readable after {timeout_s}s")
     return latest
 
 
@@ -147,9 +156,10 @@ class PlaywrightChatClient:
     async def ask(self, prompt: str) -> str:
         if self._page is None:
             raise PlaywrightChatError("PlaywrightChatClient is not started")
+        previous_assistant_count = await self._page.locator(ASSISTANT_MSG_SEL).count()
         box = self._page.locator(PROMPT_INPUT_SEL).first
         await box.click()
         await box.fill(prompt)
         await _click_send(self._page)
-        await _wait_streaming_done(self._page, self.timeout_s)
+        await _wait_streaming_done(self._page, self.timeout_s, previous_assistant_count)
         return await _wait_text_stable(self._page)

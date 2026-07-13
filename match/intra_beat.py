@@ -732,7 +732,16 @@ def splice_placements(
     replaced_ranges: list[tuple[float, float]],
     min_visual_clip: float,
 ) -> list[EdlPlacement]:
-    ranges = merge_ranges(replaced_ranges)
+    ranges = adjust_splice_ranges(
+        baseline_placements=baseline_placements,
+        replaced_ranges=replaced_ranges,
+        min_visual_clip=min_visual_clip,
+    )
+    replacements = trim_replacements_to_ranges(
+        replacements=replacements,
+        ranges=ranges,
+        min_visual_clip=min_visual_clip,
+    )
     output: list[EdlPlacement] = []
     for placement in baseline_placements:
         pieces = [(placement.tl_start, placement.tl_end)]
@@ -757,6 +766,50 @@ def splice_placements(
         if abs(previous.tl_end - current.tl_start) > 1e-3:
             raise ValueError("splice created a timeline gap or overlap")
     return ordered
+
+
+def adjust_splice_ranges(
+    *,
+    baseline_placements: list[EdlPlacement],
+    replaced_ranges: list[tuple[float, float]],
+    min_visual_clip: float,
+) -> list[tuple[float, float]]:
+    adjusted: list[tuple[float, float]] = []
+    for original_start, original_end in merge_ranges(replaced_ranges):
+        range_start = original_start
+        range_end = original_end
+        for placement in baseline_placements:
+            if placement.tl_start + 1e-6 < range_start < placement.tl_end - 1e-6:
+                left_remainder = range_start - placement.tl_start
+                if left_remainder + 1e-6 < min_visual_clip:
+                    range_start = placement.tl_start + min_visual_clip
+            if placement.tl_start + 1e-6 < range_end < placement.tl_end - 1e-6:
+                right_remainder = placement.tl_end - range_end
+                if right_remainder + 1e-6 < min_visual_clip:
+                    range_end = placement.tl_end - min_visual_clip
+        if range_end - range_start + 1e-6 < min_visual_clip:
+            raise ValueError("adjusted splice range is shorter than min_visual_clip")
+        adjusted.append((round(range_start, 3), round(range_end, 3)))
+    return merge_ranges(adjusted)
+
+
+def trim_replacements_to_ranges(
+    *,
+    replacements: list[EdlPlacement],
+    ranges: list[tuple[float, float]],
+    min_visual_clip: float,
+) -> list[EdlPlacement]:
+    trimmed: list[EdlPlacement] = []
+    for replacement in replacements:
+        for range_start, range_end in ranges:
+            start = max(replacement.tl_start, range_start)
+            end = min(replacement.tl_end, range_end)
+            if end <= start + 1e-6:
+                continue
+            if end - start + 1e-6 < min_visual_clip:
+                raise ValueError(f"range adjustment would create a {end - start:.3f}s replacement")
+            trimmed.append(slice_placement(replacement, start, end))
+    return trimmed
 
 
 def slice_placement(placement: EdlPlacement, tl_start: float, tl_end: float) -> EdlPlacement:

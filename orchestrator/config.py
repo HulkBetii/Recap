@@ -79,6 +79,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "chat_title": None,
         "reply_timeout_s": 600,
         "llm_backend": "chatgpt_playwright",
+        "openai_fallback_model": None,
         "style_sample": "examples/style/viral_recap_vi.cleaned.txt",
         "style_preset": "viral-recap-vi",
         "style_strength": "strong",

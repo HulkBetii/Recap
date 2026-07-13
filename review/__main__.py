@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from review.movie_mode import (
     story_start_from_profile,
 )
 from review.models import NarrationBeat, OutlineResult, QaResult
+from review.openai_chat import FallbackChatClient, OpenAIChatClient, OpenAIChatError
 from review.playwright_chat import PlaywrightChatClient, PlaywrightChatError
 from review.non_story import drop_non_story_beats
 from review.session import build_chat_session_meta, resolve_initial_chat_url, save_chat_session
@@ -93,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chat-title", default=None, help="Optional human title saved in chat_session_meta.json")
     parser.add_argument("--reply-timeout-s", default=None, type=int, help="Max seconds to wait for one ChatGPT response")
     parser.add_argument("--llm-backend", default="chatgpt_playwright", choices=["chatgpt_playwright", "openai_api", "off"])
+    parser.add_argument("--openai-fallback-model", default=None, help="Optional OpenAI model used only after ChatGPT Playwright fails")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -565,7 +568,24 @@ async def run_review(args: argparse.Namespace) -> int:
         timeout_s=args.reply_timeout_s or 600,
         session_file=args.chatgpt_session_file.expanduser().resolve() if args.chatgpt_session_file else None,
     ) as client:
-        await build_review_with_client(args, client)
+        review_client = client
+        fallback_client = None
+        if args.openai_fallback_model:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ReviewError("OPENAI_API_KEY is required when --openai-fallback-model is configured")
+            fallback_client = FallbackChatClient(
+                client,
+                OpenAIChatClient(
+                    api_key,
+                    model=args.openai_fallback_model,
+                    timeout_s=args.reply_timeout_s or 300,
+                ),
+            )
+            review_client = fallback_client
+        await build_review_with_client(args, review_client)
+        if fallback_client is not None:
+            write_json(work_dir / "openai_usage.json", fallback_client.usage_summary())
         session_meta = build_chat_session_meta(
             policy=args.chat_session_policy,
             chat_url=client.current_url,
@@ -586,7 +606,7 @@ def main() -> int:
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
     try:
         return asyncio.run(run_review(args))
-    except (ReviewError, ReviewInputError, PlaywrightChatError, OSError, ValueError) as exc:
+    except (ReviewError, ReviewInputError, PlaywrightChatError, OpenAIChatError, OSError, ValueError) as exc:
         parser.exit(2, f"review: error: {exc}\n")
 
 

@@ -73,7 +73,12 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
 
     stages = {
         "ingest": describe_ingest(ingest),
-        "review": {"backend": text_llm_backend, "cost": "playwright_session" if text_llm_backend == "chatgpt_playwright" else text_llm_backend},
+        "review": {
+            "backend": text_llm_backend,
+            "cost": "playwright_session" if text_llm_backend == "chatgpt_playwright" else text_llm_backend,
+            "openai_fallback_model": review.get("openai_fallback_model"),
+            "openai_fallback_possible": bool(review.get("openai_fallback_model")),
+        },
         "tts": describe_tts(tts),
         "preflight": {"backend": resolved.get("preflight", {}).get("classifier", "heuristic"), "cost": "local"},
         "visual_index": {"backend": resolved.get("visual_index", {}).get("embedding_mode", "off"), "cost": "local"},
@@ -158,4 +163,7 @@ def disallowed_openai_stages(policy: CostPolicy, will_run: set[str]) -> list[str
         blocked.append("ingest:" + ",".join(ingest.get("openai_uses", [])))
     if "review" in will_run and policy.text_llm_backend == "openai_api":
         blocked.append("review:openai_api")
+    review = policy.stages.get("review", {})
+    if "review" in will_run and review.get("openai_fallback_possible"):
+        blocked.append("review:openai_fallback")
     return blocked

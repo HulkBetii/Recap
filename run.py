@@ -94,7 +94,9 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     will_run = set(forced) | invalid
     for stage in tuple(will_run):
         will_run.update(set(DOWNSTREAM[stage]) & selected)
-    openai_fallback_possible = bool(config.get("orchestrator", {}).get("auto_fallback", False) and "ingest" in selected)
+    ingest_fallback_possible = bool(config.get("orchestrator", {}).get("auto_fallback", False) and "ingest" in selected)
+    review_fallback_possible = bool(config.get("review", {}).get("openai_fallback_model") and "review" in selected)
+    openai_fallback_possible = ingest_fallback_possible or review_fallback_possible
     cost_summary = build_cost_summary(cost_policy, selected, will_run, openai_fallback_possible=openai_fallback_possible)
     preflight(film=film, selected=selected, forced=will_run, paths=paths, config=config, dry_run=args.dry_run, cost_policy=cost_policy)
 
@@ -172,6 +174,30 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     for stage in ("match", "render"):
         if stage in selected:
             summaries.append(execute(stage))
+
+    review_usage_path = paths.run_dir / "work" / "review" / "openai_usage.json"
+    if review_usage_path.is_file():
+        try:
+            review_usage = json.loads(review_usage_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            review_usage = {}
+        if review_usage.get("triggered"):
+            openai_fallback_possible = True
+            fallback_triggered = True
+            reasons = []
+            if paths.fallback_plan.is_file():
+                try:
+                    reasons = list(json.loads(paths.fallback_plan.read_text(encoding="utf-8")).get("reasons", []))
+                except (OSError, ValueError, TypeError):
+                    reasons = []
+            reasons.append(
+                {
+                    "stage": "review",
+                    "reason": review_usage.get("trigger_reason"),
+                    "model": review_usage.get("model"),
+                }
+            )
+            write_fallback_artifacts(paths, {"possible": openai_fallback_possible, "triggered": True, "reasons": reasons})
 
     cost_summary = build_cost_summary(cost_policy, selected, will_run, openai_fallback_possible=openai_fallback_possible, openai_fallback_triggered=fallback_triggered)
     paths.cost_summary.write_text(json.dumps(cost_summary, ensure_ascii=False, indent=2), encoding="utf-8")

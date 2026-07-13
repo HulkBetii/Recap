@@ -167,7 +167,7 @@ repo/
 ## 11. GĐ2 IMPLEMENTATION HIỆN TẠI
 
 - GĐ2 là CLI local, chạy bằng `python -m review`.
-- Runtime chính: ChatGPT qua Playwright persistent browser profile; không dùng paid API cho outline/narration/QA vì đây là tác vụ LLM nặng.
+- Runtime chính: ChatGPT qua Playwright persistent browser profile. Có thể cấu hình `review.openai_fallback_model` để kích hoạt OpenAI chỉ sau khi Playwright fail/timeout; fallback dùng circuit breaker cho các request GĐ2 còn lại và ghi `work/review/openai_usage.json`.
 - LLM chỉ được trả segment ids (`from_seg_id`, `to_seg_id`, hook ids). Code tự suy ra `src_tc_start` và `src_tc_end` từ `film_map`; không nhận timecode do LLM viết.
 - Package thực tế:
   - `review/`: orchestrator, cache, Playwright adapter, prompt flow, budget, coverage, timecode derivation.
@@ -217,6 +217,7 @@ repo/
 - Content anchors require strict timecodes; G5 disables them automatically when sibling `film_map.meta.json` has `approximate_timecodes=true`.
 - `opening_intra_beat_align` remains the backward-compatible opt-in flag for sentence-level alignment in `config.movie.visual.yaml`. It still analyzes at most the first 30s of the first eligible opening beat, and now prepares full-beat anchors for non-opening beats whose source/audio ratio is at least 2.5.
 - Non-opening alignment runs only with strict timecodes + BGE-M3, no existing content-anchor plan, and baseline drift above `max(18s, 1.5 * max_source_drift_s)`. Same-anchor sentences are coalesced, low-confidence transitions attach to the next strong anchor, dark-only ending shots remain eligible, and source windows stay monotonic without overlap.
+- Intra-beat splice trims replacement boundaries when necessary so both retained baseline fragments and replacement fragments remain at least `min_visual_clip`; if a valid trim is impossible, that replacement range is skipped with a warning instead of creating a flash cut.
 - G5 `--hook-min-brightness` replaces only the first hook placement when its shot-average brightness is below the configured threshold and a brighter chronological local fill exists. Stable/default config keeps `0.0`; `config.movie.visual.yaml` uses `0.10`.
 - Movie matching mac dinh dung `match_strategy=chronological`: bam source timecode/chronology truoc; semantic/story/intent chi la soft tie-breaker de tranh audio mot noi hinh mot noi. `semantic` strategy chi dung cho debug/experiment.
 - `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse, `expected_src_position`, `source_drift_s`, `chronology_score` va warnings `low semantic match`/`high source drift` theo beat.
@@ -352,7 +353,8 @@ repo/
 
 ## 27. GĐ2 CHATGPT SESSION RUNTIME NOTES
 
-- GĐ2 vẫn chạy task viết nặng bằng ChatGPT qua Playwright persistent profile, không dùng paid API.
+- GĐ2 vẫn chạy task viết nặng bằng ChatGPT qua Playwright persistent profile; paid API không chạy mặc định.
+- OpenAI review fallback là opt-in, chỉ dùng sau lỗi/timeout Playwright có bằng chứng; model lấy từ config, key từ `OPENAI_API_KEY`, và không thay thế Playwright làm primary.
 - CLI có `--reply-timeout-s` vì phim lẻ dài có response outline/narration/QA vượt 240s; default runtime hiện là 600s, run phim dài có thể dùng 900s.
 - CLI có `--chatgpt-session-file` để restore cookies từ `auto_YT` khi cần; chỉ dùng session file mới capture, không dùng cookie cũ vì có thể bật modal `expired-session`.
 - Nếu profile đã login tốt, ưu tiên dùng trực tiếp `--chatgpt-profile-dir` và đảm bảo không có Chrome/Playwright khác đang giữ lock profile.

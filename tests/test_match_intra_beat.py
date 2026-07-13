@@ -129,6 +129,35 @@ def test_splice_preserves_timeline_source_mapping_and_untouched_placements() -> 
     assert result[-1] == baseline[-1]
 
 
+def test_splice_trims_replacement_to_preserve_minimum_baseline_remainders() -> None:
+    baseline = [
+        EdlPlacement(tl_start=0, tl_end=5, src="film.mp4", src_in=0, src_out=5, beat_id=1, shot_index=0, speed=1),
+    ]
+    replacements = [
+        EdlPlacement(
+            tl_start=0.514,
+            tl_end=4.4,
+            src="film.mp4",
+            src_in=20,
+            src_out=23.886,
+            beat_id=1,
+            shot_index=3,
+            speed=1,
+        ),
+    ]
+
+    result = splice_placements(
+        baseline_placements=baseline,
+        replacements=replacements,
+        replaced_ranges=[(0.514, 4.4)],
+        min_visual_clip=0.6,
+    )
+
+    assert [(item.tl_start, item.tl_end) for item in result] == [(0, 0.6), (0.6, 4.4), (4.4, 5)]
+    assert (result[1].src_in, result[1].src_out) == (20.086, 23.886)
+    assert all(item.tl_end - item.tl_start >= 0.6 - 1e-6 for item in result)
+
+
 def test_local_fill_splits_contiguous_source_without_tiny_tail_or_false_repeat() -> None:
     placements = fill_local_window(
         beat_id=1,

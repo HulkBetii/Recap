@@ -792,3 +792,20 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Bumped the package version from `0.1.0` to `1.0.0` and added `RELEASE_NOTES.md`.
 - Confirmed the GitHub Release Gate passed for commit `3327fa8`, with `main` synchronized to `origin/main` before the release commit.
 - Re-ran the clean local media gate on commit `3327fa8`: secret scan found zero issues, all `344` tests passed, packaging/CLI/dry-run checks passed, and media smoke passed all `33` cache assertions without `-AllowDirty`.
+
+### 2026-07-13 - Review browser timeout hardening and opt-in API fallback
+
+- Fixed two ChatGPT Playwright races: the client now waits for a new assistant message before treating streaming as complete, and text-stability polling has a bounded deadline.
+- Added regression coverage for delayed assistant creation and stable-text collection.
+- Added opt-in `review.openai_fallback_model`: Playwright remains primary, but one proven browser failure activates an OpenAI circuit breaker for the remaining GĐ2 requests.
+- The fallback reads `OPENAI_API_KEY`, retries transient failures, logs model/token usage, and writes `work/review/openai_usage.json`.
+
+### 2026-07-13 - Toan Tri Doc Gia Playwright-first E2E rerun
+
+- Completed the E2E rerun for `Toan-Tri-Doc-Gia.mp4`; Playwright remained the primary GĐ2 backend, while the opt-in OpenAI circuit breaker handled only the remaining revision/QA calls after repeated browser timeouts.
+- OpenAI fallback usage: `gpt-4.1-mini`, 18 requests, 140,132 input tokens, and 7,128 output tokens. TTS remained AI33; OpenAI TTS was not used.
+- Final GĐ2 QA passed with zero issues at 24,246 characters versus the 24,392-character target.
+- Hardened GĐ5 intra-beat splicing so replacement boundaries preserve the minimum visual clip length instead of leaving tiny baseline fragments; regression coverage was added.
+- Final EDL has 391 placements, no timeline gaps/overlaps, and 52.641s maximum source drift. Intra-beat alignment ran on beats 1, 10, 11, 13, 14, and 15; 12 beats still carry high-drift warnings and beat 1 retains a chronology mismatch warning.
+- Final render is H.264 1920x1080 at 30fps with AAC stereo, duration 1307.791s, and `duration_match=true`. Playwright QA loaded all 138 EDL thumbnails and four representative 1920x1080 frames without broken images.
+- Validation: full `python -m pytest -q` -> `349 passed`; compileall and `git diff --check` passed.

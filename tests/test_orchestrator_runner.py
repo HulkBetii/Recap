@@ -627,3 +627,38 @@ def test_balanced_auto_does_not_fallback_for_strict_timecodes(tmp_path: Path, mo
     assert calls.count("ingest") == 1
     fallback = json.loads((tmp_path / "run" / "fallback_plan.json").read_text(encoding="utf-8"))
     assert fallback["triggered"] is False
+
+def test_partial_rerun_preserves_triggered_review_fallback_reporting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+
+    assert run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command)) == 0
+    usage_path = tmp_path / "run" / "work" / "review" / "openai_usage.json"
+    usage_path.parent.mkdir(parents=True, exist_ok=True)
+    usage_path.write_text(
+        json.dumps(
+            {
+                "provider": "openai",
+                "model": "gpt-test",
+                "request_count": 2,
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "triggered": True,
+                "trigger_reason": "browser timeout",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rerun_args = argset(tmp_path, only="render", force=True)
+    assert run_pipeline(rerun_args, executor=lambda command, log_path: write_stage_outputs(command)) == 0
+
+    fallback = json.loads((tmp_path / "run" / "fallback_plan.json").read_text(encoding="utf-8"))
+    assert fallback["possible"] is True
+    assert fallback["triggered"] is True
+    assert fallback["reasons"] == [{"stage": "review", "reason": "browser timeout", "model": "gpt-test"}]
+    cost = json.loads((tmp_path / "run" / "cost_summary.json").read_text(encoding="utf-8"))
+    assert cost["openai_fallback_possible"] is True
+    assert cost["openai_fallback_triggered"] is True
