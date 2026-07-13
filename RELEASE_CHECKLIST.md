@@ -1,6 +1,6 @@
 # Release Candidate Gate
 
-Project version is `1.0.1`. The gates below are required before creating or pushing the release tag.
+Project version is `1.0.2`. The gates below are required before creating or pushing the release tag.
 
 ## CI Gate
 
@@ -59,4 +59,5 @@ Do not add VLM/OCR/new matching features between a passing release gate and the 
 - GitHub Release Gate passed for pre-release commit `3327fa8` on 2026-07-12.
 - Local media gate passed on the same commit without `-AllowDirty`, with media smoke enabled and zero secret findings.
 - Tag `v1.0.0` remains attached to release commit `42d0e99`.
-- The `v1.0.1` release contains Playwright response hardening, opt-in review fallback reporting, and GĐ5 intra-beat splice safety fixes.
+- Tag `v1.0.1` remains attached to release commit `c37ac94`.
+- The `v1.0.2` candidate contains the locked Playwright-first review policy, resumed-chat history stabilization, and transient AI33/Genmax polling recovery.

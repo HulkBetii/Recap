@@ -860,3 +860,11 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Opening and ending frames are visible/nonblack. Beats 2, 11, and 15 remain visually coherent with their narration despite G5 source-order warnings; beats 6, 8, and 10 match the cleaned narration. Detailed evidence is in `video.cleanup.qa.json` and `qa-cleanup-browser/`.
 - Local listening QA transcribed beats 2/6/8/10/11/15 with Faster Whisper `large-v3` on CUDA and checked long silence with ffmpeg. No beat is truncated, no silence interval exceeds 0.8s, and no leading/trailing silence was detected.
 - No-autojunk transcript similarity is `0.9692-0.9885` and word recall is `0.9444-0.9881`. Beat 10 is recognized as `50.000 xu`; foreign character names remain intelligible enough for ASR to map to the intended name, with expected spelling variation. Evidence is in `tts.key_beats.qa.json`; no OpenAI API was used.
+
+### 2026-07-13 - v1.0.2 patch release
+
+- Bumped the package version from `1.0.1` to `1.0.2` and prepended release notes while preserving the historical `v1.0.0` and `v1.0.1` notes.
+- The patch locks every browser-suitable review path to Playwright-first with the canonical persistent profile, classified retry/recovery, lazy gated OpenAI fallback, and complete fallback-state reporting.
+- Fixed resumed ChatGPT history stabilization so stale assistant messages cannot satisfy a new request, and hardened AI33/Genmax polling so transient request exhaustion does not abandon an active provider task before its deadline.
+- Stage JSON contracts remain unchanged. ASR, vision, TTS, and media remain local/provider-first, with paid fallback limited by each stage policy.
+- Tags `v1.0.0` and `v1.0.1` are immutable; `v1.0.2` may be tagged only after the clean local media gate and GitHub Release Gate pass for the release commit.

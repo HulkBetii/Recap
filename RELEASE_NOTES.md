@@ -1,3 +1,35 @@
+# Recap v1.0.2
+
+Release date: 2026-07-13
+
+`v1.0.2` is a patch release that locks review work to the Playwright-first policy and hardens long-running ChatGPT and TTS production sessions.
+
+## Fixes
+
+- GĐ2 now accepts only `chatgpt_playwright` as its primary text backend and enforces the canonical persistent profile at `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`; legacy direct `openai_api` and `off` configurations fail clearly.
+- Playwright failures are classified before retry or fallback. The default two-attempt policy recovers the same submitted response for up to 60 seconds without sending a duplicate prompt.
+- Resumed ChatGPT conversations wait for existing history to stabilize before counting assistant messages, preventing a stale response from being mistaken for the new answer.
+- OpenAI review fallback remains opt-in and lazy. It runs only after an eligible Playwright failure exhausts recovery, the budget guard allows it, and `OPENAI_API_KEY` is available; usage reports record configured, allowed, blocked, and triggered states.
+- Automatic paid ASR fallback now requires a severe classified alignment/timecode failure instead of approximate metadata alone.
+- AI33/Genmax polling continues through exhausted transient `429`, `5xx`, and network request retries until the provider task deadline, allowing an already submitted TTS task to finish instead of failing the beat early.
+
+## Compatibility
+
+- No required JSON contract between pipeline stages changed.
+- Playwright success does not initialize or call OpenAI, and `api_budget_guard=block` still permits Playwright while blocking paid fallback in every quality mode.
+- ASR, vision, TTS, and media remain local/provider-first because they require artifact contracts that browser automation cannot reliably produce.
+- Existing `v1.0.0` and `v1.0.1` tags remain immutable.
+
+## Validation
+
+- Full production GĐ2 cleanup completed with 18 beats, zero final QA issues, and `0.8841` coverage.
+- The rebuilt production EDL contains 394 placements with no gaps, overlaps, reuse, or widening; browser visual QA found no media or console errors.
+- Local CUDA listening QA found no truncation or long silence in key beats, with transcript similarity from `0.9692` to `0.9885`; no OpenAI API was used for this QA.
+- Final production output is H.264/AAC, 1920×1080 at 30fps, `1324.092s`, with `duration_match=true`.
+- Full automated suite passed with `386` tests; compileall and `git diff --check` also passed before the release gate.
+
+---
+
 # Recap v1.0.1
 
 Release date: 2026-07-13

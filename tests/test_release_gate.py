@@ -126,8 +126,8 @@ def test_release_workflow_is_windows_offline_and_uses_full_history() -> None:
     assert "playwright install" not in workflow.lower()
 
 
-def test_project_version_matches_v1_0_1_release() -> None:
+def test_project_version_matches_v1_0_2_release() -> None:
     with (ROOT / "pyproject.toml").open("rb") as handle:
         project = tomllib.load(handle)["project"]
 
-    assert project["version"] == "1.0.1"
+    assert project["version"] == "1.0.2"
