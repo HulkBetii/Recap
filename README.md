@@ -147,7 +147,23 @@ Test hiện tại dùng mock/unit, chưa yêu cầu clip thật. Khi có clip ng
 
 GĐ2 nhận `film_map.json` và tạo `review_script.json` + `review_script.meta.json`.
 
-GĐ2 là tác vụ LLM nặng nên mặc định dùng ChatGPT qua Playwright persistent browser, không dùng paid API.
+GĐ2 là tác vụ LLM nặng nên luôn dùng ChatGPT qua Playwright persistent browser làm backend chính. Chạy thẳng `openai_api` hoặc tắt backend bằng `off` không còn được hỗ trợ; hai giá trị legacy này sẽ báo lỗi config.
+
+OpenAI review fallback là opt-in qua `review.openai_fallback_model`. Fallback chỉ được phép khi Playwright đã hết retry/recovery với lỗi browser được phân loại là cho phép fallback, `api_budget_guard` không phải `block`, và `OPENAI_API_KEY` tồn tại. Playwright thành công không khởi tạo OpenAI client và không yêu cầu API key.
+
+Config mặc định:
+
+```yaml
+orchestrator:
+  text_llm_backend: chatgpt_playwright
+  api_budget_guard: warn
+review:
+  playwright_max_attempts: 2
+  playwright_recovery_timeout_s: 60
+  openai_fallback_model: null
+```
+
+Sau khi prompt đã submit, recovery chỉ đợi tiếp response hiện tại, không gửi lại prompt. Lỗi login/profile/config hoặc parse/validate output không kích hoạt OpenAI. Khi fallback được cấu hình, `work/review/openai_usage.json` ghi trạng thái configured/allowed/blocked/triggered, lý do, số lần Playwright thử, model và token usage.
 
 Chuẩn bị lần đầu:
 
@@ -155,7 +171,7 @@ Chuẩn bị lần đầu:
 python -m playwright install chromium
 ```
 
-Đăng nhập ChatGPT bằng profile dùng cho GĐ2 trước khi chạy thật. Nếu chưa login, CLI sẽ báo lỗi rõ.
+GĐ2 khóa profile ChatGPT tại `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`. Đăng nhập bằng đúng profile này trước khi chạy thật; CLI sẽ từ chối path khác hoặc báo lỗi rõ nếu session chưa login.
 
 ```powershell
 python -m review `
@@ -166,7 +182,7 @@ python -m review `
   --min-coverage 0.85 `
   --max-qa-iterations 3 `
   --work-dir work\review `
-  --chatgpt-profile-dir data\chrome_user_data\PROFILE_GPT_1
+  --chatgpt-profile-dir D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1
 ```
 
 Artifacts cache GĐ2:
@@ -508,6 +524,8 @@ Long local ASR now overlaps chunks and atomically caches validated per-chunk tra
 - For long movie reviews, use the logged-in ChatGPT persistent profile and keep other Chrome windows for that profile closed before running GĐ2.
 - If using cookies from `auto_YT`, pass only a freshly captured `session_chatgpt.json`; stale cookies can trigger ChatGPT `expired-session` modal.
 - GĐ2 supports `--reply-timeout-s`; long movie outline/narration/QA can require `900` seconds per response.
+- GĐ2 defaults to two Playwright attempts with a 60-second same-response recovery window. Only classified browser timeout/disconnect failures may reach the opt-in OpenAI fallback; login, profile, config, parse, validation, and programming errors fail directly.
+- `api_budget_guard=block` still allows Playwright but blocks OpenAI fallback in every quality mode. ASR/vision/TTS remain local or dedicated-provider workflows because Playwright cannot reliably produce timestamped transcript, frame-analysis, or audio contracts.
 - Local runtime artifacts are ignored: `.env`, `data/`, `runs/`, `work/`, and `out/` must not be committed.
 - Movie mode is independent per video. Series mode should later add shared glossary/entity bible and episode summaries rather than relying on one giant chat history.
 

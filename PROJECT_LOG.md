@@ -816,3 +816,15 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - The patch includes Playwright response-race and bounded-wait fixes, opt-in OpenAI review circuit-breaker/usage reporting, historical fallback reporting across partial reruns, and minimum-length-safe GĐ5 intra-beat splicing.
 - Stage JSON contracts remain unchanged; OpenAI review fallback remains disabled by default.
 - Tag `v1.0.0` is immutable and remains attached to its original release commit; `v1.0.1` may be tagged only after the clean local media gate and GitHub Release Gate pass for the intended release commit.
+
+### 2026-07-13 - Playwright-first backend policy lock
+
+- Locked GĐ2 to `chatgpt_playwright` as the only primary text backend; legacy direct `openai_api` and `off` configurations are rejected.
+- Added bounded Playwright retry/recovery policy: two attempts by default, a 60-second same-response recovery window, and no duplicate prompt submission after submit is confirmed.
+- Restricted OpenAI review fallback to classified retry-exhausted browser failures, explicit fallback configuration, an allowing budget guard, and a runtime API key. OpenAI initialization remains lazy.
+- Extended fallback reporting to distinguish configured/allowed/blocked/triggered state and record Playwright attempts, failure reason/code, model, and token usage without changing stage JSON contracts.
+- Clarified that timestamped ASR, vision, TTS, and media use local or dedicated providers; paid ASR auto-fallback requires a severe classified timecode/alignment failure rather than approximate metadata alone.
+- Locked every GĐ2 runtime/preset to `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`; direct review execution rejects any other ChatGPT profile path.
+- Live canonical-profile smoke completed outline, narration, and QA on a 24-segment film map in one new ChatGPT conversation; output validated with 5 beats and `coverage_pct=0.7917`.
+- The smoke process had no `OPENAI_API_KEY` while fallback remained configured. `openai_usage.json` recorded `triggered=false`, `request_count=0`, `playwright_attempts=1`, and no browser error. QA was intentionally audit-only (`max_qa_iterations=0`), so this validates runtime/session routing rather than final narration quality.
+- Validation: targeted Playwright/fallback/orchestrator suites passed; full `python -m pytest -q` -> `383 passed`; review CLI help, compileall, production dry-run, live canonical-profile smoke, and `git diff --check` passed.

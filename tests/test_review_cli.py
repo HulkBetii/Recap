@@ -3,7 +3,10 @@
 import argparse
 import json
 
-from review.__main__ import build_review_with_client
+import pytest
+
+from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
+from review.__main__ import ReviewError, build_parser, build_review_with_client, resolve_chatgpt_profile_dir
 
 
 class FakeReviewClient:
@@ -131,3 +134,21 @@ def test_qa_ignores_invalid_beat_ids(tmp_path) -> None:
     beats, meta = asyncio.run(build_review_with_client(make_args(tmp_path, film_map_path), InvalidQaClient()))
     assert beats
     assert meta.qa_report[0]["issues"] == []
+
+
+@pytest.mark.parametrize("backend", ["openai_api", "off"])
+def test_review_cli_rejects_non_playwright_backends(backend: str) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--film-map", "film_map.json", "--output", "review.json", "--llm-backend", backend])
+
+
+def test_review_cli_defaults_to_locked_auto_yt_profile() -> None:
+    args = build_parser().parse_args(["--film-map", "film_map.json", "--output", "review.json"])
+
+    assert args.chatgpt_profile_dir == CHATGPT_PLAYWRIGHT_PROFILE_DIR
+    assert resolve_chatgpt_profile_dir(args.chatgpt_profile_dir) == CHATGPT_PLAYWRIGHT_PROFILE_DIR.resolve()
+
+
+def test_review_runtime_rejects_any_other_profile(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(ReviewError, match="profile is locked"):
+        resolve_chatgpt_profile_dir(tmp_path / "other-profile")

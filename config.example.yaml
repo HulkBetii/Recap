@@ -67,10 +67,15 @@ review:
   max_beat_audio_s: 18
   story_map: auto
   review_intent_output: null
-  chatgpt_profile_dir: data/chrome_user_data/PROFILE_GPT_1
+  chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
   chat_session_policy: auto
   chat_session_meta: null
   chat_title: null
+  reply_timeout_s: 600
+  llm_backend: chatgpt_playwright
+  playwright_max_attempts: 2
+  playwright_recovery_timeout_s: 60
+  openai_fallback_model: null
   style_sample: examples/style/viral_recap_vi.cleaned.txt
   style_preset: viral-recap-vi
   style_strength: strong

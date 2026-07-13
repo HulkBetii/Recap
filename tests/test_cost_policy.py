@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from orchestrator.config import load_config
 from orchestrator.cost_policy import disallowed_openai_stages, resolve_cost_policy
 
@@ -46,7 +49,67 @@ def test_budget_guard_blocks_low_cost_openai_usage() -> None:
     config["ingest"]["translate_mode"] = "ko-en"
     _resolved, policy = resolve_cost_policy(config)
 
-    assert disallowed_openai_stages(policy, {"ingest"}) == ["ingest:translation"]
+    blocked = disallowed_openai_stages(policy, {"ingest"})
+    assert len(blocked) == 1
+    assert "translation" in blocked[0]
+
+
+@pytest.mark.parametrize("quality_mode", ["balanced", "max_quality"])
+def test_budget_guard_blocks_ingest_openai_in_every_quality_mode(quality_mode: str) -> None:
+    config = load_config(None)
+    config["orchestrator"].update({"quality_mode": quality_mode, "api_budget_guard": "block"})
+    config["ingest"].update({"translate_mode": "ko-en", "max_vision_frames": 0})
+    _resolved, policy = resolve_cost_policy(config)
+
+    blocked = disallowed_openai_stages(policy, {"ingest"})
+    assert len(blocked) == 1
+    assert "translation" in blocked[0]
+
+
+def test_budget_guard_marks_review_fallback_blocked_without_blocking_playwright() -> None:
+    config = load_config(None)
+    config["orchestrator"]["api_budget_guard"] = "block"
+    config["review"]["openai_fallback_model"] = "gpt-test"
+    _resolved, policy = resolve_cost_policy(config)
+
+    review = policy.stages["review"]
+    assert review["openai_fallback_configured"] is True
+    assert review["openai_fallback_allowed"] is False
+    assert review["openai_fallback_blocked"] is True
+    assert disallowed_openai_stages(policy, {"review"}) == []
+
+
+@pytest.mark.parametrize("backend", ["openai_api", "off"])
+def test_direct_review_backend_is_rejected(backend: str) -> None:
+    config = load_config(None)
+    config["orchestrator"]["text_llm_backend"] = backend
+    with pytest.raises(ValueError, match="must be chatgpt_playwright"):
+        resolve_cost_policy(config)
+
+    config = load_config(None)
+    config["review"]["llm_backend"] = backend
+    with pytest.raises(ValueError, match="review.llm_backend"):
+        resolve_cost_policy(config)
+
+
+@pytest.mark.parametrize(
+    "preset",
+    [
+        "config.example.yaml",
+        "config.movie.stable.yaml",
+        "config.movie.visual.yaml",
+        "config.movie.production.yaml",
+        "config.vi.stable.yaml",
+        "config.vi.low_openai.yaml",
+        "config.vi.balanced.auto.yaml",
+    ],
+)
+def test_shipped_presets_keep_playwright_as_review_primary(preset: str) -> None:
+    resolved, policy = resolve_cost_policy(load_config(Path(preset)))
+
+    assert policy.text_llm_backend == "chatgpt_playwright"
+    assert resolved["review"]["llm_backend"] == "chatgpt_playwright"
+    assert Path(resolved["review"]["chatgpt_profile_dir"]) == CHATGPT_PLAYWRIGHT_PROFILE_DIR
 
 
 def test_invalid_quality_mode_fails() -> None:

@@ -153,21 +153,30 @@ repo/
   - `ingest/`: orchestrator, cache, transcribe, translate/vision client, gap detection, film map builder.
 - Cache GĐ1 nằm trong `--work-dir`: `audio.wav`, aligned/corrected transcript, translation, frames/vision và `cache_manifest.json`; cache được invalidation chọn lọc theo identity từng pass.
 - Test v1 dùng mock/unit; smoke test clip thật sẽ chạy khi có video mẫu.
-## 10. NGUYÊN TẮC CHI PHÍ API VS PLAYWRIGHT WORKER
+## 10. NGUYÊN TẮC PLAYWRIGHT-FIRST VÀ CHI PHÍ API
 
-- Với tác vụ chi phí API thấp, ít request, dữ liệu nhỏ hoặc cần độ ổn định API cao, được phép dùng API trực tiếp.
-- Với tác vụ nặng, nhiều request, dữ liệu dài, xử lý hàng loạt hoặc có nguy cơ tốn nhiều chi phí API, bắt buộc ưu tiên kỹ thuật Playwright worker theo pattern từ `D:\VibeCoding\auto_YT`.
+- Với mọi tác vụ text/review/QA phù hợp với browser, bắt buộc dùng Playwright làm đường chạy chính; không chọn paid OpenAI API chỉ vì tiện hoặc nhanh hơn.
+- OpenAI cho text/review/QA chỉ là fallback cuối, phải đồng thời thỏa cả bốn điều kiện: fallback được cấu hình rõ, Playwright đã thử trước và hết retry/recovery với lỗi được phân loại là cho phép fallback, `api_budget_guard` cho phép, và `OPENAI_API_KEY` tồn tại.
+- Không được bắt `Exception` rộng để kích hoạt paid API. Lỗi đăng nhập/profile/config, lỗi parse/validate output và lỗi lập trình phải fail rõ ràng, không chuyển sang OpenAI.
+- OpenAI client/key phải được khởi tạo lazy tại thời điểm fallback thực sự kích hoạt; đường Playwright thành công không được yêu cầu key hoặc tạo OpenAI request.
+- ASR có timecode, vision, TTS và media artifact không phải tác vụ browser-suitable: ưu tiên local hoặc provider chuyên dụng theo policy từng stage. OpenAI chỉ dùng khi là fallback cuối đã cấu hình và loại artifact đó không thể được tạo tin cậy bằng Playwright.
+- Với tác vụ nặng, nhiều request, dữ liệu dài, xử lý hàng loạt hoặc có nguy cơ tốn nhiều chi phí API, tái dụng kỹ thuật Playwright worker theo pattern từ `D:\VibeCoding\auto_YT`.
 - Pattern cần tái dụng từ `auto_YT` khi dùng Playwright worker:
   - Persistent browser profile để giữ phiên đăng nhập.
   - Worker claim job, ghi heartbeat, update status và resume an toàn.
   - Lưu conversation/session URL khi cần tiếp tục phiên làm việc.
   - Retry rõ ràng, log tiến độ, không crash toàn pipeline vì một job lỗi.
 - Không tự ý chuyển một tác vụ nặng sang paid API nếu chưa có lý do kỹ thuật rõ ràng và chưa cập nhật quyết định vào `AGENTS.md` + `PROJECT_LOG.md`.
-- Riêng GĐ1 hiện tại vẫn dùng OpenAI API cho translation/vision v1 theo plan đã duyệt; nếu chạy phim dài hoặc chi phí tăng cao, phải refactor sang worker/browser automation trước khi scale.
+- Riêng GĐ1, translation/vision chỉ được bật khi preset thực sự cần các artifact đó; local/manual/no-translation/no-vision phải được ưu tiên khi đáp ứng yêu cầu. Không ép ASR timecode, vision frame hoặc TTS audio qua Playwright vì browser không cung cấp contract media ổn định.
 ## 11. GĐ2 IMPLEMENTATION HIỆN TẠI
 
 - GĐ2 là CLI local, chạy bằng `python -m review`.
-- Runtime chính: ChatGPT qua Playwright persistent browser profile. Có thể cấu hình `review.openai_fallback_model` để kích hoạt OpenAI chỉ sau khi Playwright fail/timeout; fallback dùng circuit breaker cho các request GĐ2 còn lại và ghi `work/review/openai_usage.json`.
+- Backend GĐ2 duy nhất cho đường chạy chính là `chatgpt_playwright`; giá trị legacy `openai_api` và `off` bị từ chối thay vì chạy API trực tiếp hoặc âm thầm bỏ review.
+- Runtime chính: ChatGPT qua Playwright persistent browser profile cố định `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`. Code và mọi preset phát hành phải dùng đúng path này; `python -m review` từ chối profile khác. Mặc định `review.playwright_max_attempts=2` và `review.playwright_recovery_timeout_s=60`.
+- Nếu prompt đã submit thành công, recovery chỉ tiếp tục quan sát cùng response và không gửi prompt lần hai. Chỉ lỗi xảy ra trước khi submit mới được phép thử lại request.
+- `review.openai_fallback_model` là opt-in. Fallback chỉ kích hoạt sau khi lỗi Playwright được phân loại là retryable/fallback-eligible và đã hết attempt; circuit breaker sau đó xử lý các request GĐ2 còn lại.
+- `api_budget_guard=block` luôn chặn OpenAI fallback ở mọi quality mode nhưng vẫn cho Playwright chạy. Thiếu key hoặc budget bị chặn phải fail với lý do rõ ràng, không tạo API request.
+- `work/review/openai_usage.json` và báo cáo orchestrator ghi trạng thái configured/allowed/blocked/triggered, mã lỗi, lý do, số lần thử Playwright, model và token usage; không thay đổi contract JSON giữa các stage.
 - LLM chỉ được trả segment ids (`from_seg_id`, `to_seg_id`, hook ids). Code tự suy ra `src_tc_start` và `src_tc_end` từ `film_map`; không nhận timecode do LLM viết.
 - Package thực tế:
   - `review/`: orchestrator, cache, Playwright adapter, prompt flow, budget, coverage, timecode derivation.
@@ -353,11 +362,13 @@ repo/
 
 ## 27. GĐ2 CHATGPT SESSION RUNTIME NOTES
 
-- GĐ2 vẫn chạy task viết nặng bằng ChatGPT qua Playwright persistent profile; paid API không chạy mặc định.
-- OpenAI review fallback là opt-in, chỉ dùng sau lỗi/timeout Playwright có bằng chứng; model lấy từ config, key từ `OPENAI_API_KEY`, và không thay thế Playwright làm primary.
+- GĐ2 luôn chạy task viết nặng bằng ChatGPT qua Playwright persistent profile; không hỗ trợ chạy thẳng backend `openai_api`.
+- `PlaywrightChatError` phải có mã lỗi và thuộc tính retry/fallback. Response chưa xuất hiện, streaming timeout, page/context bị ngắt và browser transient error có thể retry/fallback; chưa đăng nhập, profile/session sai, client chưa start, config sai, parse/validate error và lỗi ngoài Playwright không được fallback.
+- OpenAI review fallback là opt-in và chỉ dùng sau khi đã hết `playwright_max_attempts`; model lấy từ config, key từ `OPENAI_API_KEY`, client được tạo lazy và không thay thế Playwright làm primary.
+- Sau khi submit được xác nhận, `playwright_recovery_timeout_s` chỉ dùng để recover response hiện tại; tuyệt đối không gửi lại cùng prompt vì có thể tạo hai assistant response và tốn ngữ cảnh.
 - CLI có `--reply-timeout-s` vì phim lẻ dài có response outline/narration/QA vượt 240s; default runtime hiện là 600s, run phim dài có thể dùng 900s.
 - CLI có `--chatgpt-session-file` để restore cookies từ `auto_YT` khi cần; chỉ dùng session file mới capture, không dùng cookie cũ vì có thể bật modal `expired-session`.
-- Nếu profile đã login tốt, ưu tiên dùng trực tiếp `--chatgpt-profile-dir` và đảm bảo không có Chrome/Playwright khác đang giữ lock profile.
+- Luôn dùng `--chatgpt-profile-dir D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`; không dùng profile local trong repo hoặc profile khác. Đảm bảo không có Chrome/Playwright khác đang giữ lock profile này.
 - Runtime browser profile/cookies là artifact local, không commit; `data/`, `.env`, `runs/` phải luôn gitignored.
 
 ## 28. PHIM LẺ VS PHIM BỘ RUNTIME MODE
@@ -439,19 +450,20 @@ repo/
 
 ## 32. COST-AWARE BACKEND POLICY
 
-- Orchestrator c? `quality_mode: low_cost|balanced|max_quality`, `text_llm_backend`, v? `api_budget_guard` ?? ch?n backend theo chi ph?/ch?t l??ng.
-- Default `balanced`: text-heavy QA/review d?ng ChatGPT Playwright; ASR/vision theo preset; TTS v?n d?ng provider tr? ph? nh?ng cache theo beat.
-- `low_cost` ?u ti?n local-first ASR, t?t OpenAI vision m?c ??nh, v? kh?ng t? fallback sang OpenAI khi `api_budget_guard=block`.
-- `cost_policy.json` v? `cost_summary.json` l? artifact b?t bu?c c?a run orchestrator ?? review stage n?o c? th? t?n API/TTS tr??c khi ch?y th?t.
-- G?3 pronunciation QA deterministic ch?y tr??c synthesize v? ghi `tts_pronunciation_qa.json`; backend suggestion ch? sinh candidate lexicon, kh?ng t? s?a `review_script.json` v? kh?ng t? g?i TTS l?i.
-- Playwright ch? d?ng cho text/QA d?i; kh?ng d?ng thay th? TTS audio th?t ho?c media artifact c?n provider/local runtime ?n ??nh.
+- Orchestrator có `quality_mode: low_cost|balanced|max_quality`, `text_llm_backend` và `api_budget_guard` để chọn backend theo chi phí/chất lượng.
+- `text_llm_backend` chỉ chấp nhận `chatgpt_playwright`; `openai_api` và `off` là config lỗi. OpenAI review chỉ được cấu hình qua `review.openai_fallback_model`.
+- Mọi quality mode đều dùng ChatGPT Playwright trước cho text-heavy QA/review. `api_budget_guard=block` chặn paid API fallback ở mọi mode, không chỉ `low_cost`.
+- `low_cost` ưu tiên local-first ASR và tắt OpenAI vision mặc định. `balanced`/`max_quality` vẫn không được bỏ qua Playwright cho review.
+- `cost_policy.json` và `cost_summary.json` là artifact bắt buộc của run orchestrator để review stage nào có thể tốn API/TTS trước khi chạy thật; báo cáo phải phân biệt fallback configured, allowed, blocked và triggered.
+- GĐ3 pronunciation QA deterministic chạy trước synthesize và ghi `tts_pronunciation_qa.json`; backend suggestion chỉ sinh candidate lexicon, không tự sửa `review_script.json` và không tự gọi TTS lại.
+- Playwright chỉ dùng cho text/QA phù hợp với browser; không dùng thay thế ASR timecode, vision frame, TTS audio hoặc media artifact cần local/provider runtime ổn định.
 
 
 ## 33. AUTO LOW-OPENAI VIETNAMESE PIPELINE
 
 - `config.vi.low_openai.yaml` l? preset test r? cho video ti?ng Vi?t: local-first ASR (`faster-whisper` + `whisperx`), `translate_mode=none`, `max_vision_frames=0`, v? `api_budget_guard=block`.
-- `config.vi.balanced.auto.yaml` v?n auto 100%: ch?y local-first tr??c, n?u G?1 timecode QA warn/fail th? t? rerun G?1 b?ng `openai-gpt4o-hybrid` r?i force rerun downstream selected stages.
-- Fallback ch? d?a tr?n `film_map.meta.json`: `timecode_quality != strict`, `approximate_timecodes=true`, ho?c warning alignment/timecode nghi?m tr?ng.
+- `config.vi.balanced.auto.yaml` vẫn auto 100%: chạy local-first trước và chỉ rerun GĐ1 bằng `openai-gpt4o-hybrid` khi timecode/alignment có lỗi nghiêm trọng đã phân loại, sau đó force rerun downstream selected stages.
+- `timecode_quality != strict` hoặc `approximate_timecodes=true` đơn lẻ không đủ để kích hoạt paid ASR. Trigger hiện tại phải đến từ `asr_warnings` có alignment fail/unavailable, hoặc warning tương lai được đánh dấu rõ bằng `severe:`/`[severe]`; ingest fail trước khi có `film_map.meta.json` vẫn fail-fast và không tự gọi paid API.
 - `fallback_plan.json` ghi trigger/block reason; `fallback_summary.json` ghi k?t qu? sau fallback; `cost_summary.json` c? `openai_fallback_possible` v? `openai_fallback_triggered`.
 - N?u `api_budget_guard=block`, fallback OpenAI ph?i b? ch?n r? r?ng thay v? ?m th?m t?n API.
 

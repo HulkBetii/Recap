@@ -33,8 +33,8 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
     if quality_mode not in {"low_cost", "balanced", "max_quality"}:
         raise ValueError("orchestrator.quality_mode must be low_cost|balanced|max_quality")
     text_llm_backend = orchestrator.get("text_llm_backend", "chatgpt_playwright")
-    if text_llm_backend not in {"chatgpt_playwright", "openai_api", "off"}:
-        raise ValueError("orchestrator.text_llm_backend must be chatgpt_playwright|openai_api|off")
+    if text_llm_backend != "chatgpt_playwright":
+        raise ValueError("orchestrator.text_llm_backend must be chatgpt_playwright")
     api_budget_guard = orchestrator.get("api_budget_guard", "warn")
     if api_budget_guard not in {"off", "warn", "block"}:
         raise ValueError("orchestrator.api_budget_guard must be off|warn|block")
@@ -43,6 +43,8 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
     ingest = resolved.setdefault("ingest", {})
     tts = resolved.setdefault("tts", {})
     review = resolved.setdefault("review", {})
+    if review.get("llm_backend", "chatgpt_playwright") != "chatgpt_playwright":
+        raise ValueError("review.llm_backend must be chatgpt_playwright")
 
     asr_policy = ingest.get("asr_policy", "preset")
     if asr_policy not in {"preset", "local_first", "openai_hybrid", "manual"}:
@@ -70,6 +72,8 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
             tts["pronunciation_suggest_backend"] = "chatgpt_playwright"
 
     review["llm_backend"] = text_llm_backend
+    review_fallback_configured = bool(review.get("openai_fallback_model"))
+    review_fallback_blocked = review_fallback_configured and api_budget_guard == "block"
 
     stages = {
         "ingest": describe_ingest(ingest),
@@ -77,7 +81,10 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
             "backend": text_llm_backend,
             "cost": "playwright_session" if text_llm_backend == "chatgpt_playwright" else text_llm_backend,
             "openai_fallback_model": review.get("openai_fallback_model"),
-            "openai_fallback_possible": bool(review.get("openai_fallback_model")),
+            "openai_fallback_configured": review_fallback_configured,
+            "openai_fallback_allowed": review_fallback_configured and not review_fallback_blocked,
+            "openai_fallback_blocked": review_fallback_blocked,
+            "openai_fallback_possible": review_fallback_configured,
         },
         "tts": describe_tts(tts),
         "preflight": {"backend": resolved.get("preflight", {}).get("classifier", "heuristic"), "cost": "local"},
@@ -134,7 +141,15 @@ def describe_tts(tts: dict[str, Any]) -> dict[str, Any]:
         "cost": "paid_audio_cacheable",
     }
 
-def build_cost_summary(policy: CostPolicy, selected: set[str], will_run: set[str], *, openai_fallback_possible: bool = False, openai_fallback_triggered: bool = False) -> dict[str, Any]:
+def build_cost_summary(
+    policy: CostPolicy,
+    selected: set[str],
+    will_run: set[str],
+    *,
+    openai_fallback_possible: bool = False,
+    openai_fallback_triggered: bool = False,
+    review_fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     stage_rows = []
     warnings = list(policy.warnings)
     for stage, info in policy.stages.items():
@@ -144,6 +159,18 @@ def build_cost_summary(policy: CostPolicy, selected: set[str], will_run: set[str
         stage_rows.append(row)
         if stage in will_run and info.get("cost") in {"paid_api", "paid_audio_cacheable"}:
             warnings.append(f"{stage} may incur {info['cost']}")
+    review_status = {
+        "configured": bool(policy.stages.get("review", {}).get("openai_fallback_configured")),
+        "allowed": bool(policy.stages.get("review", {}).get("openai_fallback_allowed")),
+        "blocked": bool(policy.stages.get("review", {}).get("openai_fallback_blocked")),
+        "triggered": False,
+        "playwright_attempts": 0,
+        "error_code": None,
+        "error": None,
+        "block_reason": None,
+    }
+    if review_fallback:
+        review_status.update(review_fallback)
     return {
         "quality_mode": policy.quality_mode,
         "text_llm_backend": policy.text_llm_backend,
@@ -151,19 +178,15 @@ def build_cost_summary(policy: CostPolicy, selected: set[str], will_run: set[str
         "stages": stage_rows,
         "openai_fallback_possible": openai_fallback_possible,
         "openai_fallback_triggered": openai_fallback_triggered,
+        "review_openai_fallback": review_status,
         "warnings": warnings,
     }
 
 def disallowed_openai_stages(policy: CostPolicy, will_run: set[str]) -> list[str]:
-    if policy.quality_mode != "low_cost" or policy.api_budget_guard != "block":
+    if policy.api_budget_guard != "block":
         return []
     blocked: list[str] = []
     ingest = policy.stages.get("ingest", {})
     if "ingest" in will_run and ingest.get("openai_uses"):
         blocked.append("ingest:" + ",".join(ingest.get("openai_uses", [])))
-    if "review" in will_run and policy.text_llm_backend == "openai_api":
-        blocked.append("review:openai_api")
-    review = policy.stages.get("review", {})
-    if "review" in will_run and review.get("openai_fallback_possible"):
-        blocked.append("review:openai_fallback")
     return blocked

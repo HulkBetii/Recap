@@ -67,7 +67,7 @@ review:
   max_beat_audio_s: 18
   story_map: auto
   review_intent_output: null
-  chatgpt_profile_dir: data/chrome_user_data/PROFILE_GPT_1
+  chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
   chat_session_policy: auto
   chat_session_meta: null
   chat_title: null

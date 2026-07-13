@@ -93,6 +93,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
   1. Encountering a cryptic runtime error that requires StackOverflow/web search.
   2. Testing or interacting with a web interface visually.
   3. Explicitly asked to research a specific topic.
+- These MCP rules govern coding-agent tools only. They do not override Recap's runtime Playwright-first backend policy; the production ChatGPT Playwright adapter and its OpenAI fallback gates are defined in `AGENTS.md`.
 
 ---
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

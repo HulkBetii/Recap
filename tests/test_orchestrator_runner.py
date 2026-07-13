@@ -21,7 +21,7 @@ from preflight.integrity import PREFLIGHT_CACHE_VERSION, preflight_identity
 from review.__main__ import build_parser as build_review_parser
 from review.integrity import REVIEW_CACHE_VERSION, build_review_identity
 from review.style import DEFAULT_STYLE_SAMPLE
-from run import run_pipeline
+from run import run_pipeline, should_fallback_timecode, sync_review_fallback_reporting
 from storymap.cache import stable_hash as storymap_stable_hash
 from visual_index.integrity import PREPROCESSING_VERSION, media_identity_hash, sha256_file, visual_index_config_hash
 
@@ -304,6 +304,113 @@ def test_review_command_disables_micro_beats_by_default(tmp_path: Path) -> None:
     assert "--no-micro-beats" in command
     assert "--micro-beats" not in command
 
+
+def test_review_command_passes_playwright_retry_and_budget_fallback_gate(tmp_path: Path) -> None:
+    paths = build_paths(tmp_path / "run")
+    config = load_config(write_config(tmp_path))
+    config["orchestrator"]["api_budget_guard"] = "block"
+    config["review"].update(
+        {
+            "playwright_max_attempts": 2,
+            "playwright_recovery_timeout_s": 60,
+            "openai_fallback_model": "gpt-test",
+        }
+    )
+
+    command = build_command("review", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+
+    assert command[command.index("--playwright-max-attempts") + 1] == "2"
+    assert command[command.index("--playwright-recovery-timeout-s") + 1] == "60"
+    assert "--block-openai-fallback" in command
+
+
+def test_review_fallback_does_not_require_openai_key_during_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    film = tmp_path / "film.mp4"
+    film.write_bytes(b"film")
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    config = load_config(None)
+    config["review"].update({"chatgpt_profile_dir": str(profile), "openai_fallback_model": "gpt-test"})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    preflight(
+        film=film,
+        selected={"review"},
+        forced={"review"},
+        paths=build_paths(tmp_path / "run"),
+        config=config,
+    )
+
+
+def test_blocked_review_fallback_reports_playwright_failure_when_stage_fails(tmp_path: Path) -> None:
+    args = argset(tmp_path, only="review")
+    data = json.loads(args.config.read_text(encoding="utf-8"))
+    data["orchestrator"] = {"api_budget_guard": "block"}
+    data["review"].update({"openai_fallback_model": "gpt-test"})
+    args.config.write_text(json.dumps(data), encoding="utf-8")
+
+    def failing_review(command: list[str], log_path: Path) -> None:
+        usage_path = args.run_dir / "work" / "review" / "openai_usage.json"
+        usage_path.parent.mkdir(parents=True, exist_ok=True)
+        usage_path.write_text(
+            json.dumps(
+                {
+                    "configured": True,
+                    "allowed": False,
+                    "blocked": True,
+                    "block_reason": "api_budget_guard=block",
+                    "triggered": False,
+                    "trigger_reason": "assistant response timed out",
+                    "playwright_attempts": 2,
+                    "playwright_error_code": "response_timeout",
+                    "model": "gpt-test",
+                }
+            ),
+            encoding="utf-8",
+        )
+        raise OrchestratorError("review failed")
+
+    with pytest.raises(OrchestratorError, match="review failed"):
+        run_pipeline(args, executor=failing_review)
+
+    fallback = json.loads((args.run_dir / "fallback_plan.json").read_text(encoding="utf-8"))
+    assert fallback["triggered"] is False
+    assert fallback["review"]["blocked"] is True
+    assert fallback["review"]["playwright_attempts"] == 2
+    assert fallback["review"]["error_code"] == "response_timeout"
+    assert fallback["reasons"][0]["block_reason"] == "api_budget_guard=block"
+
+
+def test_sync_restores_configured_review_status_without_usage_artifact(tmp_path: Path) -> None:
+    from orchestrator.cost_policy import resolve_cost_policy
+
+    paths = build_paths(tmp_path / "run")
+    paths.run_dir.mkdir(parents=True)
+    paths.fallback_plan.write_text(
+        json.dumps({"possible": False, "triggered": False, "reasons": ["timecode QA passed"]}),
+        encoding="utf-8",
+    )
+    config = load_config(None)
+    config["review"]["openai_fallback_model"] = "gpt-test"
+    _resolved, cost_policy = resolve_cost_policy(config)
+
+    possible, triggered, review = sync_review_fallback_reporting(
+        paths=paths,
+        cost_policy=cost_policy,
+        selected={"ingest", "review"},
+        will_run={"ingest"},
+        openai_fallback_possible=True,
+        fallback_triggered=False,
+    )
+
+    plan = json.loads(paths.fallback_plan.read_text(encoding="utf-8"))
+    assert possible is True
+    assert triggered is False
+    assert review["configured"] is True
+    assert plan["possible"] is True
+    assert plan["review"]["configured"] is True
+    assert plan["reasons"] == ["timecode QA passed"]
+
 def test_tts_command_passes_normalization_options(tmp_path: Path) -> None:
     from orchestrator.graph import build_paths
     from orchestrator.runner import build_command
@@ -542,7 +649,7 @@ def test_vi_low_openai_preset_has_no_openai_uses() -> None:
     assert policy.stages["ingest"]["openai_uses"] == []
 
 
-def test_balanced_auto_fallback_reruns_ingest_on_approximate_timecodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_balanced_auto_fallback_reruns_ingest_on_severe_alignment_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "x")
     monkeypatch.setenv("VIVOO_API_KEY", "x")
     monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
@@ -563,7 +670,7 @@ def test_balanced_auto_fallback_reruns_ingest_on_approximate_timecodes(tmp_path:
             ingest_calls += 1
             output = flag(command, "--output")
             output.write_text(json.dumps([{"id":0,"type":"speech","tc_start":0,"tc_end":2,"ko":"hello","en":"hello","scene_desc":None}]), encoding="utf-8")
-            meta = {"input_path":"film.mp4","duration":2,"created_at":NOW,"whisper_model":"large-v3","translate_model":"gpt-4.1-mini","vision_model":"gpt-4.1-mini","gap_threshold":4,"max_vision_frames":0,"speech_count":1,"visual_count":0,"cache_hits":[],"warnings_count":0,"timecode_quality":"approximate","approximate_timecodes":True,"asr_provider":"faster-whisper"}
+            meta = {"input_path":"film.mp4","duration":2,"created_at":NOW,"whisper_model":"large-v3","translate_model":"gpt-4.1-mini","vision_model":"gpt-4.1-mini","gap_threshold":4,"max_vision_frames":0,"speech_count":1,"visual_count":0,"cache_hits":[],"warnings_count":1,"timecode_quality":"approximate","approximate_timecodes":True,"asr_provider":"faster-whisper","asr_warnings":["whisperx alignment failed; using approximate timestamps: test failure"]}
             if ingest_calls == 2:
                 meta.update({"timecode_quality":"strict","approximate_timecodes":False,"asr_provider":"openai-gpt4o-hybrid"})
             output.with_name("film_map.meta.json").write_text(json.dumps(meta), encoding="utf-8")
@@ -594,12 +701,35 @@ def test_low_cost_blocks_required_openai_fallback(tmp_path: Path, monkeypatch: p
         if stage_name(command) == "ingest":
             output = flag(command, "--output")
             output.write_text(json.dumps([{"id":0,"type":"speech","tc_start":0,"tc_end":2,"ko":"hello","en":"hello","scene_desc":None}]), encoding="utf-8")
-            output.with_name("film_map.meta.json").write_text(json.dumps({"input_path":"film.mp4","duration":2,"created_at":NOW,"whisper_model":"large-v3","translate_model":"gpt-4.1-mini","vision_model":"gpt-4.1-mini","gap_threshold":4,"max_vision_frames":0,"speech_count":1,"visual_count":0,"cache_hits":[],"warnings_count":0,"timecode_quality":"approximate","approximate_timecodes":True,"asr_provider":"faster-whisper"}), encoding="utf-8")
+            output.with_name("film_map.meta.json").write_text(json.dumps({"input_path":"film.mp4","duration":2,"created_at":NOW,"whisper_model":"large-v3","translate_model":"gpt-4.1-mini","vision_model":"gpt-4.1-mini","gap_threshold":4,"max_vision_frames":0,"speech_count":1,"visual_count":0,"cache_hits":[],"warnings_count":1,"timecode_quality":"approximate","approximate_timecodes":True,"asr_provider":"faster-whisper","asr_warnings":["aligner 'whisperx' is configured but not available; using existing timestamps"]}), encoding="utf-8")
         else:
             write_stage_outputs(command)
 
     with pytest.raises(Exception, match="OpenAI fallback required but blocked"):
         run_pipeline(args, executor=fake_executor)
+
+
+def test_approximate_timecodes_alone_do_not_trigger_paid_asr_fallback(tmp_path: Path) -> None:
+    paths = build_paths(tmp_path / "run")
+    paths.run_dir.mkdir(parents=True)
+    paths.film_map_meta.write_text(
+        json.dumps(
+            {
+                "timecode_quality": "approximate",
+                "approximate_timecodes": True,
+                "asr_provider": "faster-whisper",
+                "asr_warnings": ["OpenAI chunked transcription uses rough chunk timestamps before alignment"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(None)
+    config["orchestrator"]["auto_fallback"] = True
+
+    triggered, reasons = should_fallback_timecode(paths, config)
+
+    assert triggered is False
+    assert reasons == ["approximate timecodes without a severe alignment/timecode failure"]
 
 
 def test_balanced_auto_does_not_fallback_for_strict_timecodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -647,6 +777,8 @@ def test_partial_rerun_preserves_triggered_review_fallback_reporting(tmp_path: P
                 "output_tokens": 20,
                 "triggered": True,
                 "trigger_reason": "browser timeout",
+                "playwright_attempts": 2,
+                "playwright_error_code": "response_timeout",
             }
         ),
         encoding="utf-8",
@@ -658,7 +790,22 @@ def test_partial_rerun_preserves_triggered_review_fallback_reporting(tmp_path: P
     fallback = json.loads((tmp_path / "run" / "fallback_plan.json").read_text(encoding="utf-8"))
     assert fallback["possible"] is True
     assert fallback["triggered"] is True
-    assert fallback["reasons"] == [{"stage": "review", "reason": "browser timeout", "model": "gpt-test"}]
+    assert fallback["reasons"] == [
+        {
+            "stage": "review",
+            "reason": "browser timeout",
+            "error_code": "response_timeout",
+            "playwright_attempts": 2,
+            "model": "gpt-test",
+            "blocked": False,
+            "block_reason": None,
+        }
+    ]
+    assert fallback["review"]["configured"] is True
+    assert fallback["review"]["triggered"] is True
+    assert fallback["review"]["playwright_attempts"] == 2
+    assert fallback["review"]["error_code"] == "response_timeout"
     cost = json.loads((tmp_path / "run" / "cost_summary.json").read_text(encoding="utf-8"))
     assert cost["openai_fallback_possible"] is True
     assert cost["openai_fallback_triggered"] is True
+    assert cost["review_openai_fallback"]["request_count"] == 2

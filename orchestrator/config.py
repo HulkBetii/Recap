@@ -5,6 +5,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
+
 try:
     import yaml
 except ImportError:  # pragma: no cover - exercised only without optional dep
@@ -72,13 +74,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tts_cps": 15,
         "min_coverage": 0.85,
         "max_qa_iterations": 3,
-        "chatgpt_profile_dir": "data/chrome_user_data/PROFILE_GPT_1",
+        "chatgpt_profile_dir": str(CHATGPT_PLAYWRIGHT_PROFILE_DIR),
         "chatgpt_session_file": None,
         "chat_session_policy": "auto",
         "chat_session_meta": None,
         "chat_title": None,
         "reply_timeout_s": 600,
         "llm_backend": "chatgpt_playwright",
+        "playwright_max_attempts": 2,
+        "playwright_recovery_timeout_s": 60,
         "openai_fallback_model": None,
         "style_sample": "examples/style/viral_recap_vi.cleaned.txt",
         "style_preset": "viral-recap-vi",

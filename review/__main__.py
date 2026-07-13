@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.schema import ReviewBeat, ReviewMeta, StorySection, VideoProfile, validate_review_intents, validate_review_script, validate_story_map, write_json
+from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from review.budget import allocate_char_targets, compute_budget, estimate_total_chars
 from review.cache import ReviewCache
 from review.coverage import coverage_ratio
@@ -50,11 +51,21 @@ DEFAULT_TARGET_RATIO = 0.33
 DEFAULT_TTS_CPS = 15.0
 DEFAULT_MIN_COVERAGE = 0.85
 DEFAULT_MAX_QA_ITERATIONS = 3
-DEFAULT_PROFILE_DIR = Path("data/chrome_user_data/PROFILE_GPT_1")
+DEFAULT_PROFILE_DIR = CHATGPT_PLAYWRIGHT_PROFILE_DIR
 
 
 class ReviewError(RuntimeError):
     pass
+
+
+def resolve_chatgpt_profile_dir(configured_path: Path) -> Path:
+    canonical = CHATGPT_PLAYWRIGHT_PROFILE_DIR.resolve()
+    configured = configured_path.expanduser().resolve()
+    if configured != canonical:
+        raise ReviewError(
+            f"GĐ2 ChatGPT profile is locked to {canonical}; configured path was {configured}"
+        )
+    return canonical
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,8 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chatgpt-session-file", default=None, type=Path, help="Optional saved ChatGPT cookies/session JSON to restore before opening ChatGPT")
     parser.add_argument("--chat-title", default=None, help="Optional human title saved in chat_session_meta.json")
     parser.add_argument("--reply-timeout-s", default=None, type=int, help="Max seconds to wait for one ChatGPT response")
-    parser.add_argument("--llm-backend", default="chatgpt_playwright", choices=["chatgpt_playwright", "openai_api", "off"])
-    parser.add_argument("--openai-fallback-model", default=None, help="Optional OpenAI model used only after ChatGPT Playwright fails")
+    parser.add_argument("--playwright-max-attempts", default=2, type=int, help="Maximum Playwright submit/recovery attempts per prompt")
+    parser.add_argument("--playwright-recovery-timeout-s", default=60, type=int, help="Seconds to recover the same submitted response before fallback")
+    parser.add_argument("--llm-backend", default="chatgpt_playwright", choices=["chatgpt_playwright"])
+    parser.add_argument("--openai-fallback-model", default=None, help="Optional OpenAI model used only after eligible Playwright retries are exhausted")
+    parser.add_argument("--block-openai-fallback", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -124,6 +138,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         args.review_intent_output = None
     if not hasattr(args, "llm_backend"):
         args.llm_backend = "chatgpt_playwright"
+    if args.llm_backend != "chatgpt_playwright":
+        raise ReviewError("GĐ2 only supports llm_backend=chatgpt_playwright; use openai_fallback_model for last-resort API fallback")
     if not hasattr(args, "micro_beats") or args.micro_beats is None:
         args.micro_beats = False
     if not hasattr(args, "target_beat_audio_s"):
@@ -537,8 +553,15 @@ def ensure_narration_consistency(
 
 
 async def run_review(args: argparse.Namespace) -> int:
-    profile_dir = args.chatgpt_profile_dir.expanduser().resolve()
+    if args.llm_backend != "chatgpt_playwright":
+        raise ReviewError("GĐ2 only supports llm_backend=chatgpt_playwright; direct OpenAI review is disabled")
+    profile_dir = resolve_chatgpt_profile_dir(args.chatgpt_profile_dir)
     work_dir = args.work_dir.expanduser().resolve()
+    usage_path = work_dir / "openai_usage.json"
+    try:
+        usage_path.unlink()
+    except FileNotFoundError:
+        pass
     args.hook_mode, args.opening_coherence_qa = resolve_content_defaults(
         args.content_type,
         args.hook_mode,
@@ -566,26 +589,35 @@ async def run_review(args: argparse.Namespace) -> int:
         headless=args.headless,
         initial_url=initial_url,
         timeout_s=args.reply_timeout_s or 600,
+        max_attempts=args.playwright_max_attempts,
+        recovery_timeout_s=args.playwright_recovery_timeout_s,
         session_file=args.chatgpt_session_file.expanduser().resolve() if args.chatgpt_session_file else None,
     ) as client:
         review_client = client
         fallback_client = None
         if args.openai_fallback_model:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ReviewError("OPENAI_API_KEY is required when --openai-fallback-model is configured")
-            fallback_client = FallbackChatClient(
-                client,
-                OpenAIChatClient(
+            def create_openai_fallback() -> OpenAIChatClient:
+                api_key = os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    raise OpenAIChatError("OPENAI_API_KEY is not set")
+                return OpenAIChatClient(
                     api_key,
                     model=args.openai_fallback_model,
                     timeout_s=args.reply_timeout_s or 300,
-                ),
+                )
+
+            fallback_client = FallbackChatClient(
+                client,
+                create_openai_fallback,
+                model=args.openai_fallback_model,
+                allowed=not args.block_openai_fallback,
             )
             review_client = fallback_client
-        await build_review_with_client(args, review_client)
-        if fallback_client is not None:
-            write_json(work_dir / "openai_usage.json", fallback_client.usage_summary())
+        try:
+            await build_review_with_client(args, review_client)
+        finally:
+            if fallback_client is not None:
+                write_json(usage_path, fallback_client.usage_summary())
         session_meta = build_chat_session_meta(
             policy=args.chat_session_policy,
             chat_url=client.current_url,

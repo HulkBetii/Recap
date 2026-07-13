@@ -15,6 +15,15 @@ from orchestrator.graph import DOWNSTREAM, STAGES, build_paths, forced_stages, s
 from orchestrator.runner import OrchestratorError, outputs_valid, preflight, run_stage
 from orchestrator.summary import StageSummary, write_summary
 
+SEVERE_TIMECODE_WARNING_MARKERS = (
+    "severe:",
+    "[severe]",
+    "alignment failed",
+    "aligner failed",
+    "aligner unavailable",
+    "configured but not available",
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run full Recap pipeline: film.mp4 -> recap.mp4")
@@ -48,20 +57,20 @@ def should_fallback_timecode(paths, config: dict) -> tuple[bool, list[str]]:  # 
         return False, ["film_map.meta.json missing"]
     meta = json.loads(paths.film_map_meta.read_text(encoding="utf-8"))
     reasons: list[str] = []
-    if meta.get("timecode_quality") != "strict":
-        reasons.append(f"timecode_quality={meta.get('timecode_quality')}")
-    if meta.get("approximate_timecodes"):
-        reasons.append("approximate_timecodes=true")
     warnings = meta.get("asr_warnings") or meta.get("warnings") or []
     if isinstance(warnings, list):
         for warning in warnings:
             lowered = str(warning).lower()
-            if any(token in lowered for token in ("align", "fallback", "hallucination", "timecode")):
+            if any(marker in lowered for marker in SEVERE_TIMECODE_WARNING_MARKERS):
                 reasons.append(f"warning={warning}")
                 break
     if meta.get("asr_provider") == config.get("orchestrator", {}).get("fallback_ingest_asr_provider", "openai-gpt4o-hybrid"):
         return False, ["already using fallback ASR provider"]
-    return bool(reasons), reasons or ["timecode QA passed"]
+    if reasons:
+        return True, reasons
+    if meta.get("timecode_quality") != "strict" or meta.get("approximate_timecodes"):
+        return False, ["approximate timecodes without a severe alignment/timecode failure"]
+    return False, ["timecode QA passed"]
 
 def build_fallback_config(config: dict) -> dict:
     fallback = deepcopy(config)
@@ -76,6 +85,106 @@ def write_fallback_artifacts(paths, plan: dict, summary: dict | None = None) -> 
     paths.fallback_plan.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
     if summary is not None:
         paths.fallback_summary.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def review_fallback_status(cost_policy, usage: dict | None = None) -> dict:  # type: ignore[no-untyped-def]
+    review_policy = cost_policy.stages.get("review", {})
+    status = {
+        "configured": bool(review_policy.get("openai_fallback_configured")),
+        "allowed": bool(review_policy.get("openai_fallback_allowed")),
+        "blocked": bool(review_policy.get("openai_fallback_blocked")),
+        "triggered": False,
+        "playwright_attempts": 0,
+        "error_code": None,
+        "error": None,
+        "block_reason": None,
+    }
+    if not usage:
+        return status
+    for key in ("configured", "allowed", "blocked", "triggered"):
+        if key in usage:
+            status[key] = bool(usage[key])
+    if status["triggered"] or status["blocked"]:
+        status["configured"] = True
+    if status["triggered"]:
+        status["allowed"] = True
+        status["blocked"] = False
+    status.update(
+        {
+            "playwright_attempts": int(usage.get("playwright_attempts", usage.get("attempt_count", 0)) or 0),
+            "error_code": usage.get("playwright_error_code", usage.get("error_code")),
+            "error": usage.get("trigger_reason", usage.get("error")),
+            "block_reason": usage.get("block_reason"),
+            "model": usage.get("model"),
+            "request_count": int(usage.get("request_count", 0) or 0),
+            "input_tokens": int(usage.get("input_tokens", 0) or 0),
+            "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        }
+    )
+    return status
+
+
+def sync_review_fallback_reporting(
+    *,
+    paths,
+    cost_policy,
+    selected: set[str],
+    will_run: set[str],
+    openai_fallback_possible: bool,
+    fallback_triggered: bool,
+) -> tuple[bool, bool, dict]:  # type: ignore[no-untyped-def]
+    review_usage_path = paths.run_dir / "work" / "review" / "openai_usage.json"
+    usage_present = review_usage_path.is_file()
+    usage_valid = False
+    usage: dict = {}
+    if usage_present:
+        try:
+            payload = json.loads(review_usage_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                usage = payload
+                usage_valid = True
+        except (OSError, ValueError):
+            usage = {}
+    review_status = review_fallback_status(cost_policy, usage)
+    openai_fallback_possible = openai_fallback_possible or bool(review_status["configured"])
+    fallback_triggered = fallback_triggered or bool(review_status["triggered"])
+
+    plan = {"possible": openai_fallback_possible, "triggered": fallback_triggered, "reasons": [], "review": review_status}
+    if paths.fallback_plan.is_file():
+        try:
+            existing_plan = json.loads(paths.fallback_plan.read_text(encoding="utf-8"))
+            plan["reasons"] = list(existing_plan.get("reasons", []))
+            plan["triggered"] = bool(existing_plan.get("triggered", fallback_triggered)) or fallback_triggered
+        except (OSError, ValueError, TypeError):
+            pass
+    if usage_valid and (review_status["triggered"] or review_status["blocked"]):
+        plan["reasons"] = [
+            reason
+            for reason in plan["reasons"]
+            if not isinstance(reason, dict) or reason.get("stage") != "review"
+        ]
+        plan["reasons"].append(
+            {
+                "stage": "review",
+                "reason": review_status.get("error"),
+                "error_code": review_status.get("error_code"),
+                "playwright_attempts": review_status.get("playwright_attempts"),
+                "model": review_status.get("model"),
+                "blocked": review_status.get("blocked"),
+                "block_reason": review_status.get("block_reason"),
+            }
+        )
+    write_fallback_artifacts(paths, plan)
+    cost_summary = build_cost_summary(
+        cost_policy,
+        selected,
+        will_run,
+        openai_fallback_possible=openai_fallback_possible,
+        openai_fallback_triggered=fallback_triggered,
+        review_fallback=review_status,
+    )
+    paths.cost_summary.write_text(json.dumps(cost_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return openai_fallback_possible, fallback_triggered, review_status
 
 def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path], None] | None = None) -> int:
     film = args.input.expanduser().resolve()
@@ -95,28 +204,49 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     for stage in tuple(will_run):
         will_run.update(set(DOWNSTREAM[stage]) & selected)
     ingest_fallback_possible = bool(config.get("orchestrator", {}).get("auto_fallback", False) and "ingest" in selected)
-    review_fallback_possible = bool(config.get("review", {}).get("openai_fallback_model") and "review" in selected)
+    review_status = review_fallback_status(cost_policy)
+    review_fallback_possible = bool(review_status["configured"] and "review" in selected)
     openai_fallback_possible = ingest_fallback_possible or review_fallback_possible
-    cost_summary = build_cost_summary(cost_policy, selected, will_run, openai_fallback_possible=openai_fallback_possible)
+    cost_summary = build_cost_summary(
+        cost_policy,
+        selected,
+        will_run,
+        openai_fallback_possible=openai_fallback_possible,
+        review_fallback=review_status,
+    )
     preflight(film=film, selected=selected, forced=will_run, paths=paths, config=config, dry_run=args.dry_run, cost_policy=cost_policy)
 
     summaries: list[StageSummary] = []
+    fallback_triggered = False
 
     def execute(stage: str) -> StageSummary:
-        return run_stage(
-            stage=stage,
-            paths=paths,
-            film=film,
-            config=config,
-            force=stage in forced,
-            dry_run=args.dry_run,
-            run_anyway=stage in will_run,
-            python_exe=python_exe,
-            executor=executor if executor is not None else run_stage.__globals__["run_subprocess"],
-        )
+        nonlocal openai_fallback_possible, fallback_triggered, review_status
+        try:
+            return run_stage(
+                stage=stage,
+                paths=paths,
+                film=film,
+                config=config,
+                force=stage in forced,
+                dry_run=args.dry_run,
+                run_anyway=stage in will_run,
+                python_exe=python_exe,
+                executor=executor if executor is not None else run_stage.__globals__["run_subprocess"],
+            )
+        except OrchestratorError:
+            if stage == "review" and not args.dry_run:
+                openai_fallback_possible, fallback_triggered, review_status = sync_review_fallback_reporting(
+                    paths=paths,
+                    cost_policy=cost_policy,
+                    selected=selected,
+                    will_run=will_run,
+                    openai_fallback_possible=openai_fallback_possible,
+                    fallback_triggered=fallback_triggered,
+                )
+            raise
 
     if args.dry_run:
-        print(json.dumps({"cost_policy": cost_policy.to_json(), "cost_summary": cost_summary, "fallback_plan": {"possible": openai_fallback_possible, "triggered": False, "dry_run": True}}, ensure_ascii=False, indent=2))
+        print(json.dumps({"cost_policy": cost_policy.to_json(), "cost_summary": cost_summary, "fallback_plan": {"possible": openai_fallback_possible, "triggered": False, "review": review_status, "dry_run": True}}, ensure_ascii=False, indent=2))
         for stage in STAGES:
             if stage in selected:
                 summaries.append(execute(stage))
@@ -126,9 +256,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     paths.run_dir.mkdir(parents=True, exist_ok=True)
     paths.cost_policy.write_text(json.dumps(cost_policy.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
     paths.cost_summary.write_text(json.dumps(cost_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_fallback_artifacts(paths, {"possible": openai_fallback_possible, "triggered": False, "reasons": []})
-
-    fallback_triggered = False
+    write_fallback_artifacts(paths, {"possible": openai_fallback_possible, "triggered": False, "reasons": [], "review": review_status})
 
     if "preflight" in selected:
         summaries.append(execute("preflight"))
@@ -175,31 +303,23 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
         if stage in selected:
             summaries.append(execute(stage))
 
-    review_usage_path = paths.run_dir / "work" / "review" / "openai_usage.json"
-    if review_usage_path.is_file():
-        try:
-            review_usage = json.loads(review_usage_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            review_usage = {}
-        if review_usage.get("triggered"):
-            openai_fallback_possible = True
-            fallback_triggered = True
-            reasons = []
-            if paths.fallback_plan.is_file():
-                try:
-                    reasons = list(json.loads(paths.fallback_plan.read_text(encoding="utf-8")).get("reasons", []))
-                except (OSError, ValueError, TypeError):
-                    reasons = []
-            reasons.append(
-                {
-                    "stage": "review",
-                    "reason": review_usage.get("trigger_reason"),
-                    "model": review_usage.get("model"),
-                }
-            )
-            write_fallback_artifacts(paths, {"possible": openai_fallback_possible, "triggered": True, "reasons": reasons})
+    openai_fallback_possible, fallback_triggered, review_status = sync_review_fallback_reporting(
+        paths=paths,
+        cost_policy=cost_policy,
+        selected=selected,
+        will_run=will_run,
+        openai_fallback_possible=openai_fallback_possible,
+        fallback_triggered=fallback_triggered,
+    )
 
-    cost_summary = build_cost_summary(cost_policy, selected, will_run, openai_fallback_possible=openai_fallback_possible, openai_fallback_triggered=fallback_triggered)
+    cost_summary = build_cost_summary(
+        cost_policy,
+        selected,
+        will_run,
+        openai_fallback_possible=openai_fallback_possible,
+        openai_fallback_triggered=fallback_triggered,
+        review_fallback=review_status,
+    )
     paths.cost_summary.write_text(json.dumps(cost_summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
     summary = write_summary(

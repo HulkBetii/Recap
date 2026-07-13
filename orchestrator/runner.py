@@ -285,8 +285,10 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
-        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "openai_fallback_model", "log_level"):
+        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "playwright_max_attempts", "playwright_recovery_timeout_s", "openai_fallback_model", "log_level"):
             add_option(command, key, section.get(key))
+        if config.get("orchestrator", {}).get("api_budget_guard") == "block":
+            command.append("--block-openai-fallback")
         command.append("--style-qa" if section.get("style_qa", True) else "--no-style-qa")
         command.append("--opening-coherence-qa" if section.get("opening_coherence_qa", section.get("content_type") == "movie") else "--no-opening-coherence-qa")
         command.append("--micro-beats" if section.get("micro_beats", False) else "--no-micro-beats")
@@ -400,8 +402,6 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
         profile = Path(str(config["review"].get("chatgpt_profile_dir"))).expanduser()
         if not profile.exists():
             raise OrchestratorError(f"ChatGPT profile dir does not exist for review: {profile}")
-        if config["review"].get("openai_fallback_model") and not os.getenv("OPENAI_API_KEY"):
-            raise OrchestratorError("OPENAI_API_KEY is required for review.openai_fallback_model")
     if "tts" in will_run and not dry_run:
         tts_config = config["tts"]
         if not tts_config.get("voice_id"):
