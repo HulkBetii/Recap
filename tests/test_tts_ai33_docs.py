@@ -23,6 +23,42 @@ def test_poll_ai33_treats_doing_as_running(monkeypatch) -> None:  # type: ignore
     assert asyncio.run(providers.poll_ai33("task-id", timeout_s=5, interval_s=0)) == "https://example.com/a.mp3"
 
 
+def test_poll_ai33_continues_after_transient_polling_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("VIVOO_API_KEY", "test-key")
+    responses = iter([
+        providers.TtsProviderError('HTTP 429: {"message":"Task polling temporarily busy"}'),
+        {"id": "task-id", "status": "done", "metadata": {"audio_url": "https://example.com/a.mp3"}},
+    ])
+
+    def fake_http_json(*args, **kwargs):  # type: ignore[no-untyped-def]
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(providers, "http_json", fake_http_json)
+
+    assert asyncio.run(providers.poll_ai33("task-id", timeout_s=5, interval_s=0)) == "https://example.com/a.mp3"
+
+
+def test_poll_genmax_continues_after_transient_polling_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("GENMAX_API_KEY", "test-key")
+    responses = iter([
+        providers.TtsProviderError("Network error: temporary DNS failure"),
+        {"id": "task-id", "status": "completed", "result": {"audio_url": "https://example.com/a.mp3"}},
+    ])
+
+    def fake_http_json(*args, **kwargs):  # type: ignore[no-untyped-def]
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(providers, "http_json", fake_http_json)
+
+    assert asyncio.run(providers.poll_genmax("task-id", timeout_s=5, interval_s=0)) == "https://example.com/a.mp3"
+
+
 def test_download_file_sends_user_agent_for_cdn(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
     captured = {}
 

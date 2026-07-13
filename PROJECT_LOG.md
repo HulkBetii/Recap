@@ -846,3 +846,17 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Final narration has 18 beats and 24,530 characters versus the 24,392-character budget (`0.57%` over). Beat lengths are 421 for beat 0, 1,465 for beat 6, 1,507 for beat 8, and 1,436 for beat 10.
 - Final exact-artifact QA passed with zero issues. Coverage remains `0.8841`; schema, review intents, deterministic opening coherence, and readability all pass.
 - Cleanup fallback totals: 6 requests, 108,604 input tokens, and 2,433 output tokens. Full validation: `python -m pytest -q` -> `384 passed`; compileall and `git diff --check` passed.
+
+### 2026-07-13 - Cleanup narration G3-G6 production rerun
+
+- Promoted the QA-passed cleanup narration into `runs/toan-tri-doc-gia-v1-no-openai` and preserved the previous downstream artifacts under `backups/downstream-before-cleanup-20260713-111715`.
+- AI33 initially returned `HTTP 429: Task polling temporarily busy` at concurrency 3 and again at concurrency 1. Fixed AI33/Genmax polling so exhausted transient HTTP/network retries continue polling the same provider task until its deadline instead of failing the whole beat; regression coverage was added.
+- G3 then completed with AI33 only and no provider fallback. The new 18-beat voiceover is `1324.105s`, with 24,533 normalized TTS characters and no TTS warnings.
+- G5 rebuilt with BGE-M3 on CUDA, chronological matching, content anchors disabled, and opening intra-beat alignment enabled. The EDL has 394 placements, zero gaps/overlaps, zero reuse/widen/capacity exhaustion, and clip lengths within `0.600-5.000s`; source-order mismatch warnings improved from five beats to three.
+- G6 encoded 334 changed temp clips, reused 60 cached clips, concatenated 394 placements, and tail-padded 37 frames. Final output is H.264/AAC, `1920x1080`, `30fps`, stereo `48kHz`, `1324.092s`, `duration_match=true`, and 633,622,046 bytes.
+- ffprobe validation passed; sampled opening and tail frames are both visible/nonblack. Orchestrator resume recognized G3/G5/G6 as valid and refreshed `summary.json` without rerunning them.
+- Validation: TTS provider suites -> `16 passed`; full `python -m pytest -q` -> `386 passed`; compileall and `git diff --check` passed.
+- Playwright visual QA used a local byte-range video server and sampled 20 timestamps across the opening, ending, cleaned beats 6/8/10, and warning beats 2/11/15. Every seek reached the requested timestamp at `readyState=4`, with no media error or browser console error.
+- Opening and ending frames are visible/nonblack. Beats 2, 11, and 15 remain visually coherent with their narration despite G5 source-order warnings; beats 6, 8, and 10 match the cleaned narration. Detailed evidence is in `video.cleanup.qa.json` and `qa-cleanup-browser/`.
+- Local listening QA transcribed beats 2/6/8/10/11/15 with Faster Whisper `large-v3` on CUDA and checked long silence with ffmpeg. No beat is truncated, no silence interval exceeds 0.8s, and no leading/trailing silence was detected.
+- No-autojunk transcript similarity is `0.9692-0.9885` and word recall is `0.9444-0.9881`. Beat 10 is recognized as `50.000 xu`; foreign character names remain intelligible enough for ASR to map to the intended name, with expected spelling variation. Evidence is in `tts.key_beats.qa.json`; no OpenAI API was used.

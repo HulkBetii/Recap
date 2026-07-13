@@ -31,10 +31,17 @@ OPENAI_VI_INSTRUCTIONS = (
     "Speak in natural Vietnamese with a clear female recap-review delivery. "
     "Keep names accurate, use dramatic but controlled pacing, and do not add words."
 )
+POLL_RETRYABLE_ERROR_PREFIXES = tuple(
+    [f"HTTP {code}:" for code in sorted(RETRYABLE_HTTP_CODES)] + ["Network error:"]
+)
 
 
 class TtsProviderError(RuntimeError):
     pass
+
+
+def is_retryable_poll_error(error: TtsProviderError) -> bool:
+    return str(error).startswith(POLL_RETRYABLE_ERROR_PREFIXES)
 
 
 @dataclass(frozen=True)
@@ -229,11 +236,22 @@ async def poll_ai33(task_id: str, *, timeout_s: int = 900, interval_s: float = 5
         raise TtsProviderError("VIVOO_API_KEY env var is not set")
     deadline = asyncio.get_event_loop().time() + timeout_s
     while asyncio.get_event_loop().time() < deadline:
-        payload = await asyncio.to_thread(
-            http_json,
-            f"{AI33_BASE_URL}/v1/task/{urllib.parse.quote(task_id)}",
-            headers={"xi-api-key": api_key},
-        )
+        try:
+            payload = await asyncio.to_thread(
+                http_json,
+                f"{AI33_BASE_URL}/v1/task/{urllib.parse.quote(task_id)}",
+                headers={"xi-api-key": api_key},
+            )
+        except TtsProviderError as exc:
+            if not is_retryable_poll_error(exc):
+                raise
+            logging.getLogger("tts.providers").warning(
+                "AI33 task %s polling is temporarily unavailable; continuing until timeout: %s",
+                task_id,
+                exc,
+            )
+            await asyncio.sleep(interval_s)
+            continue
         if payload.get("status") == "done":
             audio_url = (payload.get("metadata") or {}).get("audio_url")
             if not audio_url:
@@ -275,11 +293,22 @@ async def poll_genmax(task_id: str, *, timeout_s: int = 900, interval_s: float =
         raise TtsProviderError("GENMAX_API_KEY env var is not set")
     deadline = asyncio.get_event_loop().time() + timeout_s
     while asyncio.get_event_loop().time() < deadline:
-        payload = await asyncio.to_thread(
-            http_json,
-            f"{GENMAX_BASE_URL}/v1/history/{urllib.parse.quote(task_id)}",
-            headers={"xi-api-key": api_key},
-        )
+        try:
+            payload = await asyncio.to_thread(
+                http_json,
+                f"{GENMAX_BASE_URL}/v1/history/{urllib.parse.quote(task_id)}",
+                headers={"xi-api-key": api_key},
+            )
+        except TtsProviderError as exc:
+            if not is_retryable_poll_error(exc):
+                raise
+            logging.getLogger("tts.providers").warning(
+                "Genmax task %s polling is temporarily unavailable; continuing until timeout: %s",
+                task_id,
+                exc,
+            )
+            await asyncio.sleep(interval_s)
+            continue
         if payload.get("status") == "completed":
             audio_url = (payload.get("result") or {}).get("audio_url")
             if not audio_url:
