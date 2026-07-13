@@ -1,0 +1,64 @@
+{
+  "schema_version": "reaction-remix.proposed.v1",
+  "source_hash": "sha256:source",
+  "blocks_hash": "sha256:blocks",
+  "original_duration_s": 1129.302,
+  "duration_policy": {
+    "hard_min_output_ratio": 0.8,
+    "preferred_min_output_ratio": 0.85,
+    "preferred_max_output_ratio": 0.9,
+    "hard_max_output_ratio": 1.0,
+    "target_duration_s": 975.0
+  },
+  "items": [
+    {
+      "item_id": "item-0000",
+      "order": 0,
+      "kind": "source_block",
+      "role": "hook",
+      "block_id": "reaction-0017",
+      "slot_id": null,
+      "start_cut_point_id": "cut-0041",
+      "end_cut_point_id": "cut-0042",
+      "evidence_block_ids": [],
+      "preferred_visual_block_ids": [],
+      "target_duration_s": null,
+      "max_duration_s": null,
+      "char_budget": null,
+      "dependency_group_id": "trip-return-03",
+      "reason": "Strong opening reaction."
+    },
+    {
+      "item_id": "item-0001",
+      "order": 1,
+      "kind": "commentary_slot",
+      "role": "setup",
+      "block_id": null,
+      "slot_id": "commentary-slot-0001",
+      "start_cut_point_id": null,
+      "end_cut_point_id": null,
+      "evidence_block_ids": ["reaction-0017"],
+      "preferred_visual_block_ids": ["commentary-0008"],
+      "target_duration_s": 9.44,
+      "max_duration_s": 10.2,
+      "char_budget": 62,
+      "dependency_group_id": null,
+      "reason": "Bridge into the tipping theme."
+    }
+  ],
+  "predicted_duration_s": 975.0,
+  "predicted_output_ratio": 0.8634,
+  "retention": {
+    "unique_reaction_speech_ratio": 0.94,
+    "reaction_block_ratio": 0.91,
+    "country_coverage_ratio": 1.0,
+    "topic_coverage_ratio": 0.96
+  },
+  "llm": {
+    "backend": "chatgpt_playwright",
+    "session_url": "https://chatgpt.com/c/example",
+    "attempts": 1
+  },
+  "created_at": "2026-07-13T12:30:00Z",
+  "warnings": []
+}

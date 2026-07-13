@@ -868,3 +868,13 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Fixed resumed ChatGPT history stabilization so stale assistant messages cannot satisfy a new request, and hardened AI33/Genmax polling so transient request exhaustion does not abandon an active provider task before its deadline.
 - Stage JSON contracts remain unchanged. ASR, vision, TTS, and media remain local/provider-first, with paid fallback limited by each stage policy.
 - Tags `v1.0.0` and `v1.0.1` are immutable; `v1.0.2` may be tagged only after the clean local media gate and GitHub Release Gate pass for the release commit.
+
+### 2026-07-13 - Reaction remix planning branch
+
+- Created documentation branch `codex/reaction-remix-plan` from clean `main` at `v1.0.2`; this task intentionally adds no runtime code.
+- Locked a parallel reaction-remix mode that may reorder complete reaction blocks while preserving each reaction's picture, original audio, speed, burned subtitles, channel logo, mascot, and source branding.
+- Locked Japanese editorial replacement to AI33 voice `elevenlabs_QPtBgsg1dxKTQHNpHrHt`; no subtitle masking, replacement subtitle, blur, delogo, drawtext, or visual overlay is allowed.
+- Locked output duration to `80–100%` of source, targeting `85–90%`. For the `18:49` reference video, the preferred output is `16:00–16:30` and the hard floor is `15:03`.
+- The 09:30–12:30 exploratory POC confirmed that reaction audio can remain sample-aligned while old commentary is replaced, and also showed why visual subtitle editing should be excluded from the product scope.
+- Added staged design documents under `docs/reaction-remix/` for scope, analysis, architecture, contracts, editorial planning, audio/TTS, render/QA, examples, and implementation roadmap.
+- Existing recap contracts and DAG remain unchanged; implementation will start only after the proposed contracts and acceptance gates are reviewed.

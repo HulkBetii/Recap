@@ -514,3 +514,15 @@ repo/
 - Cache smoke phải chứng minh unchanged reuse, profile-only vision invalidation, glossary giữ aligned transcript, và film identity rebuild toàn bộ artifacts GĐ1.
 - `work/release-gate/report.json` là audit artifact gitignored. Không ghi key/token; secret findings luôn redact.
 - Release hiện tại là `1.0.2`, tag `v1.0.2`; các tag `v1.0.0` và `v1.0.1` phải giữ nguyên. Chỉ tạo release/tag tiếp theo khi CI xanh, local media gate xanh không `-AllowDirty`, report pass, secret scan sạch và main đồng bộ remote.
+
+## 39. REACTION REMIX — PROPOSED, CHƯA TRIỂN KHAI
+
+- `reaction-remix` là pipeline song song với recap phim; không thay đổi ý nghĩa các contract `film_map.json`, `review_script.json`, `beats_timing.json` hoặc `edl.json` hiện có.
+- Mục tiêu: nhận video tổng hợp phản ứng đa ngôn ngữ, cho phép đảo thứ tự các reaction để tạo mạch nội dung mới, viết lại duy nhất phần bình luận tiếng Nhật và xuất video vẫn giữ nhận diện kênh.
+- Reaction phải giữ nguyên hình, audio, tốc độ `1.0` và subtitle burn-in trong frame nguồn. Không cắt ngang utterance; chỉ trim dead air hoặc biên an toàn đã được analyzer xác nhận.
+- Không che subtitle cũ, không thêm subtitle mới, không blur/delogo/drawtext/overlay để sửa hình. Logo, mascot, source handle và branding gốc phải được giữ.
+- Bình luận tiếng Nhật dùng AI33 với voice cố định `elevenlabs_QPtBgsg1dxKTQHNpHrHt`. Text/plan/QA phù hợp browser phải dùng ChatGPT Playwright primary theo policy mục 10; media, ASR, stem và TTS dùng local/provider runtime.
+- Duration output phải nằm trong `0.80–1.00` lần duration nguồn. Target mặc định là `0.85–0.90`; video mẫu `18:49` nên ra khoảng `16:00–16:30` và tuyệt đối không ngắn hơn `15:03` nếu không có override rõ ràng từ user.
+- Pipeline mới cần contract audio-aware riêng vì renderer recap hiện tại cố ý bỏ audio nguồn và giả định voiceover liên tục. Không nhét field reaction-remix vào `EdlPlacement` cũ theo cách làm đổi semantics.
+- Proposed artifacts gồm `reaction_source.json`, `reaction_transcript.json`, `reaction_blocks.json`, `remix_plan.json`, `commentary_script.json`, `commentary_audio.json`, `remix_edl.json`, `remix_qa.json` và các sidecar `*.meta.json`/manifest tương ứng.
+- Mọi tên package/CLI/config của reaction-remix vẫn là proposed design cho đến khi schema và tests được hiện thực. Source of truth chi tiết nằm tại `docs/reaction-remix/README.md`.

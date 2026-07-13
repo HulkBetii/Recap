@@ -1,6 +1,13 @@
 # Recap
 
-`Recap` là pipeline tạo video recap review từ một tập phim. Hiện project đang xây **Giai đoạn 1 — Ingest & Hiểu phim**.
+`Recap` là repository cho các pipeline biên tập video tự động. Pipeline recap phim hiện đã triển khai từ preflight đến render; tài liệu và lệnh chạy bên dưới mô tả đường chạy production hiện tại.
+
+## Chế độ hoạt động
+
+- `recap`: pipeline hiện tại, tạo video recap review với voiceover liên tục và tắt audio nguồn.
+- `reaction-remix`: pipeline song song đang ở giai đoạn thiết kế, giữ nguyên reaction A/V và subtitle burn-in, cho phép đảo thứ tự reaction, và chỉ viết lại phần bình luận tiếng Nhật. Xem [bộ tài liệu thiết kế](docs/reaction-remix/README.md).
+
+`reaction-remix` chưa có CLI/runtime trong nhánh này; toàn bộ tên package, config và contract trong tài liệu mới vẫn là proposed design.
 
 ## GĐ1 làm gì
 

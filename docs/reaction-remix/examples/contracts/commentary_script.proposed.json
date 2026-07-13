@@ -1,0 +1,35 @@
+{
+  "schema_version": "reaction-remix.proposed.v1",
+  "source_hash": "sha256:source",
+  "plan_hash": "sha256:plan",
+  "language": "ja",
+  "style_id": "reaction-internet-ja-v1",
+  "slots": [
+    {
+      "slot_id": "commentary-slot-0001",
+      "before_item_id": "item-0000",
+      "after_item_id": null,
+      "role": "setup",
+      "text_ja": "日本の快適さに慣れたネキが帰国して最初に食らうのは、会計のたびに襲うチップ地獄だ。まずはその悲鳴を聞いてみよう。",
+      "evidence_block_ids": ["reaction-0017"],
+      "target_duration_s": 9.44,
+      "max_duration_s": 10.2,
+      "char_budget": 62,
+      "tone_tags": ["お前ら", "ネキ", "humorous", "ironic"],
+      "qa": {
+        "language_ok": true,
+        "evidence_ok": true,
+        "style_ok": true,
+        "length_ok": true
+      },
+      "warnings": []
+    }
+  ],
+  "llm": {
+    "backend": "chatgpt_playwright",
+    "session_url": "https://chatgpt.com/c/example",
+    "attempts": 1
+  },
+  "created_at": "2026-07-13T12:40:00Z",
+  "warnings": []
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": "reaction-remix.proposed.v1",
+  "input_path": "C:/media/source.mp4",
+  "input_hash": "sha256:source",
+  "duration_s": 1129.302,
+  "video": {
+    "stream_index": 0,
+    "codec": "h264",
+    "width": 1920,
+    "height": 1080,
+    "fps_num": 30000,
+    "fps_den": 1001,
+    "pixel_format": "yuv420p"
+  },
+  "audio": {
+    "stream_index": 1,
+    "codec": "aac",
+    "sample_rate": 44100,
+    "channels": 2,
+    "channel_layout": "stereo"
+  },
+  "subtitle_streams": [],
+  "has_burned_in_subtitles": true,
+  "subtitle_policy": "burned_in_preserve",
+  "created_at": "2026-07-13T12:00:00Z",
+  "config_hash": "sha256:config",
+  "warnings": []
+}

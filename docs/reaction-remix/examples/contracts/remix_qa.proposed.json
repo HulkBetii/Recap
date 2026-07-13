@@ -1,0 +1,50 @@
+{
+  "schema_version": "reaction-remix.proposed.v1",
+  "source_hash": "sha256:source",
+  "edl_hash": "sha256:edl",
+  "output_path": "out/reaction_remix.mp4",
+  "status": "pass",
+  "duration": {
+    "source_s": 1129.302,
+    "output_s": 975.0,
+    "output_ratio": 0.8634,
+    "hard_min_ratio": 0.8,
+    "preferred_range": [0.85, 0.9],
+    "status": "pass"
+  },
+  "reaction_preservation": {
+    "placements_checked": 27,
+    "speed_mismatches": 0,
+    "gain_mismatches": 0,
+    "span_mismatches": 0,
+    "min_audio_correlation": 0.994,
+    "max_av_drift_ms": 16.7,
+    "min_sample_frame_similarity": 0.998,
+    "status": "pass"
+  },
+  "commentary": {
+    "slots_checked": 11,
+    "provider_mismatches": 0,
+    "voice_mismatches": 0,
+    "old_narrator_leakage_count": 0,
+    "min_asr_text_match": 0.93,
+    "status": "pass"
+  },
+  "visual_policy": {
+    "mask_operations": 0,
+    "subtitle_additions": 0,
+    "text_overlays": 0,
+    "blur_operations": 0,
+    "other_overlays": 0,
+    "status": "pass"
+  },
+  "timeline": {
+    "gap_count": 0,
+    "overlap_count": 0,
+    "decode_ok": true,
+    "status": "pass"
+  },
+  "repairs": [],
+  "created_at": "2026-07-13T13:20:00Z",
+  "warnings": []
+}

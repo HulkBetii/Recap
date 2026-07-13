@@ -1,0 +1,57 @@
+{
+  "schema_version": "reaction-remix.proposed.v1",
+  "source_hash": "sha256:source",
+  "plan_hash": "sha256:plan",
+  "commentary_audio_hash": "sha256:audio",
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "fps_num": 30000,
+    "fps_den": 1001,
+    "audio_sample_rate": 44100,
+    "audio_channels": 2
+  },
+  "visual_policy": {
+    "mask_subtitles": false,
+    "add_subtitles": false,
+    "add_text": false,
+    "blur": false,
+    "overlay": false,
+    "preserve_burned_in_pixels": true
+  },
+  "placements": [
+    {
+      "placement_id": "placement-0000",
+      "item_id": "item-0000",
+      "kind": "reaction",
+      "origin_block_id": "reaction-0017",
+      "tl_start": 0.0,
+      "tl_end": 8.96,
+      "video": {
+        "src": "C:/media/source.mp4",
+        "src_in": 570.0,
+        "src_out": 578.96,
+        "speed": 1.0,
+        "filters": []
+      },
+      "audio": {
+        "mode": "source",
+        "source_src": "C:/media/source.mp4",
+        "source_in": 570.0,
+        "source_out": 578.96,
+        "source_gain_db": 0.0,
+        "tts_audio_path": null,
+        "tts_gain_db": null,
+        "bed_audio_path": null,
+        "bed_in": null,
+        "bed_out": null,
+        "bed_gain_db": null,
+        "filters": []
+      },
+      "warnings": []
+    }
+  ],
+  "total_duration_s": 8.96,
+  "created_at": "2026-07-13T13:00:00Z",
+  "warnings": []
+}

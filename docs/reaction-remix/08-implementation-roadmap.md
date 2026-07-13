@@ -1,0 +1,227 @@
+# 08 - Implementation Roadmap
+
+> Status: **PLANNING ONLY / NOT IMPLEMENTED**. All new packages, stage names, commands, configs and contracts in this roadmap are proposed. The existing recap pipeline remains the only implemented production pipeline.
+
+## 1. Delivery Strategy
+
+Build reaction-remix beside the current recap workflow rather than changing recap semantics in place. The first implementation should use a separate proposed entrypoint:
+
+```text
+python run_reaction.py --input source.mp4 --run-dir runs/<name> --config config.reaction-remix.yaml
+```
+
+The command, file and config above are **proposed and not implemented**.
+
+This separation protects the released recap contracts, keeps regression risk contained and allows reaction-remix to adopt an audio-aware timeline. A unified `run.py --pipeline ...` interface may be considered only after the new workflow passes full-media acceptance tests.
+
+## 2. Proposed Package Layout
+
+```text
+reaction_remix/
+  probe/
+  analyze/
+  segment/
+  plan/
+  write/
+  tts/
+  compose/
+  render/
+  qa/
+  orchestrator/
+run_reaction.py
+config.reaction-remix.yaml
+```
+
+This layout is **proposed, not implemented**. Cross-stage JSON Pydantic models should still live in `common/schema.py` to follow the current repository contract policy.
+
+## 3. Proposed Stage Graph
+
+```text
+R0 Probe --> R1 Analyze --> R2 Segment --> R3 Plan --> R4 Write --> R5 TTS --> R6 Compose --> R7 Render --> R8 QA
+     |                         ^                                      ^
+     +--> existing Shots -----+                                      |
+     +--> optional Local Stems ---------------------------------------+
+```
+
+All stage names in this graph are **proposed and not implemented**.
+
+- R0 `reaction_remix.probe`: record immutable source identity and media streams.
+- R1 `reaction_remix.analyze`: produce mixed-language transcript and audio observations.
+- R2 `reaction_remix.segment`: classify complete blocks and safe edit boundaries, using existing shots as hints.
+- R3 `reaction_remix.plan`: reorder complete reactions and allocate commentary slots.
+- R4 `reaction_remix.write`: write and evidence-check Japanese commentary.
+- R5 `reaction_remix.tts`: synthesize commentary with the locked AI33 voice.
+- R6 `reaction_remix.compose`: resolve real TTS durations, source audio modes and optional local stems into `remix_edl.json`.
+- R7 `reaction_remix.render`: render video and interleaved audio without subtitle processing.
+- R8 `reaction_remix.qa`: run structural, media, audio and editorial gates.
+
+## 4. Reuse Matrix
+
+| Existing area | Reuse level | Boundary |
+|---|---|---|
+| `common/media.py` | Direct | Reuse ffmpeg/ffprobe helpers; add only generally useful helpers. |
+| `common/integrity.py` | Direct | Reuse stable hashes, media identity and atomic JSON writes. |
+| `shots/` | Direct/configured | Reuse detection/features; do not treat channel branding as disposable intro by default. |
+| `review/playwright_chat.py` | Adapter | Reuse browser transport/recovery, not Vietnamese recap prompts. |
+| `review/session.py` | Adapter | Reuse one-session-per-run behavior. |
+| `tts/providers.py` | Direct/adapter | Reuse AI33 runtime and retry behavior. |
+| `tts/cache.py` | Adapter | Reuse cache pattern with commentary item identity. |
+| `render/cache.py` | Adapter | Reuse media-aware temp cache. |
+| `render/quantize.py` | Concept/refactor | Reuse frame-lock principles with a new timeline model. |
+| Recap `review_script.json`, `beats_timing.json`, `edl.json` | No | Audio and editorial semantics do not match proposed `commentary_script.json`, `commentary_audio.json` and `remix_edl.json`. |
+| Recap match/storymap prompts | No | They summarize films instead of preserving and reordering reactions. |
+| Continuous voiceover mux | No | Reaction-remix interleaves source audio and TTS. |
+
+Refactoring shared code is allowed only when the existing recap tests remain unchanged and green.
+
+## 5. Incremental Phases
+
+### Phase 0 - Documentation and Decisions
+
+Deliverables:
+
+- Product requirements and locked behavior.
+- Proposed pipeline and JSON contract examples.
+- Editorial, audio, render and QA documents.
+- Branch `codex/reaction-remix-plan` pushed to the GitHub remote.
+
+Exit gate:
+
+- Every new runtime name is clearly marked proposed/not implemented.
+- Duration hard floor, subtitle policy, AI33 voice and reaction-preservation rules are unambiguous.
+- No production code is changed.
+
+### Phase 1 - Contracts and Synthetic Fixtures
+
+Deliverables:
+
+- Pydantic models for source segments, remix plan, commentary audio, timeline and QA.
+- Deterministic validators and JSON examples.
+- Synthetic multilingual fixtures; no copyrighted source video committed.
+
+Exit gate:
+
+- Valid fixtures round-trip through Pydantic.
+- Invalid segment references, partial durations, timeline gaps/overlaps and reaction speed changes fail tests.
+- Existing recap schema tests remain green.
+
+### Phase 2 - Probe, Analysis and Segmentation
+
+Deliverables:
+
+- Proposed R0-R2 CLIs, mixed-language ASR path and conservative type classifier.
+- Safe reaction-unit boundary builder.
+- Analyzer cache/meta and a local QA view.
+
+Exit gate:
+
+- The known POC commentary spans `579.50-588.94`, `700.70-704.46` and `743.30-748.28` are detected within approximately `1 second`.
+- Known reaction spans are never classified as replaceable commentary.
+- Every `mixed` or `unknown` span is preserved by default.
+- A full-video local audit accounts for all `11` known narrator blocks before automation proceeds.
+
+### Phase 3 - Editorial Plan and Writing
+
+Deliverables:
+
+- Proposed R3-R4 Playwright-first prompts and validated JSON parsing.
+- Reaction reordering, separate Japanese commentary writing and deterministic duration budgeting.
+- Per-run ChatGPT session metadata and cache identity.
+
+Exit gate:
+
+- All referenced source IDs exist.
+- No unmarked duplicates, partial utterances or reaction speed changes.
+- Estimated output is `80-100%` of source and normally `85-90%`.
+- Every removed reaction includes a reason.
+
+### Phase 4 - Japanese TTS and Optional Local Stems
+
+Deliverables:
+
+- Proposed R5 AI33 commentary synthesis using `elevenlabs_QPtBgsg1dxKTQHNpHrHt`.
+- Japanese-safe text handling and script auto-fit loop.
+- Demucs commentary beds with mute fallback.
+
+Exit gate:
+
+- All commentary uses the locked voice and `1.0x` speed.
+- Actual audio duration fits its planned capacity within `100 ms` or one frame.
+- No old narrator remains intelligible in prepared commentary audio.
+- Successful items resume from cache after an injected provider failure.
+
+### Phase 5 - Compose, Render and Media QA
+
+Deliverables:
+
+- Proposed R6 `remix_edl.json` composition.
+- Proposed R7 frame-locked H.264/AAC renderer with original reaction audio.
+- Proposed R8 deterministic media QA.
+- No-subtitle-processing command manifest.
+
+Exit gate:
+
+- Timeline has zero gaps/overlaps and all reaction clips remain `1.0x`.
+- No blur, drawtext, subtitle, mask or overlay filter is present.
+- POC output decodes completely and remains within `144-180` seconds.
+- Reaction audio lag is at most `20 ms` and sampled correlation is at least `0.98`.
+
+### Phase 6 - Orchestrator, Resume and QA
+
+Deliverables:
+
+- Proposed `run_reaction.py` CLI, dry-run, `--from`, `--to`, `--only`, `--force-stage` and downstream invalidation.
+- Run summary, cache reporting and machine-readable QA artifacts.
+- Unit/mock suite following current repository patterns.
+
+Exit gate:
+
+- Changing a planner input reruns planner and downstream only.
+- Changing one narration item resynthesizes that item and downstream only.
+- Corrupt artifacts are detected rather than silently reused.
+- Existing recap tests and new reaction-remix tests all pass.
+
+### Phase 7 - Full-Video Acceptance
+
+Deliverables:
+
+- Full render of the authorized `18:49.302` source.
+- QA JSON, representative frames, audio diagnostics and local review HTML.
+- Updated README, AGENTS source-of-truth and PROJECT_LOG.
+
+Exit gate:
+
+- Final duration is at least `15:03.4`, at most `18:49.302`, and preferably `16:00-16:30`.
+- Full-file decode passes with no black edit intervals, clipping or A/V drift.
+- All reaction content decisions and exclusions are auditable.
+- Manual review confirms coherent order, preserved reaction meaning and no subtitle visual processing.
+
+## 6. Test Plan
+
+Proposed test files, all **not implemented**:
+
+```text
+tests/test_reaction_schema.py
+tests/test_reaction_analyze.py
+tests/test_remix_plan.py
+tests/test_remix_tts.py
+tests/test_remix_audio.py
+tests/test_remix_compose.py
+tests/test_remix_render.py
+tests/test_remix_orchestrator.py
+tests/test_remix_qa.py
+```
+
+Automated tests should mock browser, TTS, ffmpeg and heavy ML providers. Real-media tests remain explicit local smoke tests using the authorized source under ignored `work/` or `runs/` directories.
+
+## 7. Definition of Done
+
+Reaction-remix is production-ready only when:
+
+- The complete proposed graph is implemented with validated file contracts and resume behavior.
+- The output duration is never silently reduced below `80%`.
+- Reaction units retain original meaning, audio, `1.0x` speed and safe speech boundaries.
+- Only Japanese editorial commentary is rewritten and synthesized with the locked AI33 voice.
+- The renderer performs no subtitle masking, generation or restyling.
+- All structural, audio, visual and editorial acceptance gates pass on the POC and full authorized video.
+- The existing recap pipeline remains backward-compatible and its complete test suite stays green.
