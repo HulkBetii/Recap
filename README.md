@@ -5,9 +5,9 @@
 ## Chế độ hoạt động
 
 - `recap`: pipeline hiện tại, tạo video recap review với voiceover liên tục và tắt audio nguồn.
-- `reaction-remix`: pipeline song song đang ở giai đoạn thiết kế, giữ nguyên reaction A/V và subtitle burn-in, cho phép đảo thứ tự reaction, và chỉ viết lại phần bình luận tiếng Nhật. Xem [bộ tài liệu thiết kế](docs/reaction-remix/README.md).
+- `reaction-remix`: pipeline MVP song song, giữ nguyên reaction A/V và subtitle burn-in, cho phép đảo thứ tự reaction, và chỉ viết lại phần bình luận tiếng Nhật. Xem [tài liệu runtime](docs/reaction-remix/README.md).
 
-`reaction-remix` chưa có CLI/runtime trong nhánh này; toàn bộ tên package, config và contract trong tài liệu mới vẫn là proposed design.
+Reaction Remix dùng boundary policy preservation-first: narrator Nhật chỉ được thay khi cut an toàn ở full handle hoặc word edge; narrator chồng reaction trong `mixed/unknown` được giữ nguyên và báo audit. POC `09:30–12:30` đã pass R0–R8 với output `176.609767s`, unique reaction retention `1.0`, correlation tối thiểu `0.9986287014`, lag `0ms`, gain delta tối đa `0.0691dB`, frame similarity tối thiểu `0.9950234368`, AI33 ASR similarity `1.0` và zero commentary leakage. Full authorized-video R0–R8 cũng đã pass hard QA; sau manual listening QA, `block-0045` được drop vì còn bình luận gốc. Output mới `1010.379002s` (`0.894693x`) ngắn hơn source `1129.302494s`, min reaction correlation `0.9971666`, min frame similarity `0.9954148`, lag `0ms`, leakage `0`, và không có visual subtitle processing. Preferred ratio `0.85–0.90` chỉ còn là audit warning, không phải blocker.
 
 ## GĐ1 làm gì
 
@@ -32,6 +32,18 @@ py -3.11 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
+
+Reaction Remix production cần thêm analyzer và Demucs:
+
+```powershell
+python -m pip install -e ".[reaction-remix,dev]"
+python run_reaction.py `
+  --input path\to\reaction.mp4 `
+  --run-dir runs\reaction01 `
+  --config config.reaction-remix.yaml
+```
+
+Reaction Remix dùng ChatGPT Playwright profile cố định cho plan/write và AI33 key `VIVOO_API_KEY` cho TTS. Output chính là `reaction_remix.mp4`; các artifact audit nằm cùng `--run-dir`. POC audit chi tiết nằm tại [docs/reaction-remix/poc-0930-1230.md](docs/reaction-remix/poc-0930-1230.md).
 
 
 ## Chạy toàn pipeline bằng `run.py`

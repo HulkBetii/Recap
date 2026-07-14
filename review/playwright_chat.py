@@ -14,6 +14,7 @@ SEND_BUTTON_SELS = (
     'button[aria-label*="Send"]',
 )
 ASSISTANT_MSG_SEL = '[data-message-author-role="assistant"]'
+MESSAGE_SEL = "[data-message-author-role]"
 STOP_BUTTON_SEL = 'button[data-testid="stop-button"], button[aria-label="Stop generating"]'
 DEFAULT_REPLY_TIMEOUT_S = 600
 DEFAULT_MAX_ATTEMPTS = 2
@@ -192,6 +193,67 @@ async def _wait_text_stable(page, timeout_s: int = TEXT_STABLE_TIMEOUT_S) -> str
     return latest
 
 
+async def _wait_existing_response_done(page, timeout_s: int) -> None:  # type: ignore[no-untyped-def]
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            if await page.locator(STOP_BUTTON_SEL).count() == 0:
+                return
+        except PlaywrightError as exc:
+            if _is_page_disconnected(page, exc):
+                raise PlaywrightChatError(
+                    f"ChatGPT page or browser disconnected: {exc}",
+                    code="page_disconnected",
+                    retryable=True,
+                    fallback_eligible=True,
+                ) from exc
+        await asyncio.sleep(POLL_INTERVAL_S)
+    raise PlaywrightChatError(
+        f"ChatGPT response still streaming after {timeout_s}s",
+        code="response_stream_timeout",
+        retryable=True,
+        fallback_eligible=True,
+    )
+
+
+async def _recover_matching_prompt(page, prompt: str, timeout_s: int) -> str | None:  # type: ignore[no-untyped-def]
+    """Reuse a response already present in the conversation without resubmitting its prompt."""
+    def normalized_message_text(value: object) -> str:
+        lines = str(value or "").strip().splitlines()
+        while lines and lines[-1].strip() in {"Show more", "Show less", "Edit"}:
+            lines.pop()
+        return "\n".join(lines).strip()
+
+    messages = page.locator(MESSAGE_SEL)
+    count = await messages.count()
+    expected = normalized_message_text(prompt)
+    for index in range(count - 1, -1, -1):
+        item = messages.nth(index)
+        if await item.get_attribute("data-message-author-role") != "user":
+            continue
+        text = await item.evaluate("(node) => node.innerText || node.textContent || ''", timeout=10_000)
+        if normalized_message_text(text) != expected:
+            continue
+        if index + 1 < count:
+            response = messages.nth(index + 1)
+            if await response.get_attribute("data-message-author-role") == "assistant":
+                value = await response.evaluate(
+                    "(node) => node.innerText || node.textContent || ''",
+                    timeout=10_000,
+                )
+                cleaned = str(value or "").strip()
+                if cleaned:
+                    is_latest_message = index + 1 == count - 1
+                    if is_latest_message and await page.locator(STOP_BUTTON_SEL).count() > 0:
+                        await _wait_existing_response_done(page, timeout_s)
+                        return await _wait_text_stable(page)
+                    return cleaned
+        previous_assistant_count = await page.locator(ASSISTANT_MSG_SEL).count()
+        await _wait_streaming_done(page, timeout_s, previous_assistant_count)
+        return await _wait_text_stable(page)
+    return None
+
+
 class PlaywrightChatClient:
     def __init__(
         self,
@@ -203,6 +265,7 @@ class PlaywrightChatClient:
         recovery_timeout_s: int = DEFAULT_RECOVERY_TIMEOUT_S,
         initial_url: str = "https://chatgpt.com/",
         session_file: Path | None = None,
+        resume_matching_prompts: bool = False,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("Playwright max_attempts must be at least 1")
@@ -215,6 +278,7 @@ class PlaywrightChatClient:
         self.recovery_timeout_s = recovery_timeout_s
         self.initial_url = initial_url
         self.session_file = session_file
+        self.resume_matching_prompts = resume_matching_prompts
         self.last_attempt_count = 0
         self.last_error_code: str | None = None
         self._playwright = None
@@ -279,6 +343,15 @@ class PlaywrightChatClient:
 
         self.last_attempt_count = 0
         self.last_error_code = None
+        if self.resume_matching_prompts:
+            recovered = await _recover_matching_prompt(
+                self._page,
+                prompt,
+                self.recovery_timeout_s,
+            )
+            if recovered is not None:
+                self.last_attempt_count = 1
+                return recovered
         previous_assistant_count = 0
         prepared = False
         for attempt in range(1, self.max_attempts + 1):

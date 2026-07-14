@@ -1,8 +1,8 @@
 {
-  "schema_version": "reaction-remix.proposed.v1",
+  "schema_version": "reaction-remix.v1",
   "input_path": "C:/media/source.mp4",
-  "input_hash": "sha256:source",
-  "duration_s": 1129.302,
+  "input_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "duration_s": 100.0,
   "video": {
     "stream_index": 0,
     "codec": "h264",
@@ -10,7 +10,8 @@
     "height": 1080,
     "fps_num": 30000,
     "fps_den": 1001,
-    "pixel_format": "yuv420p"
+    "pixel_format": "yuv420p",
+    "frame_rate_mode": "cfr"
   },
   "audio": {
     "stream_index": 1,
@@ -23,6 +24,6 @@
   "has_burned_in_subtitles": true,
   "subtitle_policy": "burned_in_preserve",
   "created_at": "2026-07-13T12:00:00Z",
-  "config_hash": "sha256:config",
+  "config_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "warnings": []
 }

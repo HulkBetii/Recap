@@ -1,7 +1,7 @@
 # Reaction Remix Pipeline Architecture
 
-Status: Proposed design only. None of the runtime names, commands, packages, or
-contracts in this document are implemented yet.
+Status: MVP runtime implemented. The preservation-first POC passed; full
+authorized-video acceptance remains a release gate.
 
 ## 1. Purpose
 
@@ -11,7 +11,10 @@ one already-edited reaction video and produces a new edit that:
 - may reorder complete reaction blocks to create a new narrative;
 - keeps the picture, source audio, playback speed, and burned-in subtitles of
   every retained reaction block;
-- removes or replaces only the original Japanese editorial commentary audio;
+- removes or replaces only source blocks classified as Japanese editorial
+  `commentary`;
+- preserves `mixed` and `unknown` blocks, including narrator/reaction overlap,
+  as untouched source video/audio;
 - writes new Japanese commentary in the configured channel style;
 - synthesizes that commentary with AI33 voice
   elevenlabs_QPtBgsg1dxKTQHNpHrHt;
@@ -38,17 +41,17 @@ reaction edit:
 - render removes source audio and muxes one global voiceover.
 
 Changing those contracts would risk regressions across G2 through G6. Reaction
-Remix therefore introduces new proposed contracts and a separate renderer.
+Remix therefore introduces new dedicated contracts and a separate renderer.
 Existing film_map.json, review_script.json, beats_timing.json, shots.json, and
 edl.json stay unchanged.
 
-## 3. Proposed DAG
+## 3. Runtime DAG
 
 ~~~mermaid
 flowchart LR
     P["R0 Probe"] --> A["R1 Analyze"]
-    P --> S["Existing Shots (cut hints only)"]
-    P --> M["Optional Local Stems"]
+    P --> S["Shots (cut hints only)"]
+    P --> M["Stems (Demucs no_vocals)"]
     A --> G["R2 Segment"]
     S --> G
     G --> L["R3 Plan"]
@@ -62,87 +65,102 @@ flowchart LR
     R --> Q["R8 QA"]
 ~~~
 
-Shots and stems are parallel helpers. Shots provide scene boundaries and
-thumbnails; they do not authorize arbitrary 3-5 second matching. Stems provide
-an optional music/ambience bed for replacement commentary and never replace the
-original audio of reaction blocks.
+Analyze, shots, and stems start in parallel after probe. Shots provide scene
+boundaries and thumbnails; they do not authorize arbitrary 3-5 second matching.
+The production preset requires Demucs and creates a full-source `no_vocals`
+bed. A leaking bed falls back to TTS-only for the affected commentary slot and
+never replaces or processes the original audio of reaction blocks.
 
-## 4. Proposed Stage Responsibilities
+## 4. Stage Responsibilities
 
-| Stage | Proposed command | Required inputs | Primary outputs | Responsibility |
+| Stage | Command | Required inputs | Primary outputs | Responsibility |
 | --- | --- | --- | --- | --- |
 | R0 Probe | python -m reaction_remix.probe | source video | reaction_source.json | Record immutable source identity and media streams. |
-| R1 Analyze | python -m reaction_remix.analyze | source video, reaction_source.json | reaction_transcript.json, analysis.meta.json | Local multilingual ASR, VAD, language hints, optional speaker hints. |
+| R1 Analyze | python -m reaction_remix.analyze | source video, reaction_source.json | reaction_transcript.json, analysis.meta.json | Local multilingual ASR, language verification, and speaker clustering. |
 | R2 Segment | python -m reaction_remix.segment | transcript, shot hints | reaction_blocks.json | Build atomic reaction/commentary/transition blocks and safe cut points. |
 | R3 Plan | python -m reaction_remix.plan | reaction_blocks.json | remix_plan.json, plan.qa.json | Reorder blocks, allocate commentary slots, and enforce duration/retention. |
 | R4 Write | python -m reaction_remix.write | plan, blocks, transcript | commentary_script.json, script.qa.json | Write only Japanese editorial commentary and verify evidence. |
 | R5 TTS | python -m reaction_remix.tts | commentary_script.json | commentary_audio.json, audio files | Synthesize and cache one AI33 file per commentary slot. |
-| R6 Compose | python -m reaction_remix.compose | blocks, plan, commentary audio, optional stems | remix_edl.json | Resolve the mixed source/TTS timeline without rendering media. |
-| R7 Render | python -m reaction_remix.render | source video, remix_edl.json | reaction_remix.mp4, render.meta.json | Render source A/V and commentary placements with no visual edits. |
+| R6 Compose | python -m reaction_remix.compose | blocks, plan, commentary audio, audio assets | remix_edl.json | Resolve the mixed source/TTS timeline without rendering media. |
+| R7 Render | python -m reaction_remix.render | source video, remix_edl.json | reaction_remix.mp4, render.timeline.json, render.command-manifest.json, render.meta.json | Render source A/V and commentary placements with no visual edits. |
 | R8 QA | python -m reaction_remix.qa | source, EDL, rendered video | remix_qa.json, optional QA HTML | Run deterministic contract, media, sync, audio, and preservation gates. |
 
-An independent proposed orchestrator, run_reaction.py, should call these stages
-through subprocesses. The existing run.py and orchestrator graph must not be
-modified in the first implementation phase.
+The independent `run_reaction.py` orchestrator calls these stages through
+subprocesses. The existing `run.py` and recap orchestrator graph remain unchanged.
 
-## 5. Proposed Package Boundaries
+## 5. Package Boundaries
 
 ~~~
 reaction_remix/
   __init__.py
+  _artifacts.py
   probe/
     __main__.py
     media_probe.py
   analyze/
     __main__.py
     asr.py
+    core.py
     language.py
+    regions.py
     speakers.py
   segment/
     __main__.py
     cut_points.py
     classify.py
     blocks.py
+    review_html.py
   plan/
     __main__.py
+    core.py
+    models.py
     prompts.py
-    validator.py
-    duration.py
+    session.py
   write/
     __main__.py
+    core.py
+    japanese.py
+    models.py
     prompts.py
-    style.py
-    evidence.py
   tts/
     __main__.py
-    fit.py
+    asr.py
+    audio.py
+    cache.py
+    core.py
+    japanese.py
+  stems/
+    __main__.py
   compose/
     __main__.py
-    scheduler.py
-    audio_policy.py
+    cache.py
+    composer.py
   render/
     __main__.py
-    clips.py
-    audio.py
-    concat.py
+    cache.py
+    commands.py
+    engine.py
+    quantize.py
   qa/
     __main__.py
-    contracts.py
-    preservation.py
-    audio.py
-    report.py
+    checks.py
+    report_html.py
   orchestrator/
+    commands.py
     config.py
     graph.py
+    paths.py
     runner.py
+    runtime.py
+    summary.py
+    validation.py
 run_reaction.py
 config.reaction-remix.yaml
 ~~~
 
-If implemented, all file-interface Pydantic models should live in
-common/schema.py to follow the current repository source-of-truth rule. Stage
-internals may use private dataclasses, but packages must communicate only
-through validated files.
+All file-interface Pydantic models live in `common/schema.py` to follow the
+repository source-of-truth rule. Stage internals may use private dataclasses,
+but packages communicate only through validated files.
 
 Package dependency rules:
 
@@ -202,6 +220,20 @@ Safe cut points are generated by code from:
 - a small speech-handle padding to avoid clipped consonants;
 - optional channel transition boundaries.
 
+The configured v1 policy is `strict_or_word_edge`:
+
+- `source_boundary` marks the start or end of the source;
+- `full_handle` has at least `120 ms` of content-free handle on both sides;
+- `word_edge` may have shorter non-negative handles, cuts through no word,
+  separates non-overlapping content, and is capped at confidence `0.90`;
+- `overlap` has intersecting word/speaker content, is capped at `0.89`, and
+  forces the adjacent narrator material to remain `mixed`/`unknown`.
+
+A commentary block is replaceable only when both boundaries are
+`full_handle` or `word_edge` and language, speaker, and boundary confidence are
+all at least `0.90`. Segment algorithm `reaction-segment-v7` invalidates older
+block and downstream plan caches.
+
 The LLM never writes source timecodes. It returns block IDs, turn IDs, and safe
 cut-point IDs. Code derives and validates source spans.
 
@@ -219,7 +251,11 @@ Planning is a text task and must use ChatGPT through Playwright first. It uses a
 dedicated conversation for each source identity. A submitted prompt is never
 submitted twice during response recovery.
 
-The proposed narrative sequence is:
+The accepted POC uses planner prompt `reaction-plan-v8` and writer prompt
+`reaction-write-v2`. An input-hash change opens a new conversation under
+session policy `auto`; fit prompts from a stale POC are not reused.
+
+The narrative sequence is:
 
 1. strong source reaction as hook;
 2. short Japanese setup;
@@ -242,15 +278,12 @@ policy range is 959.907 to 1016.372 seconds. The editorial default for this
 specific source is narrower at approximately 16:00 to 16:30; keeping up to
 16:56 remains valid when the reactions are distinct and useful.
 
-The removal order is fixed:
-
-1. dead air and safe handles;
-2. repetitive original commentary;
-3. redundant transitions;
-4. duplicate reaction ideas;
-5. unique reaction speech only as a last resort.
-
-The proposed default retains at least 90 percent of unique reaction speech.
+The preservation-first v1 planner retains every non-commentary block and
+excludes only original `commentary` blocks that receive one replacement slot.
+Duration reduction therefore comes from shorter replacement commentary, not
+from deleting reactions, transitions, branding, b-roll, mixed, or unknown
+material. The validator keeps the general `>=0.90` reaction-speech floor, while
+the implemented planner targets full (`1.0`) retention.
 Dependent multi-part reactions remain in their original internal order.
 
 ## 9. Writing And Evidence
@@ -269,12 +302,12 @@ speaker, action, or outcome must be derivable from those blocks. Text QA checks:
 - a clean lead-in and lead-out for adjacent reactions.
 
 ChatGPT Playwright is primary for planning, writing, and text-heavy QA. Paid
-OpenAI fallback is proposed as disabled by default. ASR, media, stems, and TTS
+OpenAI fallback is disabled. ASR, media, stems, and TTS
 are not browser-suitable tasks.
 
 ## 10. TTS Policy
 
-The production proposal locks:
+The production configuration locks:
 
 - provider: ai33;
 - voice ID: elevenlabs_QPtBgsg1dxKTQHNpHrHt;
@@ -299,35 +332,38 @@ For a retained reaction placement:
 - no audio filter, crossfade, ducking, or global normalization is applied;
 - no visual filter or overlay is applied.
 
+These rules also apply without exception to `mixed` and `unknown` placements.
+They stay on the output timeline even when a narrator is audible over the
+reaction. Commentary fades remain inside commentary audio only and never touch
+the protected placement on either side.
+
 For replacement commentary:
 
-- the video may use an eligible b-roll, transition, or original commentary
-  visual span;
+- the video uses exactly one eligible source block whose analyzed
+  `kind=commentary`;
 - the original mixed commentary audio is never used;
 - audio is AI33 TTS, optionally mixed with a local no-vocals bed;
 - bed fades and limiting apply only to the commentary mix;
 - burned-in source text may remain because masking is explicitly forbidden.
 
-Visual selection priority:
+V1 does not borrow `broll`, `transition`, `mixed`, or `unknown` as a commentary
+visual because those blocks are retained as source placements. The selected
+commentary visual preserves its burned-in pixels.
 
-1. neutral b-roll or transition with no intelligible reaction speech;
-2. commentary-support visual with low OCR text activity;
-3. original commentary visual as fallback, preserving its burned-in pixels.
-
-The renderer should preserve source dimensions, frame rate, and aspect ratio
-when all placements come from one source. It must not invoke subtitles, ass,
-drawtext, overlay, delogo, blur, or caption-generation filters.
+The v1 renderer preserves source dimensions, rational frame rate, aspect ratio,
+sample rate, and channel count. It does not invoke subtitles, ASS, drawtext,
+overlay, delogo, blur, mask, or caption-generation filters.
 
 ## 12. Cache And Selective Invalidation
 
-Every stage should write a cache manifest with input hashes, config hash,
+Every stage writes metadata/cache state with input hashes, config identity,
 algorithm version, output hashes, and creation time. Outputs are skipped only
 after schema and integrity validation.
 
 | Change | Preserve | Invalidate |
 | --- | --- | --- |
 | Source identity changes | nothing | every stage |
-| ASR model/chunking changes | probe, optional stems | analyze and downstream |
+| ASR model/chunking changes | probe, shots, stems | analyze and downstream |
 | Classification override changes | probe, ASR, stems, shots | segment and downstream |
 | Reaction order changes | probe, ASR, blocks, stems, unchanged TTS slots | plan, compose, render, QA |
 | Commentary text changes | all upstream and unrelated TTS slots | changed TTS slots, compose, render, QA |
@@ -346,31 +382,47 @@ planning or writing input hash is unchanged.
 
 ## 13. Resume And Repair
 
-The proposed orchestrator supports dry-run, from, to, only, force, and
+The orchestrator supports dry-run, from, to, only, force, and
 force-stage behavior without changing the current Recap orchestrator.
 
 Automatic repair order:
 
 1. Output below the hard duration floor: restore the highest-value omitted
    reaction blocks.
-2. Output above the preferred range: shorten commentary, remove dead air, then
-   remove duplicate transitions or reaction ideas.
+2. Output above the preferred range: shorten commentary within evidence and
+   fit constraints; if protected material still keeps the result above `0.90`,
+   report a warning instead of deleting non-commentary blocks.
 3. TTS too long: rewrite only the offending commentary slot.
-4. Original narrator leakage: regenerate the local bed or remove the bed.
-5. Reaction preservation failure: rerender only the failed placement with
-   source audio mode and no filters.
+4. Original narrator leakage: regenerate the local bed or remove the bed for
+   that commentary slot only; protected overlap placements are not changed.
+5. Reaction preservation failure: rerender only IDs reported in
+   `reaction_preservation.failed_placement_ids`, using source audio mode and no
+   filters.
 6. Decode or timeline failure: rerender affected cached clips, then the final
    concat.
+
+Pending repair requests are never replayed merely because a stale file remains
+in the run directory. After a repaired run passes every QA hard gate, the
+orchestrator stores a content-addressed immutable request under
+`work/orchestrator/accepted_repairs/` and writes
+`accepted_repair_ledger.json`, binding the source, request, and passing QA
+hashes. Only this accepted state is replayed on resume or force; corrupt,
+legacy, pending, or source-mismatched state is ignored. Reaction-media repair
+IDs are remapped from `origin_block_id` after any duration/compose changes so
+the renderer bypasses the current placement IDs rather than stale ones.
 
 No automatic repair may mask subtitles, change reaction playback speed, alter
 reaction gain, or substitute a different TTS provider.
 
 ## 14. Acceptance Boundary
 
-The architecture is ready for implementation only after the proposed contracts
-in 03-data-contracts.md are accepted. Until then:
+The MVP commands and contracts are runnable. The preservation-first POC passes
+R0-R8 with `176.609767s` output, `1.0` unique reaction retention, correlation
+`0.9986287014`, frame similarity `0.9950234368`, zero lag, zero replacement-slot
+leakage, and protected overlap reported for `block-0038`/`block-0039`.
 
-- no command in this document should be considered runnable;
-- no proposed config should be passed to the existing Recap config loader;
-- no current Recap schema may be changed to emulate these contracts;
-- documentation must continue to label Reaction Remix as proposed or planned.
+Release readiness still requires:
+
+- full authorized-video audit and render hard gates;
+- no changes to current Recap contract semantics;
+- no PR, tag, or release before acceptance passes.

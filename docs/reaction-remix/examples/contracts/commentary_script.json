@@ -1,0 +1,35 @@
+{
+  "schema_version": "reaction-remix.v1",
+  "source_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "plan_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "language": "ja",
+  "style_id": "reaction-internet-ja-v1",
+  "slots": [
+    {
+      "slot_id": "commentary-slot-0001",
+      "before_item_id": "item-0000",
+      "after_item_id": null,
+      "role": "punchline",
+      "text_ja": "日本の便利さに慣れた後では、帰国後の不便さが余計に刺さる。これはさすがに草だぞ。",
+      "evidence_block_ids": ["block-0001"],
+      "target_duration_s": 5.0,
+      "max_duration_s": 6.0,
+      "char_budget": 32,
+      "tone_tags": ["草", "だぞ", "ironic"],
+      "qa": {
+        "language_ok": true,
+        "evidence_ok": true,
+        "style_ok": true,
+        "length_ok": true
+      },
+      "warnings": []
+    }
+  ],
+  "llm": {
+    "backend": "chatgpt_playwright",
+    "session_url": "https://chatgpt.com/c/example",
+    "attempts": 1
+  },
+  "created_at": "2026-07-13T12:40:00Z",
+  "warnings": []
+}

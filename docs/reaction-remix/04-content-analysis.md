@@ -1,6 +1,6 @@
 # Reaction Remix — Content Analysis
 
-> Status: **Proposed / not implemented**.
+> Status: **R0-R2 preservation-first POC and full-video audit passed**.
 
 ## 1. Purpose
 
@@ -13,7 +13,7 @@ The primary risk is not imperfect translation. The primary risk is classifying
 participant speech as replaceable commentary or cutting a reaction in a way
 that changes its meaning.
 
-## 2. Proposed Inputs
+## 2. Inputs
 
 - Source video path and probed media metadata.
 - Timecoded multilingual transcript with speaker/language hints where available.
@@ -43,20 +43,19 @@ by newly written Japanese commentary.
 ### `transition`
 
 A bumper, interstitial, title card, musical bridge, or visual/audio transition
-between content blocks. Later planning may keep, shorten, move, or remove it,
-provided branding rules remain satisfied.
+between content blocks. Preservation-first v1 may reorder it but retains it as
+a source placement.
 
 ### `branding`
 
 Channel logo, mascot, recurring layout, subscription message, or other channel
-identity element. Branding should be retained unless it is inseparable from a
-discarded interval and later product requirements explicitly allow removal.
+identity element. Preservation-first v1 retains branding as a source placement.
 
 ### `broll`
 
-Source visual material without intelligible participant speech. B-roll may be
-used under new commentary only when its burned-in pixels remain untouched and
-its source audio policy is resolved separately.
+Source visual material without intelligible participant speech.
+Preservation-first v1 retains it as its own source placement rather than
+borrowing it for replacement commentary.
 
 ### `mixed`
 
@@ -72,6 +71,9 @@ default and surfaced in QA rather than guessed away.
 ## 4. Language Handling
 
 - Detect language per utterance, not once for the entire file.
+- Primary ASR regions are capped at 30 seconds and prefer silence midpoints; a
+  full-timeline 6-second/2-second-overlap refinement pass is authoritative for
+  language switches, while the primary transcript fills refinement gaps.
 - Japanese language alone does not imply editorial commentary; a participant may
   speak Japanese.
 - English, German, Spanish, and other languages may all be valid reactions.
@@ -109,18 +111,34 @@ For a candidate reaction clip, analysis should identify:
 - Safe end after the final word, laughter, or reaction tail.
 - Topic/setup needed to understand the response.
 - Whether the participant refers to an earlier prompt or visual.
-- Whether a subtitle line begins before or ends after the proposed trim.
+- Whether a subtitle line begins before or ends after the selected trim.
 - Whether music or ambience is continuous across the boundary.
 
 The content range and the safe media handles should be distinct. Later editing
 may cut within the handles but must include the complete content range.
+
+The implemented boundary policy is `strict_or_word_edge`. A cut point records
+its measured left/right handles and one safety mode:
+
+- `full_handle`: at least `120 ms` clear on both sides;
+- `word_edge`: a shorter clear edge outside every word timestamp, with no
+  adjacent content overlap and a single high-confidence Japanese narrator on
+  one side;
+- `overlap`: word or speaker content intersects the boundary, so confidence is
+  capped at `0.89` and the span is protected as `mixed`/`unknown`;
+- `source_boundary`: immutable source start/end.
+
+`word_edge` does not weaken reaction protection: it can promote only an
+isolated narrator core, and only when both block boundaries are either
+`full_handle` or `word_edge`. It never promotes an already `mixed` or `unknown`
+block.
 
 Splitting a participant sentence, accelerating it, muting it, or replacing it
 with TTS is forbidden.
 
 ## 7. Reaction Unit Metadata
 
-The proposed analysis artifact should give later stages enough information to
+The analysis artifact should give later stages enough information to
 reorder responsibly. A reaction unit should conceptually include:
 
 - Stable unit and source segment IDs.
@@ -135,13 +153,13 @@ reorder responsibly. A reaction unit should conceptually include:
 - Protected audio and speed policy.
 - Classification confidence and warnings.
 
-Exact JSON field names and Pydantic schemas will be locked in the separate data
-contract design before implementation.
+Exact JSON field names and Pydantic schemas are locked by
+`reaction-remix.v1` in `common/schema.py`.
 
 ## 8. Full-Video Coverage
 
 Analysis must cover the complete source timeline, including intro, transitions,
-outro, and intervals later expected to be discarded. Source intervals should be
+outro, and commentary intervals later eligible for replacement. Source intervals should be
 non-overlapping at the primary classification layer and should not leave silent
 unexplained gaps.
 
@@ -154,16 +172,19 @@ Coverage QA should report:
 - Reaction units with incomplete transcript or unsafe boundaries.
 - Duplicate reaction groups and low-value repeated setup.
 
+`reaction_blocks.review.html` exposes each cut's safety mode, measured left and
+right handles, confidence, and downgrade reason beside transcript, speaker,
+language, and thumbnails. This is the required local audit surface for deciding
+whether a narrator core is replaceable or protected.
+
 ## 9. Planning Handoff
 
 The analysis stage provides evidence; the editorial planning stage decides:
 
-- Which complete reaction units to retain.
-- Which units can be reordered safely.
-- Which repeated units to remove.
+- How to order the complete retained reaction and non-commentary units safely.
 - What Japanese bridge or commentary is required.
-- How to reach the preferred 10–20% duration reduction without crossing the
-  80% hard floor.
+- Whether shorter replacement commentary can approach the preferred duration
+  without removing protected/non-commentary material.
 
 Analysis must not pre-trim reactions merely to hit the duration target. Duration
 optimization belongs to planning, where value and dependencies can be evaluated
@@ -180,3 +201,13 @@ across the full video.
 - Ambiguity and overlaps are visible in machine-readable QA.
 - The analysis artifact is deterministic for unchanged source/config inputs and
   supports cache/resume under the project's existing conventions.
+- The POC must classify the two isolated narrator cores as replaceable
+  `commentary` while preserving the narrator/reaction tail as audited
+  `mixed`/`unknown`.
+- The accepted `reaction-segment-v7` POC covers all `184.201633s` in `39`
+  blocks with no gap, overlap, or sub-`80 ms` block. `block-0003` and
+  `block-0026` are replaceable commentary. `block-0038` and `block-0039` are
+  protected narrator overlap and remain source media.
+- The earlier full-source result of 12 commentary segments predates the strict
+  boundary and partial-refinement fixes. Its artifacts are stale and cannot be
+  used as acceptance evidence until the full R0-R2 audit is rerun.

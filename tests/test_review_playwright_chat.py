@@ -125,6 +125,88 @@ class _ExpiredSessionPage(_AskPage):
         self.prompt = _UnavailablePromptBox()
 
 
+class _ConversationItem:
+    def __init__(self, role: str, text: str) -> None:
+        self.role = role
+        self.text = text
+
+    async def get_attribute(self, name: str) -> str | None:
+        assert name == "data-message-author-role"
+        return self.role
+
+    async def evaluate(self, _expression: str, timeout: int) -> str:
+        assert timeout == 10_000
+        return self.text
+
+
+class _StreamingConversationItem(_ConversationItem):
+    def __init__(self, role: str, values: list[str]) -> None:
+        super().__init__(role, values[0])
+        self.values = values
+        self.index = 0
+
+    async def evaluate(self, _expression: str, timeout: int) -> str:
+        assert timeout == 10_000
+        value = self.values[min(self.index, len(self.values) - 1)]
+        self.index += 1
+        return value
+
+
+class _ConversationLocator:
+    def __init__(self, items: list[_ConversationItem]) -> None:
+        self.items = items
+
+    async def count(self) -> int:
+        return len(self.items)
+
+    def nth(self, index: int) -> _ConversationItem:
+        return self.items[index]
+
+
+class _ConversationPage:
+    def __init__(self) -> None:
+        self.messages = _ConversationLocator(
+            [
+                _ConversationItem("user", "first prompt\nShow more"),
+                _ConversationItem("assistant", "first response"),
+                _ConversationItem("user", "later prompt"),
+                _ConversationItem("assistant", "later response"),
+            ]
+        )
+
+    def locator(self, selector: str):  # type: ignore[no-untyped-def]
+        if selector == playwright_chat.MESSAGE_SEL:
+            return self.messages
+        if selector == playwright_chat.ASSISTANT_MSG_SEL:
+            return _CountLocator([2])
+        raise AssertionError(selector)
+
+
+class _StreamingConversationPage:
+    def __init__(self) -> None:
+        self.assistant_item = _StreamingConversationItem(
+            "assistant",
+            ['{"slots":[', '{"slots":[]}', '{"slots":[]}', '{"slots":[]}', '{"slots":[]}'],
+        )
+        self.messages = _ConversationLocator(
+            [
+                _ConversationItem("user", "fit prompt"),
+                self.assistant_item,
+            ]
+        )
+        self.stop = _CountLocator([1, 1, 0])
+        self.assistant = _ConversationLocator([self.assistant_item])
+
+    def locator(self, selector: str):  # type: ignore[no-untyped-def]
+        if selector == playwright_chat.MESSAGE_SEL:
+            return self.messages
+        if selector == playwright_chat.ASSISTANT_MSG_SEL:
+            return self.assistant
+        if selector == playwright_chat.STOP_BUTTON_SEL:
+            return self.stop
+        raise AssertionError(selector)
+
+
 def test_wait_streaming_done_waits_for_a_new_assistant_message(monkeypatch) -> None:
     async def no_sleep(_seconds: float) -> None:
         return None
@@ -153,6 +235,58 @@ def test_wait_text_stable_returns_the_latest_complete_text(monkeypatch) -> None:
     result = asyncio.run(playwright_chat._wait_text_stable(_FakeTextPage(), timeout_s=5))
 
     assert result == "final"
+
+
+def test_recover_matching_prompt_reuses_earlier_response() -> None:
+    result = asyncio.run(
+        playwright_chat._recover_matching_prompt(
+            _ConversationPage(),
+            "first prompt",
+            timeout_s=60,
+        )
+    )
+
+    assert result == "first response"
+
+
+def test_recover_matching_prompt_waits_for_streaming_response(monkeypatch) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
+    result = asyncio.run(
+        playwright_chat._recover_matching_prompt(
+            _StreamingConversationPage(),
+            "fit prompt",
+            timeout_s=5,
+        )
+    )
+
+    assert result == '{"slots":[]}'
+
+
+def test_client_resume_mode_returns_matching_response_without_send(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    sends = 0
+
+    async def recovered(_page, _prompt: str, _timeout_s: int) -> str:
+        return "recovered response"
+
+    async def fake_send(_page) -> None:  # type: ignore[no-untyped-def]
+        nonlocal sends
+        sends += 1
+
+    monkeypatch.setattr(playwright_chat, "_recover_matching_prompt", recovered)
+    monkeypatch.setattr(playwright_chat, "_click_send", fake_send)
+    client = playwright_chat.PlaywrightChatClient(
+        tmp_path / "profile",
+        resume_matching_prompts=True,
+    )
+    client._page = _ProgrammingErrorPage()
+
+    result = asyncio.run(client.ask("prompt"))
+
+    assert result == "recovered response"
+    assert sends == 0
 
 
 def test_ask_recovers_same_response_without_resending(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]

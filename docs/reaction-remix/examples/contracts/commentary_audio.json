@@ -1,0 +1,37 @@
+{
+  "schema_version": "reaction-remix.v1",
+  "source_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "script_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "voice_policy": {
+    "provider": "ai33",
+    "voice_id": "elevenlabs_QPtBgsg1dxKTQHNpHrHt",
+    "model": "eleven_multilingual_v2",
+    "speed": 1.0,
+    "fallback_provider": null,
+    "text_normalization": "ja_basic"
+  },
+  "items": [
+    {
+      "slot_id": "commentary-slot-0001",
+      "audio_path": "audio/commentary-slot-0001.mp3",
+      "duration_s": 5.0,
+      "provider": "ai33",
+      "voice_id": "elevenlabs_QPtBgsg1dxKTQHNpHrHt",
+      "model": "eleven_multilingual_v2",
+      "speed": 1.0,
+      "text_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "cache_key": "2222222222222222222222222222222222222222222222222222222222222222",
+      "audio_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "requested_model": "eleven_multilingual_v2",
+      "actual_model": "eleven_multilingual_v2",
+      "normalized": true,
+      "lufs_i": -14.0,
+      "true_peak_dbfs": -2.2,
+      "asr_text_match": 0.96,
+      "warnings": []
+    }
+  ],
+  "total_commentary_duration_s": 5.0,
+  "created_at": "2026-07-13T12:50:00Z",
+  "warnings": []
+}

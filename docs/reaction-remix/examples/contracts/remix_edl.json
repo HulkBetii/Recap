@@ -1,0 +1,147 @@
+{
+  "schema_version": "reaction-remix.v1",
+  "source_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "plan_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "commentary_audio_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "fps_num": 30000,
+    "fps_den": 1001,
+    "audio_sample_rate": 44100,
+    "audio_channels": 2
+  },
+  "visual_policy": {
+    "mask_subtitles": false,
+    "add_subtitles": false,
+    "add_text": false,
+    "blur": false,
+    "overlay": false,
+    "preserve_burned_in_pixels": true
+  },
+  "placements": [
+    {
+      "placement_id": "placement-0000",
+      "item_id": "item-0002",
+      "kind": "mixed",
+      "origin_block_id": "block-0003",
+      "tl_start": 0.0,
+      "tl_end": 5.0,
+      "video": {
+        "src": "C:/media/source.mp4",
+        "src_in": 90.0,
+        "src_out": 95.0,
+        "speed": 1.0,
+        "filters": []
+      },
+      "audio": {
+        "mode": "source",
+        "source_src": "C:/media/source.mp4",
+        "source_in": 90.0,
+        "source_out": 95.0,
+        "source_gain_db": 0.0,
+        "tts_audio_path": null,
+        "tts_gain_db": null,
+        "bed_audio_path": null,
+        "bed_in": null,
+        "bed_out": null,
+        "bed_gain_db": null,
+        "filters": []
+      },
+      "warnings": ["Protected narrator overlap remains in the source mix."]
+    },
+    {
+      "placement_id": "placement-0001",
+      "item_id": "item-0003",
+      "kind": "unknown",
+      "origin_block_id": "block-0004",
+      "tl_start": 5.0,
+      "tl_end": 10.0,
+      "video": {
+        "src": "C:/media/source.mp4",
+        "src_in": 95.0,
+        "src_out": 100.0,
+        "speed": 1.0,
+        "filters": []
+      },
+      "audio": {
+        "mode": "source",
+        "source_src": "C:/media/source.mp4",
+        "source_in": 95.0,
+        "source_out": 100.0,
+        "source_gain_db": 0.0,
+        "tts_audio_path": null,
+        "tts_gain_db": null,
+        "bed_audio_path": null,
+        "bed_in": null,
+        "bed_out": null,
+        "bed_gain_db": null,
+        "filters": []
+      },
+      "warnings": ["Unknown material remains source-compatible and unprocessed."]
+    },
+    {
+      "placement_id": "placement-0002",
+      "item_id": "item-0000",
+      "kind": "reaction",
+      "origin_block_id": "block-0001",
+      "tl_start": 10.0,
+      "tl_end": 90.0,
+      "video": {
+        "src": "C:/media/source.mp4",
+        "src_in": 0.0,
+        "src_out": 80.0,
+        "speed": 1.0,
+        "filters": []
+      },
+      "audio": {
+        "mode": "source",
+        "source_src": "C:/media/source.mp4",
+        "source_in": 0.0,
+        "source_out": 80.0,
+        "source_gain_db": 0.0,
+        "tts_audio_path": null,
+        "tts_gain_db": null,
+        "bed_audio_path": null,
+        "bed_in": null,
+        "bed_out": null,
+        "bed_gain_db": null,
+        "filters": []
+      },
+      "warnings": []
+    },
+    {
+      "placement_id": "placement-0003",
+      "item_id": "item-0001",
+      "kind": "commentary",
+      "origin_block_id": "block-0002",
+      "tl_start": 90.0,
+      "tl_end": 95.0,
+      "video": {
+        "src": "C:/media/source.mp4",
+        "src_in": 80.0,
+        "src_out": 85.0,
+        "speed": 1.0,
+        "filters": []
+      },
+      "audio": {
+        "mode": "tts",
+        "source_src": null,
+        "source_in": null,
+        "source_out": null,
+        "source_gain_db": null,
+        "tts_audio_path": "audio/commentary-slot-0001.mp3",
+        "tts_gain_db": 1.0,
+        "bed_audio_path": null,
+        "bed_in": null,
+        "bed_out": null,
+        "bed_gain_db": null,
+        "filters": ["boundary_fade_50ms", "commentary_limiter_-1.5db"]
+      },
+      "warnings": []
+    }
+  ],
+  "total_duration_s": 95.0,
+  "created_at": "2026-07-13T13:00:00Z",
+  "warnings": ["reaction-render-v4 applies commentary fades only inside placement-0003."]
+}

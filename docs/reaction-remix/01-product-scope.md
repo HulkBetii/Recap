@@ -1,13 +1,14 @@
 # Reaction Remix — Product Scope
 
-> Status: **Proposed / not implemented**.
+> Status: **MVP implemented; preservation-first POC and full authorized-video hard QA accepted; preferred duration is audit-only**.
 
 ## 1. Product Goal
 
 Given one existing reaction video, produce a newly edited video that tells the
 same broad subject through a stronger editorial structure. The pipeline may
-reorder and trim reaction clips, remove repetition, and write new Japanese
-commentary around them.
+reorder complete source blocks and write new Japanese commentary around them.
+The preservation-first MVP replaces only isolated narrator commentary; it does
+not remove non-commentary blocks merely to force a duration target.
 
 The result is a content remix rather than a 1:1 narrator replacement. It must
 still preserve the authenticity of each participant's reaction and the visual
@@ -24,7 +25,7 @@ identity already burned into the source video.
 
 ### Output
 
-- One edited video using selected reaction clips from the source.
+- One edited video using the source reaction and other non-commentary blocks.
 - New Japanese editorial commentary synthesized through AI33 with voice ID
   `elevenlabs_QPtBgsg1dxKTQHNpHrHt`.
 - Original reaction audio wherever a reaction clip is retained.
@@ -34,11 +35,15 @@ identity already burned into the source video.
 
 - Analyze the full source and classify reaction, editorial commentary,
   transition, branding, and ambiguous intervals.
+- Replace only narrator cores classified as `commentary`; retain every
+  non-commentary block, with `reaction`, `mixed`, and `unknown` video/audio
+  explicitly protected.
 - Understand the meaning and emotional role of reactions across languages.
 - Build a new editorial arc for the complete video.
 - Reorder reaction clips when the new order is coherent and does not alter the
   meaning of an individual reaction.
-- Trim pauses, duplicate setup, repeated commentary, and weak reaction material.
+- Shorten or rewrite isolated commentary when it improves pacing; report when
+  preservation prevents the preferred duration reduction.
 - Rewrite all Japanese editorial commentary needed by the new structure.
 - Preserve useful original music or ambience when it belongs to the channel's
   presentation and does not obscure speech.
@@ -70,10 +75,21 @@ For every retained reaction interval:
   the reaction.
 - Burned-in subtitles remain exactly as present in the source frames.
 - Branding and overlays within those frames remain untouched.
+- No fade, ducking, limiter, crossfade, Demucs, normalization, or other audio
+  processing is applied to the protected source placement.
 
 Trimming is allowed only at safe semantic boundaries, normally before a speaker
 starts or after the speaker finishes. A short handle may be retained when it is
 needed to avoid clipped breaths, consonants, laughter, or room tone.
+
+R2 uses `commentary_boundary_policy: strict_or_word_edge`. A Japanese narrator
+core may become replaceable commentary when both boundaries either have the
+full configured `120 ms` handle or sit outside every word timestamp with no
+content overlap. A word edge eligible to bound commentary is promoted to
+confidence exactly `0.90`; a lower-confidence edge cannot make commentary
+replaceable. Any word, speaker, or language overlap remains protected as
+`mixed` or `unknown`, even
+when that means the old narrator remains audible in the final output.
 
 ## 6. Editorial Freedom
 
@@ -148,9 +164,27 @@ A full-video result is acceptable when:
   decode failures, or unexplained duplicated reactions.
 - No subtitle mask or new subtitle layer is present.
 
+The authorized `09:30-12:30` POC passed the preservation-first gate with:
+
+- source duration `184.201633s`, output duration `176.609767s`, and output
+  ratio `0.958785`;
+- replaceable commentary cores `block-0003` and `block-0026`;
+- protected narrator overlap in `block-0038` and `block-0039`;
+- unique reaction speech retention `1.0`;
+- minimum reaction audio correlation `0.9986287014`, maximum lag `0 ms`,
+  maximum gain delta `0.0691078578 dB`, and minimum frame similarity
+  `0.9950234368`;
+- old narrator leakage count `0` for replaced commentary placements and full
+  output peak increase `0.1 dB`.
+
+The POC ratio is above the preferred range because preservation takes priority
+over forcing a reduction. It remains inside the hard range and is reported as
+an audit warning rather than a failure.
+
 ## 10. Compatibility Boundary
 
-Reaction-remix should be implemented as a new package/pipeline namespace and may
-reuse shared media, ASR, Playwright, TTS, cache, and validation utilities where
-their behavior matches this scope. It must not change the existing recap output
-contracts or silently make the recap renderer retain source audio.
+Reaction-remix is implemented as the separate `reaction_remix/` package and
+`run_reaction.py` entrypoint. It reuses shared media, Playwright, TTS, cache, and
+validation utilities only where their behavior matches this scope. It does not
+change existing recap output contracts or make the recap renderer retain source
+audio.

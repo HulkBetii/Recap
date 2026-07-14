@@ -70,13 +70,14 @@ def test_wheel_inspector_requires_runtime_roots_and_excludes_artifacts(tmp_path:
     wheel = tmp_path / "recap-0.1.0-py3-none-any.whl"
     with ZipFile(wheel, "w") as archive:
         archive.writestr("run.py", "")
+        archive.writestr("run_reaction.py", "")
         for root in RUNTIME_ROOTS:
             archive.writestr(f"{root}/__init__.py", "")
         archive.writestr("recap-0.1.0.dist-info/METADATA", "")
 
     report = inspect_wheel(wheel)
 
-    assert report["entry_module"] == "run.py"
+    assert set(report["entry_modules"]) == {"run.py", "run_reaction.py"}
     assert set(report["runtime_roots"]) == RUNTIME_ROOTS
 
 
@@ -84,6 +85,7 @@ def test_wheel_inspector_rejects_tests_directory(tmp_path: Path) -> None:
     wheel = tmp_path / "recap-0.1.0-py3-none-any.whl"
     with ZipFile(wheel, "w") as archive:
         archive.writestr("run.py", "")
+        archive.writestr("run_reaction.py", "")
         for root in RUNTIME_ROOTS:
             archive.writestr(f"{root}/__init__.py", "")
         archive.writestr("tests/test_bad.py", "")

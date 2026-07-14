@@ -1,10 +1,10 @@
-# Reaction Remix — Design Index
+# Reaction Remix — Runtime Index
 
-> Status: **Proposed / not implemented**.
+> Status: **MVP implemented; preservation-first POC and full authorized-video
+> hard QA accepted; preferred duration is audit-only**.
 >
-> These documents describe a planned pipeline that will live alongside the
-> existing Recap pipeline. They are planning artifacts, not a statement that
-> the CLI, schemas, configuration, or runtime packages already exist.
+> Runtime code lives under `reaction_remix/` and is invoked through
+> `python run_reaction.py`. The existing Recap pipeline remains separate.
 
 ## Purpose
 
@@ -26,6 +26,9 @@ existing recap contracts and behavior must remain backward-compatible.
 - Reordering reaction clips is allowed when it improves the new editorial arc.
 - Rewrite and replace only Japanese editorial commentary; do not rewrite or
   synthesize the participants' reactions.
+- A Japanese narrator core may use a safe `word_edge` boundary when no word is
+  cut and the single-speaker/language confidence gates pass. Narrator audio that
+  overlaps reaction speech remains protected as `mixed/unknown`.
 - Support a full-video remix, not only fixed commentary replacement at the
   source timecodes.
 - Prefer an output duration 10–20% shorter than the source. The hard floor is
@@ -33,15 +36,40 @@ existing recap contracts and behavior must remain backward-compatible.
 - Keep the established Japanese internet-commentary tone, including expressions
   such as `お前ら`, `ネキ/ニキ`, `ワイ`, `～だぜ`, humor, and irony where suitable.
 
+## Current Acceptance
+
+The source-compatible `09:30–12:30` POC passed R0-R8 under the preservation-first
+policy. Its `184.201633s` source timeline produced a decodable `176.609767s`
+output with unique reaction speech retention `1.0`. Across 35 protected
+placements, minimum audio correlation was `0.9986287014`, maximum lag was `0ms`,
+maximum gain delta was `0.0691078578dB`, and minimum frame similarity was
+`0.9950234368`.
+
+Two narrator cores were replaced through AI33 and both reached Japanese ASR
+similarity `1.0`; old-narrator leakage in replaced commentary was zero. The
+overlapping narrator tail remains intentionally protected in `block-0038` and
+`block-0039`.
+
+The full authorized `1129.302494s` source has also passed R0-R8 hard QA in
+`work/reaction-remix-full-r02/`. Its output is `1010.379002s` (`0.894693x`) with
+160 protected placements checked, no failed placement IDs, minimum audio
+correlation `0.9971666`, maximum lag `0ms`, maximum gain delta `0.0931131dB`,
+minimum frame similarity `0.9954148`, zero commentary leakage, zero forbidden
+visual operations, and protected-overlap warnings for `block-0093`,
+`block-0127`, and `block-0186`. After manual listening QA, `block-0045` was explicitly dropped because
+old commentary remained audible in that hard segment. The output is shorter than
+the source and inside the preferred `0.85-0.90` ratio; exact target length remains
+audit-only rather than a release blocker.
+
 ## Design Documents
 
 - [Product scope](01-product-scope.md) — goals, boundaries, preservation rules,
   and duration policy.
-- [Pipeline architecture](02-pipeline-architecture.md) — proposed R0-R8 DAG,
+- [Pipeline architecture](02-pipeline-architecture.md) — implemented R0-R8 DAG,
   package boundaries, reuse decisions, and cache invalidation.
-- [Data contracts](03-data-contracts.md) — proposed JSON file interfaces,
+- [Data contracts](03-data-contracts.md) — `reaction-remix.v1` JSON file interfaces,
   examples, validators, and cross-stage invariants.
-- [Content analysis](04-content-analysis.md) — proposed multilingual analysis,
+- [Content analysis](04-content-analysis.md) — multilingual analysis,
   segment classification, reaction integrity, and analysis QA.
 - [Editorial planning](05-editorial-planning.md) — reaction ordering, duration
   budgeting, evidence rules, and Japanese commentary planning.
@@ -49,13 +77,12 @@ existing recap contracts and behavior must remain backward-compatible.
   commentary fitting, stems, and mix constraints.
 - [Render and QA](07-render-and-qa.md) — audio-aware timeline assembly, visual
   preservation, measurable gates, and QA artifacts.
-- [Implementation roadmap](08-implementation-roadmap.md) — phased delivery,
-  reuse boundaries, proposed tests, and exit criteria.
+- [Implementation roadmap](08-implementation-roadmap.md) — delivery status,
+  reuse boundaries, automated tests, and exit criteria.
 - [POC 09:30–12:30](poc-0930-1230.md) — evidence and lessons from the three-minute
   proof of concept.
-- [Proposed config example](examples/config.proposed.yaml) and
-  [contract examples](examples/contracts/) — documentation fixtures only; the
-  current config loader and runtime do not consume them.
+- Production config: [`config.reaction-remix.yaml`](../../config.reaction-remix.yaml).
+  Contract fixtures remain under [examples/contracts](examples/contracts/) for documentation and tests.
 
 ## Decision Priority
 

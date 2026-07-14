@@ -98,7 +98,7 @@ try {
         Invoke-NativeCommand "python" @("-m", "pytest", "-q")
     }
     Invoke-GateStep "compileall" {
-        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "ingest", "match", "orchestrator", "preflight", "render", "review", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py")
+        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "ingest", "match", "orchestrator", "preflight", "reaction_remix", "render", "review", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py", "run_reaction.py")
     }
     Invoke-GateStep "editable_install_dry_run" {
         Invoke-NativeCommand "python" @("-m", "pip", "install", "--dry-run", "--no-deps", "-e", ".")
@@ -126,7 +126,7 @@ try {
         New-Item -ItemType Directory -Path $smokeDir | Out-Null
         Push-Location $smokeDir
         try {
-            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, common, ingest, match, orchestrator, preflight, render, review, shots, storymap, tts, visual_index; modules=(run,common,ingest,match,orchestrator,preflight,render,review,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
+            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, run_reaction, common, ingest, match, orchestrator, preflight, reaction_remix, render, review, shots, storymap, tts, visual_index; modules=(run,run_reaction,common,ingest,match,orchestrator,preflight,reaction_remix,render,review,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
         } finally {
             Pop-Location
         }
@@ -135,7 +135,7 @@ try {
         $smokeDir = Join-Path $resolvedWorkDir "outside-repo"
         Push-Location $smokeDir
         try {
-            foreach ($module in @("ingest", "match", "visual_index")) {
+            foreach ($module in @("ingest", "match", "visual_index", "reaction_remix.probe", "reaction_remix.qa", "run_reaction")) {
                 Invoke-NativeCommand $venvPython @("-m", $module, "--help")
             }
         } finally {
@@ -156,6 +156,9 @@ try {
     }
     Invoke-GateStep "production_dry_run" {
         Invoke-NativeCommand "python" @("run.py", "--input", $dryRunFilm, "--run-dir", (Join-Path $resolvedWorkDir "production-dry-run"), "--config", "config.movie.production.yaml", "--dry-run")
+    }
+    Invoke-GateStep "reaction_remix_dry_run" {
+        Invoke-NativeCommand "python" @("run_reaction.py", "--input", $dryRunFilm, "--run-dir", (Join-Path $resolvedWorkDir "reaction-dry-run"), "--config", "config.reaction-remix.yaml", "--dry-run")
     }
 
     if (-not $SkipMediaSmoke) {

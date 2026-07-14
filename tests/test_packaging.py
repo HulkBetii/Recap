@@ -11,6 +11,7 @@ RUNTIME_PACKAGES = {
     "match*",
     "orchestrator*",
     "preflight*",
+    "reaction_remix*",
     "render*",
     "review*",
     "shots*",
@@ -41,7 +42,7 @@ def test_setuptools_uses_explicit_runtime_package_allowlist() -> None:
     config = load_pyproject()["tool"]["setuptools"]
     discovery = config["packages"]["find"]
 
-    assert config["py-modules"] == ["run"]
+    assert config["py-modules"] == ["run", "run_reaction"]
     assert set(discovery["include"]) == RUNTIME_PACKAGES
     assert set(discovery["exclude"]) == EXCLUDED_TOP_LEVEL
     assert discovery["namespaces"] is False
@@ -53,3 +54,9 @@ def test_movie_visual_extra_is_union_of_required_visual_runtime_groups() -> None
 
     assert set(extras["movie-visual"]) == expected
     assert all("open-clip" not in dependency.lower() for dependency in extras["movie-visual"])
+
+
+def test_reaction_remix_extra_is_union_of_analysis_and_audio_groups() -> None:
+    extras = load_pyproject()["project"]["optional-dependencies"]
+
+    assert set(extras["reaction-remix"]) == set(extras["reaction-analysis"]) | set(extras["reaction-audio"])

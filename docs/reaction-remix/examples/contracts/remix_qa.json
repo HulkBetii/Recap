@@ -1,0 +1,73 @@
+{
+  "schema_version": "reaction-remix.v1",
+  "source_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "edl_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+  "output_path": "out/reaction_remix.mp4",
+  "status": "pass",
+  "duration": {
+    "source_s": 100.0,
+    "output_s": 95.0,
+    "output_ratio": 0.95,
+    "hard_min_ratio": 0.8,
+    "preferred_range": [0.85, 0.9],
+    "status": "pass"
+  },
+  "reaction_preservation": {
+    "placements_checked": 3,
+    "speed_mismatches": 0,
+    "gain_mismatches": 0,
+    "span_mismatches": 0,
+    "failed_placement_ids": [],
+    "max_gain_delta_db": 0.0691078578,
+    "min_audio_correlation": 0.9986287014,
+    "max_av_drift_ms": 0.0,
+    "min_sample_frame_similarity": 0.9950234368,
+    "status": "pass"
+  },
+  "commentary": {
+    "slots_checked": 1,
+    "provider_mismatches": 0,
+    "voice_mismatches": 0,
+    "old_narrator_leakage_count": 0,
+    "old_narrator_leakage_slot_ids": [],
+    "protected_narrator_overlap_block_ids": ["block-0003", "block-0004"],
+    "min_asr_text_match": 0.96,
+    "status": "pass"
+  },
+  "visual_policy": {
+    "mask_operations": 0,
+    "subtitle_additions": 0,
+    "text_overlays": 0,
+    "blur_operations": 0,
+    "other_overlays": 0,
+    "status": "pass"
+  },
+  "audio": {
+    "unexpected_silence_count": 0,
+    "boundary_click_count": 0,
+    "max_commentary_true_peak_dbfs": -1.8,
+    "full_output_true_peak_dbfs": -1.2,
+    "source_true_peak_dbfs": -1.3,
+    "peak_increase_db": 0.1,
+    "status": "pass"
+  },
+  "timeline": {
+    "gap_count": 0,
+    "overlap_count": 0,
+    "decode_ok": true,
+    "expected_frame_count": 2847,
+    "actual_frame_count": 2846,
+    "frame_count_delta": -1,
+    "expected_sample_count": 4189500,
+    "actual_sample_count": 4188182,
+    "sample_count_delta": -1318,
+    "status": "pass"
+  },
+  "repairs": [],
+  "created_at": "2026-07-13T13:20:00Z",
+  "warnings": [
+    "reaction-qa-v7 reports protected narrator overlap as warning-only.",
+    "Output ratio exceeds the preferred range because preservation takes priority.",
+    "Decoded frame/sample deltas remain inside one output-frame tolerance."
+  ]
+}

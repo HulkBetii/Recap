@@ -12,6 +12,7 @@ RUNTIME_ROOTS = {
     "match",
     "orchestrator",
     "preflight",
+    "reaction_remix",
     "render",
     "review",
     "shots",
@@ -85,15 +86,16 @@ def inspect_wheel(path: Path) -> dict:
     roots = {name.split("/", 1)[0] for name in names if "/" in name}
     missing = sorted(root for root in RUNTIME_ROOTS if not any(name.startswith(f"{root}/") for name in names))
     excluded = sorted(EXCLUDED_WHEEL_ROOTS & roots)
-    has_run = "run.py" in names
-    if missing or excluded or not has_run:
+    entry_modules = {"run.py", "run_reaction.py"}
+    missing_entries = sorted(entry_modules - names)
+    if missing or excluded or missing_entries:
         raise ValueError(
-            f"wheel content invalid: missing={missing}, excluded={excluded}, run.py={has_run}"
+            f"wheel content invalid: missing={missing}, excluded={excluded}, entries={missing_entries}"
         )
     return {
         "wheel": path.name,
         "runtime_roots": sorted(RUNTIME_ROOTS),
-        "entry_module": "run.py",
+        "entry_modules": sorted(entry_modules),
         "file_count": len(names),
         "excluded_roots_found": excluded,
     }

@@ -1,0 +1,133 @@
+schema_version: reaction-remix.v1
+pipeline: reaction_remix
+
+orchestrator:
+  python: null
+  log_level: INFO
+  runtime_preflight: true
+  max_repair_rounds: 2
+
+probe:
+  soft_subtitle_policy: fail
+  burned_subtitle_policy: preserve
+
+analyze:
+  whisper_model: large-v3
+  device: cuda
+  compute_type: float16
+  source_language: auto
+  max_region_s: 30.0
+  multilingual_window_s: 6.0
+  region_overlap_s: 2.0
+  speech_padding_s: 0.12
+  word_timestamps: true
+  max_attempts: 2
+  speaker_cluster_threshold: 0.28
+
+shots:
+  enabled: true
+  detector: adaptive
+  frame_sampling: batch
+  face_detection: "off"
+  max_shot_len: 0
+
+stems:
+  enabled: true
+  provider: demucs
+  model: htdemucs
+  device: cuda
+  output_stem: no_vocals
+  leakage_fallback: tts
+
+segment:
+  min_silence_s: 0.25
+  speech_padding_s: 0.12
+  scene_cut_tolerance_s: 0.5
+  min_cut_spacing_s: 0.08
+  commentary_min_confidence: 0.90
+  narrator_min_regions: 3
+  narrator_min_japanese_ratio: 0.90
+  commentary_boundary_policy: strict_or_word_edge
+
+plan:
+  llm_backend: chatgpt_playwright
+  chatgpt_profile_dir: D:/VibeCoding/auto_YT/data/chrome_user_data/PROFILE_GPT_1
+  chat_session_policy: auto
+  playwright_max_attempts: 2
+  playwright_recovery_timeout_s: 60
+  reply_timeout_s: 1200
+  output_ratio: 0.875
+  hard_min_output_ratio: 0.80
+  preferred_min_output_ratio: 0.85
+  preferred_max_output_ratio: 0.90
+  hard_max_output_ratio: 1.00
+  min_unique_reaction_speech_ratio: 0.90
+  allow_block_reuse: false
+  preserve_ambiguous_blocks: true
+  manual_drop_block_ids:
+    - block-0045
+
+write:
+  llm_backend: chatgpt_playwright
+  language: ja
+  style_id: reaction-internet-ja-v1
+  chars_per_second: 6.5
+  max_qa_iterations: 2
+  require_evidence_block_ids: true
+
+tts:
+  provider: ai33
+  voice_id: elevenlabs_QPtBgsg1dxKTQHNpHrHt
+  model: eleven_multilingual_v2
+  speed: 1.0
+  concurrency: 1
+  fallback_provider: null
+  text_normalization: ja_basic
+  trim_handle_ms: 80
+  target_lufs: -14.0
+  max_true_peak_db: -2.0
+  asr_model: large-v3
+  asr_language: ja
+  min_asr_similarity: 0.90
+  fit_tolerance_ms: 100
+  max_fit_iterations: 2
+
+compose:
+  commentary_visual_priority:
+    - commentary
+  allow_commentary_visual_reuse: false
+  commentary_audio_mode: tts_bed
+  commentary_tts_gain_db: 1.0
+  commentary_bed_gain_db: -14.0
+  commentary_bed_fade_ms: 180
+  commentary_boundary_fade_ms: 50
+  commentary_limiter_db: -1.5
+  bed_leakage_fallback: tts
+  max_silent_transition_s: 0.5
+
+render:
+  require_cfr_source: true
+  video_codec: libx264
+  pixel_format: yuv420p
+  crf: 18
+  preset: medium
+  audio_codec: aac
+  audio_bitrate: 192k
+  movflags: +faststart
+
+qa:
+  min_output_ratio: 0.80
+  preferred_min_output_ratio: 0.85
+  preferred_max_output_ratio: 0.90
+  min_unique_reaction_speech_ratio: 0.90
+  min_reaction_audio_correlation: 0.98
+  max_reaction_av_drift_frames: 1
+  preferred_av_drift_ms: 20
+  max_reaction_gain_delta_db: 0.3
+  min_frame_similarity: 0.995
+  min_tts_asr_similarity: 0.90
+  max_narrator_leakage_count: 0
+  max_commentary_true_peak_db: -1.5
+  commentary_peak_encode_tolerance_db: 0.3
+  max_full_output_peak_increase_db: 0.3
+  unexpected_silence_s: 0.25
