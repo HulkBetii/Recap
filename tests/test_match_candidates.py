@@ -64,6 +64,61 @@ def test_candidate_plan_never_returns_window_beyond_max_widen() -> None:
     assert plan.capacity_exhausted is True
 
 
+def test_short_source_prefers_local_adjacent_cluster_before_far_widen() -> None:
+    plan = plan_candidates(
+        shots=[shot(0, 5, 9.5), shot(1, 10, 14), shot(2, 24, 30)],
+        start=10,
+        end=14,
+        needed_duration=8.2,
+        margin=15,
+        max_widen=1,
+        max_clip=5,
+        min_visual_clip=0.6,
+        allow_dark_fallback=True,
+    )
+
+    assert plan.local_expansion_used is True
+    assert plan.widen_count == 0
+    assert [candidate.index for candidate in plan.candidates] == [1, 0]
+    assert plan.source_intervals == [(10, 14), (5, 9.5)]
+    assert plan.capacity_exhausted is False
+
+
+def test_short_source_prioritizes_core_then_right_before_left() -> None:
+    plan = plan_candidates(
+        shots=[shot(0, 5, 9.5), shot(1, 10, 12), shot(2, 12, 16)],
+        start=10,
+        end=12,
+        needed_duration=10.0,
+        margin=15,
+        max_widen=1,
+        max_clip=5,
+        min_visual_clip=0.6,
+        allow_dark_fallback=True,
+    )
+
+    assert plan.local_expansion_used is True
+    assert [candidate.index for candidate in plan.candidates] == [1, 2, 0]
+    assert plan.source_intervals == [(10, 16), (5, 9.5)]
+
+def test_short_source_falls_back_to_normal_widen_when_local_cluster_too_weak() -> None:
+    plan = plan_candidates(
+        shots=[shot(0, 5, 5.5), shot(1, 10, 11), shot(2, 20, 26)],
+        start=10,
+        end=11,
+        needed_duration=5,
+        margin=15,
+        max_widen=1,
+        max_clip=5,
+        min_visual_clip=0.6,
+        allow_dark_fallback=True,
+    )
+
+    assert plan.local_expansion_used is False
+    assert plan.widen_count == 1
+    assert 2 in {candidate.index for candidate in plan.candidates}
+
+
 def test_dark_fallback_rejects_invalid_and_non_story_shots() -> None:
     invalid = [
         shot(0, 0, 5, usable=False).model_copy(update={"brightness": 0.0, "unusable_reasons": ["no_frames"]}),

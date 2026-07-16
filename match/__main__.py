@@ -517,6 +517,8 @@ def run_match(args: argparse.Namespace) -> int:
                 allow_dark_fallback=args.allow_dark_fallback,
             )
         content_anchor_strict_ordered_fill = anchor_plan is not None
+        intent = review_intents.get(beat.beat_id)
+        object_visual_priority = bool(intent and intent.object_cues and visual_scores)
         result = fill_beat(
             beat=beat,
             timing=timing,
@@ -544,6 +546,7 @@ def run_match(args: argparse.Namespace) -> int:
             min_visual_clip=args.min_visual_clip,
             strict_ordered_fill=(in_opening_guard and args.opening_ordered_fill) or content_anchor_strict_ordered_fill,
             allow_dark_fallback=args.allow_dark_fallback,
+            visual_priority=object_visual_priority,
             candidate_filter_ids=anchor_plan.candidate_ids if anchor_plan else None,
             dark_candidate_ids=anchor_plan.dark_candidate_ids if anchor_plan else None,
             source_intervals=anchor_plan.intervals if anchor_plan else None,
@@ -704,6 +707,10 @@ def run_match(args: argparse.Namespace) -> int:
             "dark_capacity_s": result.dark_capacity_s,
             "total_capacity_s": result.total_capacity_s,
             "capacity_exhausted": result.capacity_exhausted,
+            "local_expansion_used": result.local_expansion_used,
+            "local_expansion_gap_s": result.local_expansion_gap_s,
+            "local_expansion_capacity_floor_s": result.local_expansion_capacity_floor_s,
+            "object_visual_priority": object_visual_priority,
             "dark_candidate_ids": result.dark_candidate_ids,
             "dark_selected_ids": result.dark_selected_ids,
             "unused_source_reuse_count": result.unused_source_reuse_count,

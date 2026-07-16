@@ -33,6 +33,8 @@ REVIEW_CONFIG_FIELDS = (
     "drop_non_story_beats",
     "non_story_tail_s",
     "llm_backend",
+    "chatgpt_model_label",
+    "chatgpt_intelligence_label",
 )
 
 
@@ -107,6 +109,8 @@ def build_review_identity(
             "film_map_meta_hash": film_map_meta_digest,
             "story_map_hash": story_map_digest,
             "video_profile_hash": video_profile_digest,
+            "chatgpt_model_label": _value(settings, "chatgpt_model_label"),
+            "chatgpt_intelligence_label": _value(settings, "chatgpt_intelligence_label"),
         }
     )
     return ReviewIdentity(

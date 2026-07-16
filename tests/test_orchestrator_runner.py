@@ -306,6 +306,24 @@ def test_review_command_disables_micro_beats_by_default(tmp_path: Path) -> None:
     assert "--micro-beats" not in command
 
 
+def test_review_command_passes_locked_chatgpt_model_labels(tmp_path: Path) -> None:
+    from orchestrator.graph import build_paths
+    from orchestrator.runner import build_command
+
+    paths = build_paths(tmp_path / "run")
+    config = load_config(write_config(tmp_path))
+    config["review"].update(
+        {
+            "chatgpt_model_label": "GPT-5.6 Sol",
+            "chatgpt_intelligence_label": "Instant",
+        }
+    )
+
+    command = build_command("review", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+
+    assert command[command.index("--chatgpt-model-label") + 1] == "GPT-5.6 Sol"
+    assert command[command.index("--chatgpt-intelligence-label") + 1] == "Instant"
+
 def test_review_command_passes_playwright_retry_and_budget_fallback_gate(tmp_path: Path) -> None:
     paths = build_paths(tmp_path / "run")
     config = load_config(write_config(tmp_path))
@@ -609,12 +627,15 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     paths = build_paths(tmp_path / "run")
 
     ingest = build_command("ingest", paths, film, config, force=False)
+    review = build_command("review", paths, film, config, force=False)
     tts = build_command("tts", paths, film, config, force=False)
     visual = build_command("visual_index", paths, film, config, force=False)
     match = build_command("match", paths, film, config, force=False)
 
     assert ingest[ingest.index("--device") + 1] == "cuda"
     assert ingest[ingest.index("--aligner") + 1] == "whisperx"
+    assert "--micro-beats" in review
+    assert "--no-micro-beats" not in review
     assert tts[tts.index("--provider-mode") + 1] == "auto"
     assert tts[tts.index("--genmax-voice-id") + 1] == "VU16byTywsWv5JpI8rbc"
     assert tts[tts.index("--openai-model") + 1] == "gpt-4o-mini-tts"
@@ -623,6 +644,23 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     assert visual[visual.index("--device") + 1] == "cuda"
     assert "--exclude-end-credits" in match
     assert match[match.index("--visual-mode") + 1] == "rerank"
+
+
+def test_vi_fast_preset_uses_final_sync_match_policy(tmp_path: Path) -> None:
+    config = load_config(Path("config.vi.fast.yaml"))
+    film = tmp_path / "film.mp4"
+    film.write_bytes(b"film")
+    paths = build_paths(tmp_path / "run")
+
+    review = build_command("review", paths, film, config, force=False)
+    match = build_command("match", paths, film, config, force=False)
+
+    assert "--micro-beats" in review
+    assert match[match.index("--semantic-mode") + 1] == "bge-m3"
+    assert match[match.index("--semantic-device") + 1] == "cuda"
+    assert match[match.index("--visual-mode") + 1] == "rerank"
+    assert match[match.index("--sentence-refinement-mode") + 1] == "guarded"
+    assert "--no-review-html" not in match
 
 
 def test_tts_auto_preflight_accepts_openai_as_only_available_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

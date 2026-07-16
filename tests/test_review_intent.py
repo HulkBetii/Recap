@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from common.schema import ReviewBeat, StorySection
-from review.intent import build_review_intents, infer_visual_intent
+from review.intent import build_review_intents, infer_visual_intent, normalize_search_text
 
 
 def test_review_intent_ids_match_beats_and_setup_is_ordered() -> None:
@@ -124,6 +124,26 @@ def test_setup_section_uses_dialogue_when_location_is_not_mentioned() -> None:
     )
 
     assert infer_visual_intent(beat, section) == "dialogue"
+
+def test_object_cues_make_visual_queries_object_focused() -> None:
+    beat = ReviewBeat(
+        beat_id=0,
+        narration="Nhìn món cơm cuộn trên bàn, hắn còn giấu thêm thịt cua để đánh lạc hướng.",
+        from_seg_id=0,
+        to_seg_id=0,
+        src_tc_start=10,
+        src_tc_end=20,
+        is_hook=False,
+    )
+
+    intent = build_review_intents([beat], [])[0]
+
+    normalized_cues = {normalize_search_text(cue) for cue in intent.object_cues}
+    assert "mon com cuon" in normalized_cues
+    assert "thit cua" in normalized_cues
+    assert "object_focus" in intent.preferred_shot_traits
+    assert "food close-up" in intent.visual_query_en.lower()
+    assert "people talking face to face" not in intent.visual_query_en.lower()
 
 
 def test_explicit_fight_overrides_ending_default() -> None:

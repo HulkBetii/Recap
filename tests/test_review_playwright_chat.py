@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 import review.playwright_chat as playwright_chat
 
 
@@ -86,11 +88,14 @@ class _PromptBox:
 class _AskPage:
     def __init__(self) -> None:
         self.assistant = _CountLocator([2])
+        self.user = _CountLocator([1])
         self.prompt = _PromptBox()
 
     def locator(self, selector: str):  # type: ignore[no-untyped-def]
         if selector == playwright_chat.ASSISTANT_MSG_SEL:
             return self.assistant
+        if selector == playwright_chat.USER_MSG_SEL:
+            return self.user
         if selector == playwright_chat.PROMPT_INPUT_SEL:
             return self.prompt
         raise AssertionError(selector)
@@ -124,6 +129,87 @@ class _ExpiredSessionPage(_AskPage):
         super().__init__()
         self.prompt = _UnavailablePromptBox()
 
+class _ModelSwitcher:
+    def __init__(self, page: "_ModelPickerPage") -> None:
+        self.page = page
+
+    @property
+    def first(self) -> "_ModelSwitcher":
+        return self
+
+    async def count(self) -> int:
+        return 1
+
+    async def is_visible(self, timeout: int) -> bool:
+        assert timeout in {1_000, 3_000}
+        return True
+
+    async def inner_text(self, timeout: int) -> str:
+        assert timeout in {500, 1_000}
+        if self.page.selected_model:
+            return self.page.selected_model
+        if self.page.selected_intelligence:
+            return self.page.selected_intelligence
+        return self.page.initial_label
+
+    async def click(self, timeout: int) -> None:
+        assert timeout == playwright_chat.MODEL_PICKER_TIMEOUT_MS
+        self.page.menu_open = True
+        self.page.events.append("open-menu")
+
+class _ModelMenuItem:
+    def __init__(self, page: "_ModelPickerPage", label: str) -> None:
+        self.page = page
+        self.label = label
+
+    @property
+    def first(self) -> "_ModelMenuItem":
+        return self
+
+    async def count(self) -> int:
+        return int(self.page.menu_open and self.label in self.page.available_labels)
+
+    async def is_visible(self, timeout: int) -> bool:
+        assert timeout == 1_000
+        return bool(await self.count())
+
+    async def click(self, timeout: int) -> None:
+        assert timeout == playwright_chat.MODEL_PICKER_TIMEOUT_MS
+        self.page.events.append(self.label)
+        self.page.menu_open = False
+        if self.label == "Instant":
+            self.page.selected_intelligence = self.label
+        else:
+            self.page.selected_model = self.label
+
+class _MissingModelMenuItem(_ModelMenuItem):
+    async def count(self) -> int:
+        return 0
+
+class _ModelPickerPage:
+    url = "https://chatgpt.com/"
+
+    def __init__(self, available_labels: set[str], initial_label: str = "Auto") -> None:
+        self.available_labels = available_labels
+        self.initial_label = initial_label
+        self.menu_open = False
+        self.selected_intelligence: str | None = None
+        self.selected_model: str | None = None
+        self.events: list[str] = []
+
+    def locator(self, selector: str):  # type: ignore[no-untyped-def]
+        if selector == playwright_chat.MODEL_SWITCHER_SEL:
+            return _ModelSwitcher(self)
+        for label in ("Instant", "GPT-5.6 Sol"):
+            if label in selector:
+                if label in self.available_labels:
+                    return _ModelMenuItem(self, label)
+                return _MissingModelMenuItem(self, label)
+        raise AssertionError(selector)
+
+    def get_by_text(self, _pattern):  # type: ignore[no-untyped-def]
+        return _MissingModelMenuItem(self, "missing")
+
 
 def test_wait_streaming_done_waits_for_a_new_assistant_message(monkeypatch) -> None:
     async def no_sleep(_seconds: float) -> None:
@@ -131,6 +217,43 @@ def test_wait_streaming_done_waits_for_a_new_assistant_message(monkeypatch) -> N
 
     monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
     asyncio.run(playwright_chat._wait_streaming_done(_FakePage(), 5, previous_assistant_count=2))
+
+def test_model_picker_selects_requested_intelligence_and_model(monkeypatch) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
+    page = _ModelPickerPage({"Instant", "GPT-5.6 Sol"})
+
+    selected = asyncio.run(
+        playwright_chat.ensure_chatgpt_model(
+            page,
+            model_label="GPT-5.6 Sol",
+            intelligence_label="Instant",
+        )
+    )
+
+    assert selected == {"intelligence": "Instant", "model": "GPT-5.6 Sol"}
+    assert page.events == ["open-menu", "Instant", "open-menu", "GPT-5.6 Sol"]
+
+def test_model_picker_fails_fast_when_requested_model_is_missing(monkeypatch) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
+    page = _ModelPickerPage({"Instant"})
+
+    with pytest.raises(playwright_chat.PlaywrightChatError) as excinfo:
+        asyncio.run(
+            playwright_chat.ensure_chatgpt_model(
+                page,
+                model_label="GPT-5.6 Sol",
+                intelligence_label="Instant",
+            )
+        )
+
+    assert excinfo.value.code == "model_label_missing"
+    assert excinfo.value.fallback_eligible is False
 
 
 def test_wait_conversation_history_stable_before_counting_existing_messages(monkeypatch) -> None:
@@ -159,7 +282,7 @@ def test_ask_recovers_same_response_without_resending(monkeypatch, tmp_path) -> 
     waits = 0
     sends = 0
 
-    async def fake_send(_page) -> None:  # type: ignore[no-untyped-def]
+    async def fake_dispatch(_page, _previous_user_count: int) -> None:  # type: ignore[no-untyped-def]
         nonlocal sends
         sends += 1
 
@@ -182,7 +305,7 @@ def test_ask_recovers_same_response_without_resending(monkeypatch, tmp_path) -> 
     async def no_sleep(_seconds: float) -> None:
         return None
 
-    monkeypatch.setattr(playwright_chat, "_click_send", fake_send)
+    monkeypatch.setattr(playwright_chat, "_dispatch_prompt", fake_dispatch)
     monkeypatch.setattr(playwright_chat, "_wait_streaming_done", fake_wait)
     monkeypatch.setattr(playwright_chat, "_wait_text_stable", fake_text)
     monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
@@ -197,7 +320,7 @@ def test_ask_recovers_same_response_without_resending(monkeypatch, tmp_path) -> 
     assert client.last_attempt_count == 2
 
 
-def test_dispatch_error_recovers_without_second_send(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_dispatch_prompt_accepts_prompt_when_user_message_increases_after_click_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     sends = 0
 
     async def uncertain_send(_page) -> None:  # type: ignore[no-untyped-def]
@@ -205,21 +328,13 @@ def test_dispatch_error_recovers_without_second_send(monkeypatch, tmp_path) -> N
         sends += 1
         raise playwright_chat.PlaywrightError("element detached after click")
 
-    async def response_arrived(_page, _timeout_s: int, _previous_count: int) -> None:  # type: ignore[no-untyped-def]
-        return None
-
-    async def stable_text(_page) -> str:  # type: ignore[no-untyped-def]
-        return "accepted response"
+    async def submitted(_page, _selector: str, _previous_count: int, _timeout_s: float) -> bool:  # type: ignore[no-untyped-def]
+        return True
 
     monkeypatch.setattr(playwright_chat, "_click_send", uncertain_send)
-    monkeypatch.setattr(playwright_chat, "_wait_streaming_done", response_arrived)
-    monkeypatch.setattr(playwright_chat, "_wait_text_stable", stable_text)
-    client = playwright_chat.PlaywrightChatClient(tmp_path / "profile")
-    client._page = _AskPage()
+    monkeypatch.setattr(playwright_chat, "_wait_message_count_increase", submitted)
 
-    result = asyncio.run(client.ask("prompt"))
-
-    assert result == "accepted response"
+    asyncio.run(playwright_chat._dispatch_prompt(_AskPage(), previous_user_count=1))
     assert sends == 1
 
 
@@ -279,7 +394,7 @@ def test_preparation_disconnect_exhausts_retry_budget(monkeypatch, tmp_path) -> 
 
 
 def test_expired_session_after_dispatch_is_not_fallback_eligible(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    async def fake_send(_page) -> None:  # type: ignore[no-untyped-def]
+    async def fake_dispatch(_page, _previous_user_count: int) -> None:  # type: ignore[no-untyped-def]
         return None
 
     async def no_response(_page, _timeout_s: int, _previous_count: int) -> None:  # type: ignore[no-untyped-def]
@@ -290,7 +405,7 @@ def test_expired_session_after_dispatch_is_not_fallback_eligible(monkeypatch, tm
             fallback_eligible=True,
         )
 
-    monkeypatch.setattr(playwright_chat, "_click_send", fake_send)
+    monkeypatch.setattr(playwright_chat, "_dispatch_prompt", fake_dispatch)
     monkeypatch.setattr(playwright_chat, "_wait_streaming_done", no_response)
     client = playwright_chat.PlaywrightChatClient(tmp_path / "profile")
     client._page = _ExpiredSessionPage()

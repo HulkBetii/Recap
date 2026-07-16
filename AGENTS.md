@@ -172,8 +172,10 @@ repo/
 
 - GĐ2 là CLI local, chạy bằng `python -m review`.
 - Backend GĐ2 duy nhất cho đường chạy chính là `chatgpt_playwright`; giá trị legacy `openai_api` và `off` bị từ chối thay vì chạy API trực tiếp hoặc âm thầm bỏ review.
-- Runtime chính: ChatGPT qua Playwright persistent browser profile cố định `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`. Code và mọi preset phát hành phải dùng đúng path này; `python -m review` từ chối profile khác. Mặc định `review.playwright_max_attempts=2` và `review.playwright_recovery_timeout_s=60`.
+- Runtime chính: ChatGPT qua Playwright persistent browser profile cố định `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`. Code và mọi preset phát hành phải dùng đúng path này; `python -m review` từ chối profile khác. `review.chatgpt_model_label` và `review.chatgpt_intelligence_label` khóa UI ChatGPT theo label của preset (ví dụ `GPT-5.6 Sol` + `Instant`); thiếu selector hoặc chọn sai label phải fail fast. Mặc định `review.playwright_max_attempts=2` và `review.playwright_recovery_timeout_s=60`.
 - Nếu prompt đã submit thành công, recovery chỉ tiếp tục quan sát cùng response và không gửi prompt lần hai. Chỉ lỗi xảy ra trước khi submit mới được phép thử lại request.
+- Prompt submit is now verified by seeing a new user message appear. If ChatGPT does not accept the prompt, the client raises `prompt_submit_failed` instead of waiting through a long response timeout.
+- Narration payloads reject placeholders and incomplete beat arrays. `request_narration` retries once with a stricter prompt when the model returns missing ids, duplicate ids, or placeholder text like `...`.
 - `review.openai_fallback_model` là opt-in. Fallback chỉ kích hoạt sau khi lỗi Playwright được phân loại là retryable/fallback-eligible và đã hết attempt; circuit breaker sau đó xử lý các request GĐ2 còn lại.
 - `api_budget_guard=block` luôn chặn OpenAI fallback ở mọi quality mode nhưng vẫn cho Playwright chạy. Thiếu key hoặc budget bị chặn phải fail với lý do rõ ràng, không tạo API request.
 - `work/review/openai_usage.json` và báo cáo orchestrator ghi trạng thái configured/allowed/blocked/triggered, mã lỗi, lý do, số lần thử Playwright, model và token usage; không thay đổi contract JSON giữa các stage.
@@ -238,10 +240,11 @@ repo/
   - `match/`: candidate filtering/widening, scoring, semantic adapters, greedy fill, timeline assignment, cache va CLI orchestration.
   - `common/schema.py`: co them `EdlPlacement`, `EdlMeta`, `validate_edl`.
 - Fallback thiếu footage tính capacity theo `sum(min(max_clip, source_intersection))`, bỏ candidate ngắn hơn `min_visual_clip`; thử usable rồi dark-only trong window hiện tại trước khi widen đúng tối đa `max_widen` cấp.
+- Với beat có source span quá ngắn hoặc thiếu footage, GĐ5 thử `local same-scene expansion` trước normal widen: gom shot usable/dark hợp lệ sát mép source theo gap nhỏ, ưu tiên core source rồi phía phải, chỉ chạy lùi sang phía trái khi thiếu footage rõ ràng; nếu cụm local đủ hoặc gần đủ capacity thì giữ trong cụm đó và cho repeat/gap absorption xử lý phần hụt nhỏ, chỉ fallback widen xa khi cụm local quá yếu. `edl.qa.json` ghi `local_expansion_*` để review.
 - `allow_dark_fallback=true` mặc định cho stable/visual presets; chỉ shot story bị loại duy nhất vì `too_dark` được relax. Non-story, no-frame, transition spike và too-short luôn bị loại cứng.
 - `--exclude-end-credits` hard-exclude `is_end_credit=true` trước semantic/visual, anchors, dark fallback, repeat và pause filler. Visual preset bật policy; stable/default tắt. Khi thiếu footage, GĐ5 warning/underfill thay vì dùng credit-only.
 - Repeat fallback dùng phần source chưa dùng trong shot trước, sau đó mới chọn span overlap thấp nhất; tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier.
-- `edl.meta.json` ghi `algorithm_version` va counters dark/capacity/reuse/end-credit; algorithm version 19 invalidates artifacts created before the guarded long-beat fail-closed/no-early-jump updates.
+- `edl.meta.json` ghi `algorithm_version` va counters dark/capacity/reuse/end-credit; algorithm version 21 invalidates artifacts created before core-first local expansion, object-priority rerank, and repeat-guard updates.
 - Cache GD5 nam trong `--work-dir/plan.json`; cache key gom `sentence_refinement_mode`, embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
 - Test tu dong dung JSON fixtures/mock; khong dung video/ffmpeg/API.
 
@@ -403,8 +406,9 @@ repo/
 - Not every movie has an intro; the pipeline may exclude intro/non-story footage only when G0 `video_profile.json` contains confident `non_story_ranges`.
 - If the classifier is `heuristic` or confidence is below threshold, `video_profile.json` must record `uncertain_intro` and downstream stages must keep opening footage.
 - `skip_intro` and `drop_visual_before_s` are manual debug overrides only, not default pipeline behavior.
-- Movie micro-beats are experimental opt-in (`micro_beats=false` by default) because real smoke testing showed whole-film splitting can make audio run ahead of visuals.
-- For localized opening image/voice ordering issues, prefer a G5 ordered/diversity fill inside `opening_guard_s`; do not hardcode a cutoff and do not split the whole film.
+- Movie micro-beats are a guarded default for long movie production/visual/AI33 presets and Vietnamese final-like runs. Stable/default configs can keep `micro_beats=false`, but final movie exports should split long G2 beats before TTS/G5.
+- G2 micro-beats are deterministic and do not change `review_script.json`: split narration by sentence into about 12s chunks, soft max 18s, hard max about 25s, and also split source-dense beats around source/audio ratio 2.3x+ even when audio is short so long source windows narrow before TTS/G5. Each micro-beat keeps a monotonic film_map segment span. Hook/setup beats are kept intact but warn when estimated over 30s.
+- For localized opening image/voice ordering issues, prefer a G5 ordered/diversity fill inside `opening_guard_s`; do not hardcode a cutoff.
 - G5 `opening_story_visual_start` may skip early logo/title/credit shots only when `film_map` has a later story visual segment inside the opening source window; this is not a fixed intro cutoff.
 
 ## Movie-First Story Structure / Visual Intent
@@ -476,8 +480,8 @@ repo/
 - Default pipeline vẫn tắt GĐ4.5 (`visual_index.enabled=false`); preset thử nghiệm nằm ở `config.movie.visual.yaml`.
 - Optional dependency group: `visual-index` gồm `torch`, `transformers`, `Pillow`, `safetensors`; model mặc định là `google/siglip2-base-patch16-384`.
 - `shot_visual_index.json` không thay contract bắt buộc của `shots.json`; vector dài lưu sidecar `.npy` float16 qua `embedding_ref`/`shot_embedding_ref`.
-- GĐ2 `review_script.intent.json` có thêm optional visual query/cue fields (`visual_query_vi`, `visual_query_en`, `characters`, `action_cues`, `emotion_cues`, `location_cues`, `object_cues`, `negative_visual_cues`, `preferred_shot_traits`) nhưng `review_script.json` không đổi.
-- GĐ5 nhận optional `--visual-index`, `--visual-mode off|rerank`, `--w-visual`, `--visual-cache-dir`; visual score chỉ rerank candidates trong source window/widen hiện có, không semantic search tự do toàn phim.
+- GĐ2 `review_script.intent.json` có thêm optional visual query/cue fields (`visual_query_vi`, `visual_query_en`, `characters`, `action_cues`, `emotion_cues`, `location_cues`, `object_cues`, `negative_visual_cues`, `preferred_shot_traits`) nhưng `review_script.json` không đổi. `object_cues` kích hoạt visual query bám vật thể/cụm vật thể thay vì chỉ face-to-face generic.
+- GĐ5 nhận optional `--visual-index`, `--visual-mode off|rerank`, `--w-visual`, `--visual-cache-dir`; visual score chỉ rerank candidates trong source window/widen hiện có, không semantic search tự do toàn phim. Khi intent có `object_cues`, object-focused priority ưu tiên shot có visual score tốt hơn trong cùng chronology tier.
 - GĐ5 luôn ghi `edl.visual.qa.json`; khi visual disabled/missing thì artifact ghi `visual_enabled=false` và matching fallback text-only.
 - GĐ5 `edl.qa.json` và `edl.review.html` hiển thị thêm visual score/rank/query để debug hình có khớp narration hay không.
 - V1 chưa làm VLM caption top-K, OCR đầy đủ, hoặc face/entity cluster; các hướng này là phase sau và vẫn phải giữ chronology/timecode là prior chính.

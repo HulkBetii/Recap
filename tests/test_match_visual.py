@@ -210,6 +210,30 @@ def test_visual_score_reranks_candidates_inside_drift_tier() -> None:
     assert result.fragments[0].shot_index == 1
 
 
+def test_object_visual_priority_uses_visual_score_inside_chronology_tier() -> None:
+    shots = [make_shot(0, 0, 2), make_shot(1, 0.2, 2.2)]
+    beat = ReviewBeat(beat_id=0, narration="món cơm cuộn trên bàn", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=3, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="audio/0.mp3", tl_start=0, tl_end=1, duration=1)
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=shots,
+        reuse_counts={},
+        weights=ScoringWeights(0, 0, 0, 0, visual=0.0),
+        min_clip=0.5,
+        max_clip=1.0,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=False,
+        allow_speedfit=False,
+        visual_scores={(0, 0): 0.1, (0, 1): 0.9},
+        match_strategy="chronological",
+        max_source_drift_s=12.0,
+        visual_priority=True,
+    )
+
+    assert result.fragments[0].shot_index == 1
+
 def test_inside_drift_before_cursor_beats_outside_drift_after_cursor() -> None:
     shots = [make_shot(0, 8, 9.5), make_shot(1, 20, 20.4)]
     beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=10, src_tc_end=22, is_hook=False)
@@ -222,6 +246,7 @@ def test_inside_drift_before_cursor_beats_outside_drift_after_cursor() -> None:
         weights=ScoringWeights(0, 0, 0, 0, visual=1.0),
         min_clip=0.5,
         max_clip=1.0,
+        min_visual_clip=0.5,
         widen_margin=3,
         max_widen=1,
         allow_repeat=False,

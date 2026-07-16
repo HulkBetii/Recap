@@ -47,6 +47,88 @@ def test_fill_uses_dark_local_shots_before_widening() -> None:
     assert abs(sum(fragment.duration for fragment in result.fragments) - 8) < 0.02
 
 
+def test_short_source_fill_uses_local_adjacent_shots_before_far_widen() -> None:
+    source_shots = [shot(0, 5, 9.5), shot(1, 10, 14), shot(2, 24, 30)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=10, src_tc_end=14, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=8.2, duration=8.2)
+
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=3,
+        max_clip=5,
+        min_visual_clip=0.6,
+        widen_margin=15,
+        max_widen=1,
+        allow_repeat=True,
+        allow_speedfit=False,
+        match_strategy="chronological",
+    )
+
+    assert result.local_expansion_used is True
+    assert result.widened is True
+    assert result.widen_count == 0
+    assert result.capacity_exhausted is False
+    assert result.candidate_shot_ids == [1, 0]
+    assert [fragment.shot_index for fragment in result.fragments] == [1, 0]
+    assert {fragment.shot_index for fragment in result.fragments} == {0, 1}
+    assert 2 not in {fragment.shot_index for fragment in result.fragments}
+    assert abs(sum(fragment.duration for fragment in result.fragments) - 8.2) < 0.02
+
+
+def test_short_source_fill_uses_core_then_right_before_left() -> None:
+    source_shots = [shot(0, 5, 9.5), shot(1, 10, 12), shot(2, 12, 16)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=10, src_tc_end=12, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=10, duration=10)
+
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=1,
+        max_clip=5,
+        min_visual_clip=0.6,
+        widen_margin=15,
+        max_widen=1,
+        allow_repeat=True,
+        allow_speedfit=False,
+        match_strategy="chronological",
+    )
+
+    assert result.local_expansion_used is True
+    assert result.candidate_shot_ids == [1, 2, 0]
+    assert [fragment.shot_index for fragment in result.fragments] == [1, 2, 0]
+    assert abs(sum(fragment.duration for fragment in result.fragments) - 10) < 0.02
+
+def test_fill_prefers_unused_global_candidate_when_capacity_allows() -> None:
+    source_shots = [shot(0, 0, 5, motion=0.95), shot(1, 0, 5, motion=0.10)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=5, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=2, duration=2)
+
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={0: 1, 1: 0},
+        weights=ScoringWeights(.6, .18, .12, .35),
+        min_clip=1,
+        max_clip=2,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=False,
+        allow_speedfit=False,
+        match_strategy="chronological",
+    )
+
+    assert result.fragments[0].shot_index == 1
+    assert any("preferred unused global shots" in warning for warning in result.warnings)
+
 def test_repeat_uses_uncovered_source_before_overlapping() -> None:
     source_shots = [shot(0, 0, 8)]
     beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=8, is_hook=False)

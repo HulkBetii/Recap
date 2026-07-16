@@ -46,6 +46,34 @@ class FillResult:
     overlapping_repeat_count: int
     source_intervals: list[tuple[float, float]]
     source_interval_weights: list[float]
+    local_expansion_used: bool
+    local_expansion_gap_s: float
+    local_expansion_capacity_floor_s: float
+
+
+def prefer_unused_global_candidates(
+    available: list[Shot],
+    *,
+    reuse_counts: dict[int, int],
+    source_intervals: list[tuple[float, float]],
+    remaining_duration: float,
+    max_clip: float,
+    min_visual_clip: float,
+) -> tuple[list[Shot], bool]:
+    if remaining_duration <= 1e-6:
+        return available, False
+    unused = [shot for shot in available if reuse_counts.get(shot.index, 0) == 0]
+    if not unused or len(unused) == len(available):
+        return available, False
+    unused_capacity = candidate_capacity(
+        unused,
+        source_intervals,
+        max_clip=max_clip,
+        min_visual_clip=min_visual_clip,
+    )
+    if unused_capacity + 1e-6 >= remaining_duration:
+        return unused, True
+    return available, False
 
 
 def fill_beat(
@@ -76,6 +104,7 @@ def fill_beat(
     min_visual_clip: float = 0.0,
     strict_ordered_fill: bool = False,
     allow_dark_fallback: bool = True,
+    visual_priority: bool = False,
     candidate_filter_ids: set[int] | None = None,
     dark_candidate_ids: set[int] | None = None,
     source_intervals: list[tuple[float, float]] | None = None,
@@ -94,12 +123,13 @@ def fill_beat(
         allow_dark_fallback=allow_dark_fallback,
     )
     active_intervals = normalize_source_intervals(
-        source_intervals or [(candidate_plan.window_start, candidate_plan.window_end)],
+        source_intervals or candidate_plan.source_intervals or [(candidate_plan.window_start, candidate_plan.window_end)],
         window_start=candidate_plan.window_start,
         window_end=candidate_plan.window_end,
+        preserve_order=bool(candidate_plan.local_expansion_used and source_intervals is None),
     )
-    window_start = active_intervals[0][0]
-    window_end = active_intervals[-1][1]
+    window_start = min(start for start, _end in active_intervals)
+    window_end = max(end for _start, end in active_intervals)
     if candidate_filter_ids is None:
         candidates = candidate_plan.candidates
         effective_dark_ids = set(candidate_plan.dark_candidate_ids)
@@ -134,6 +164,11 @@ def fill_beat(
     widen_count = candidate_plan.widen_count
     if widen_count > 0:
         warnings.append(f"beat {beat.beat_id} widened source window {widen_count} time(s)")
+    if candidate_plan.local_expansion_used:
+        warnings.append(
+            f"beat {beat.beat_id} used local same-scene expansion "
+            f"capacity={total_capacity:.3f}/{timing.duration:.3f}s"
+        )
     if capacity_exhausted:
         warnings.append(
             f"beat {beat.beat_id} candidate capacity exhausted "
@@ -188,6 +223,16 @@ def fill_beat(
                 min_visual_clip=min_visual_clip,
                 max_source_drift_s=max_source_drift_s,
             )
+        available, reused_pref = prefer_unused_global_candidates(
+            available,
+            reuse_counts=reuse_counts,
+            source_intervals=active_intervals,
+            remaining_duration=remaining,
+            max_clip=max_clip,
+            min_visual_clip=min_visual_clip,
+        )
+        if reused_pref:
+            warnings.append(f"beat {beat.beat_id} preferred unused global shots while capacity allowed")
         ranked = rank_shots(available, reuse_counts, weights, semantic_scores, visual_scores, beat.beat_id)
         if ordered_fill or match_strategy in {"chronological", "hybrid"}:
             ranked = rank_for_ordered_fill(
@@ -202,6 +247,7 @@ def fill_beat(
                 chronology_weight=chronology_weight,
                 max_source_drift_s=max_source_drift_s,
                 strict_ordered_fill=strict_ordered_fill,
+                visual_priority=visual_priority,
             )
         shot = choose_diverse_shot(
             ranked,
@@ -304,6 +350,7 @@ def fill_beat(
                         chronology_weight=chronology_weight,
                         max_source_drift_s=max_source_drift_s,
                         strict_ordered_fill=strict_ordered_fill,
+                        visual_priority=visual_priority,
                     )
                 if not ranked_repeat:
                     ranked_repeat = rank_shots(candidates, reuse_counts, weights, semantic_scores, visual_scores, beat.beat_id)
@@ -320,8 +367,19 @@ def fill_beat(
                             chronology_weight=chronology_weight,
                             max_source_drift_s=max_source_drift_s,
                             strict_ordered_fill=strict_ordered_fill,
+                            visual_priority=visual_priority,
                         )
                     warnings.append(f"beat {beat.beat_id} exceeded repeat cap during fallback")
+                ranked_repeat, reused_pref = prefer_unused_global_candidates(
+                    ranked_repeat,
+                    reuse_counts=reuse_counts,
+                    source_intervals=active_intervals,
+                    remaining_duration=remaining,
+                    max_clip=max_clip,
+                    min_visual_clip=min_visual_clip,
+                )
+                if reused_pref:
+                    warnings.append(f"beat {beat.beat_id} preferred unused global repeat candidates while capacity allowed")
                 unused_ranked = [
                     shot for shot in ranked_repeat
                     if any(
@@ -431,14 +489,18 @@ def fill_beat(
     if overlapping_repeat_count:
         warnings.append(f"beat {beat.beat_id} used overlapping source repeat {overlapping_repeat_count} time(s)")
 
+    ordered_fragments = fragments if candidate_plan.local_expansion_used else sorted(
+        fragments,
+        key=lambda item: (item.src_in, item.src_out),
+    )
     fragments = trim_fragments_to_duration(
-        sorted(fragments, key=lambda item: (item.src_in, item.src_out)),
+        ordered_fragments,
         timing.duration,
         min_visual_clip=min_visual_clip,
     )
     return FillResult(
         fragments=fragments,
-        widened=widen_count > 0,
+        widened=widen_count > 0 or candidate_plan.local_expansion_used,
         reused_count=reuse_count,
         speedfit_count=speedfit_count,
         warnings=warnings,
@@ -458,6 +520,9 @@ def fill_beat(
         overlapping_repeat_count=overlapping_repeat_count,
         source_intervals=active_intervals,
         source_interval_weights=source_interval_weights,
+        local_expansion_used=candidate_plan.local_expansion_used,
+        local_expansion_gap_s=candidate_plan.local_expansion_gap_s,
+        local_expansion_capacity_floor_s=candidate_plan.local_expansion_capacity_floor_s,
     )
 
 
@@ -466,14 +531,19 @@ def normalize_source_intervals(
     *,
     window_start: float,
     window_end: float,
+    preserve_order: bool = False,
 ) -> list[tuple[float, float]]:
     normalized: list[tuple[float, float]] = []
-    for start, end in sorted(intervals):
+    ordered_intervals = intervals if preserve_order else sorted(intervals)
+    for start, end in ordered_intervals:
         clipped_start = max(window_start, start)
         clipped_end = min(window_end, end)
         if clipped_end <= clipped_start + 1e-6:
             continue
-        if normalized and clipped_start <= normalized[-1][1] + 1e-6:
+        can_merge = bool(normalized) and clipped_start <= normalized[-1][1] + 1e-6
+        if preserve_order and normalized:
+            can_merge = can_merge and clipped_start >= normalized[-1][0] - 1e-6
+        if can_merge:
             normalized[-1] = (normalized[-1][0], max(normalized[-1][1], clipped_end))
         else:
             normalized.append((clipped_start, clipped_end))
@@ -786,6 +856,7 @@ def rank_for_ordered_fill(
     chronology_weight: float = 0.70,
     max_source_drift_s: float = 12.0,
     strict_ordered_fill: bool = False,
+    visual_priority: bool = False,
 ) -> list[Shot]:
     def sort_key(shot: Shot) -> tuple[float, ...]:
         tier, distance = chronology_tier(shot, source_cursor, max_source_drift_s=max_source_drift_s)
@@ -796,12 +867,19 @@ def rank_for_ordered_fill(
             semantic_scores.get((beat_id, shot.index), 0.0),
             visual_scores.get((beat_id, shot.index), 0.0),
         )
+        visual_score = visual_scores.get((beat_id, shot.index), 0.0)
         if match_strategy == "chronological":
             if strict_ordered_fill:
+                if visual_priority:
+                    return (1.0 if tier >= 2 else 0.0, distance, -visual_score, -score, shot.index)
                 return (1.0 if tier >= 2 else 0.0, distance, -score, shot.index)
+            if visual_priority:
+                return (float(tier), -visual_score, -score, distance, shot.index)
             return (float(tier), -score, distance, shot.index)
         if match_strategy == "hybrid":
             drift_penalty = chronology_weight * min(1.0, distance / max(max_source_drift_s, 0.001))
+            if visual_priority:
+                return (1 if tier in {1, 3} else 0, -visual_score, -(score - drift_penalty), distance, shot.index)
             return (1 if tier in {1, 3} else 0, -(score - drift_penalty), distance, shot.index)
         return (0.0, -score, distance, shot.index)
 

@@ -41,6 +41,22 @@ class FailSecondProvider(FakeProvider):
             raise TtsProviderError("transient failure")
         return await super()._synthesize_ai33(text, voice_id, speed, output_path)
 
+class DuplicateAudioProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls_by_text: dict[str, int] = {}
+
+    async def _synthesize_ai33(self, text: str, voice_id: str, speed: float, output_path: Path) -> ProviderResult:
+        self.calls.append("ai33")
+        self.texts.append(text)
+        count = self.calls_by_text.get(text, 0)
+        self.calls_by_text[text] = count + 1
+        if count == 0 and text in {"Mở đầu căng thẳng.", "Câu chuyện tiếp tục."}:
+            output_path.write_bytes(b"duplicate-audio")
+        else:
+            output_path.write_bytes(f"ai33:{text}:{count}".encode("utf-8"))
+        return ProviderResult(provider="ai33", voice_id=voice_id, audio_url="file://ai33")
+
 
 def write_review_script(tmp_path):  # type: ignore[no-untyped-def]
     data = [
@@ -200,6 +216,25 @@ def test_tts_cli_explicit_openai_records_actual_primary_model_and_voice(tmp_path
     assert meta.model == "gpt-4o-mini-tts"
     assert meta.providers_used == ["openai"]
     assert meta.provider_counts == {"openai": 2}
+
+def test_tts_cli_resynthesizes_duplicate_audio_hashes(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    review_script, film_meta = write_review_script(tmp_path)
+    monkeypatch.setattr("tts.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("tts.__main__.normalize_audio", lambda src, dst: dst.write_bytes(src.read_bytes()))
+    monkeypatch.setattr("tts.__main__.concat_voiceover", lambda paths, pause, work_dir, output: output.write_bytes(b"voiceover"))
+    monkeypatch.setattr("tts.__main__.probe_duration", lambda path: 1.0)
+    monkeypatch.setenv("VIVOO_API_KEY", "ai33")
+    monkeypatch.delenv("GENMAX_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    import asyncio
+
+    provider = DuplicateAudioProvider()
+    _timings, meta = asyncio.run(run_tts_with_client(make_args(tmp_path, review_script, film_meta), provider))
+
+    assert provider.calls_by_text["Câu chuyện tiếp tục."] >= 2
+    assert any("duplicate audio hash detected" in warning for warning in meta.warnings)
+    assert (tmp_path / "out" / "audio" / "1.mp3").read_bytes() != b"duplicate-audio"
 
 
 def test_tts_cli_persists_completed_beats_before_later_failure(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

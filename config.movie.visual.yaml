@@ -65,12 +65,14 @@ review:
   max_qa_iterations: 2
   max_qa_rewrites_per_iteration: 6
   opening_coherence_qa: true
-  micro_beats: false
+  micro_beats: true
   target_beat_audio_s: 12
   max_beat_audio_s: 18
   story_map: auto
   review_intent_output: null
   chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
+  chatgpt_model_label: GPT-5.6 Sol
+  chatgpt_intelligence_label: Instant
   chat_session_policy: auto
   chat_session_meta: null
   chat_title: null

@@ -259,6 +259,9 @@ class ReviewMeta(BaseModel):
     micro_beats_enabled: bool = False
     target_beat_audio_s: float | None = None
     max_beat_audio_s: float | None = None
+    max_est_beat_audio_s: float | None = Field(default=None, ge=0)
+    avg_est_beat_audio_s: float | None = Field(default=None, ge=0)
+    n_beats_over_max_audio: int = Field(default=0, ge=0)
     n_micro_beats_split: int = Field(default=0, ge=0)
     micro_beat_split_ids: list[int] = Field(default_factory=list)
     micro_beat_warnings: list[str] = Field(default_factory=list)

@@ -17,7 +17,7 @@ from review.inputs import ReviewInputError, load_duration, load_film_map
 from review.intent import build_review_intents, story_map_prompt_context
 from review.integrity import REVIEW_CACHE_VERSION, ReviewIdentity, build_review_identity
 from review.llm_flow import regenerate_beat, request_narration, request_outline, request_qa
-from review.micro_beats import split_long_beats
+from review.micro_beats import DEFAULT_HARD_MAX_AUDIO_S, beat_audio_stats, beat_ids_over_audio_s, split_long_beats
 from review.movie_mode import (
     AutoDurationPolicy,
     apply_hook_mode,
@@ -33,6 +33,7 @@ from review.models import NarrationBeat, OutlineResult, QaResult
 from review.openai_chat import FallbackChatClient, OpenAIChatClient, OpenAIChatError
 from review.playwright_chat import PlaywrightChatClient, PlaywrightChatError
 from review.non_story import drop_non_story_beats
+from review.repetition import repetition_issues
 from review.session import build_chat_session_meta, resolve_initial_chat_url, save_chat_session
 from review.style import (
     DEFAULT_MAX_SENTENCE_CHARS,
@@ -106,6 +107,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--review-intent-output", default=None, type=Path)
     parser.add_argument("--work-dir", default=Path("work/review"), type=Path)
     parser.add_argument("--chatgpt-profile-dir", default=DEFAULT_PROFILE_DIR, type=Path)
+    parser.add_argument("--chatgpt-model-label", default=None, help="Exact ChatGPT UI model label to select before sending review prompts")
+    parser.add_argument("--chatgpt-intelligence-label", default=None, help="Exact ChatGPT UI intelligence mode label, e.g. Instant")
     parser.add_argument("--chat-session-policy", default="auto", choices=["auto", "new", "resume"], help="ChatGPT conversation policy for this video/run")
     parser.add_argument("--chat-session-meta", default=None, type=Path, help="Path to chat_session_meta.json; defaults to work-dir/chat_session_meta.json")
     parser.add_argument("--chatgpt-session-file", default=None, type=Path, help="Optional saved ChatGPT cookies/session JSON to restore before opening ChatGPT")
@@ -152,6 +155,10 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         args.auto_long_score_threshold = 0.80
     if not hasattr(args, "llm_backend"):
         args.llm_backend = "chatgpt_playwright"
+    if not hasattr(args, "chatgpt_model_label"):
+        args.chatgpt_model_label = None
+    if not hasattr(args, "chatgpt_intelligence_label"):
+        args.chatgpt_intelligence_label = None
     if args.llm_backend != "chatgpt_playwright":
         raise ReviewError("GĐ2 only supports llm_backend=chatgpt_playwright; use openai_fallback_model for last-resort API fallback")
     if not hasattr(args, "micro_beats") or args.micro_beats is None:
@@ -316,6 +323,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         warnings.extend(readability_warnings)
     qa_report: list[dict] = []
     n_qa_iterations = 0
+    repetition_warning_keys: set[int] = set()
 
     for iteration in range(effective_max_qa_iterations + 1):
         current_coverage = coverage_ratio(beats, len(film_map))
@@ -340,6 +348,25 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                 cache.write_json("qa.json", qa)
             else:
                 cache.write_json(f"revisions/qa-{iteration}.json", qa)
+        repeated_issues = repetition_issues([(beat.beat_id, beat.narration) for beat in beats])
+        if repeated_issues:
+            existing = {(issue.beat_id, issue.type, issue.suggestion) for issue in qa.issues}
+            merged_issues = list(qa.issues)
+            for issue in repeated_issues:
+                key = (issue.beat_id, issue.type, issue.suggestion)
+                if key not in existing:
+                    merged_issues.append(issue)
+                if issue.beat_id not in repetition_warning_keys:
+                    warnings.append(f"repetition QA flagged beat {issue.beat_id}: {issue.suggestion}")
+                    repetition_warning_keys.add(issue.beat_id)
+            qa = qa.model_copy(update={"passed": False, "issues": merged_issues})
+            cache.write_json(
+                "repetition_qa.json",
+                {
+                    "iteration": iteration,
+                    "issues": [issue.model_dump() for issue in repeated_issues],
+                },
+            )
         qa_report.append(qa.model_dump_public())
         if qa.passed or not qa.issues or iteration >= effective_max_qa_iterations:
             n_qa_iterations = iteration
@@ -426,13 +453,6 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         )
         if micro_report.warnings:
             warnings.extend(micro_report.warnings)
-            cache.write_json("micro_beats.json", {
-                "n_split_beats": micro_report.n_split_beats,
-                "split_beat_ids": micro_report.split_beat_ids,
-                "warnings": micro_report.warnings,
-                "target_beat_audio_s": args.target_beat_audio_s,
-                "max_beat_audio_s": args.max_beat_audio_s,
-            })
 
     non_story_report = None
     if args.drop_non_story_beats:
@@ -444,6 +464,31 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             "tail_s": args.non_story_tail_s,
         })
         warnings.extend(non_story_report.warnings)
+
+    audio_stats = beat_audio_stats(beats, tts_cps=args.tts_cps, max_audio_s=args.max_beat_audio_s)
+    micro_beat_warnings = list(micro_report.warnings if micro_report else [])
+    hard_over_beat_ids = beat_ids_over_audio_s(beats, tts_cps=args.tts_cps, limit_s=DEFAULT_HARD_MAX_AUDIO_S)
+    if args.content_type == "movie" and hard_over_beat_ids:
+        hard_warning = (
+            f"movie review has {len(hard_over_beat_ids)} beat(s) estimated over hard micro-beat max "
+            f"{DEFAULT_HARD_MAX_AUDIO_S:.1f}s after G2 split: {hard_over_beat_ids[:20]}"
+        )
+        warnings.append(hard_warning)
+        micro_beat_warnings.append(hard_warning)
+    if args.micro_beats or audio_stats.n_beats_over_max_audio or hard_over_beat_ids:
+        cache.write_json("micro_beats.json", {
+            "enabled": args.micro_beats,
+            "n_split_beats": micro_report.n_split_beats if micro_report else 0,
+            "split_beat_ids": micro_report.split_beat_ids if micro_report else [],
+            "warnings": micro_beat_warnings,
+            "target_beat_audio_s": args.target_beat_audio_s,
+            "max_beat_audio_s": args.max_beat_audio_s,
+            "hard_max_beat_audio_s": DEFAULT_HARD_MAX_AUDIO_S,
+            "max_est_beat_audio_s": audio_stats.max_est_beat_audio_s,
+            "avg_est_beat_audio_s": audio_stats.avg_est_beat_audio_s,
+            "n_beats_over_max_audio": audio_stats.n_beats_over_max_audio,
+            "hard_over_beat_ids": hard_over_beat_ids,
+        })
 
     coverage_pct = coverage_ratio(beats, len(film_map))
     if coverage_pct < args.min_coverage:
@@ -473,7 +518,11 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         requested_max_qa_iterations=qa_iteration_policy.requested_max_qa_iterations,
         effective_max_qa_iterations=qa_iteration_policy.effective_max_qa_iterations,
         qa_iteration_policy=qa_iteration_policy.policy,
-        model_versions={"llm": args.llm_backend},
+        model_versions={
+            "llm": args.llm_backend,
+            **({"chatgpt_ui_model": str(args.chatgpt_model_label)} if args.chatgpt_model_label else {}),
+            **({"chatgpt_intelligence": str(args.chatgpt_intelligence_label)} if args.chatgpt_intelligence_label else {}),
+        },
         llm_backend=args.llm_backend,
         created_at=datetime.now(timezone.utc),
         warnings=warnings,
@@ -503,9 +552,12 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         micro_beats_enabled=args.micro_beats,
         target_beat_audio_s=args.target_beat_audio_s,
         max_beat_audio_s=args.max_beat_audio_s,
+        max_est_beat_audio_s=audio_stats.max_est_beat_audio_s,
+        avg_est_beat_audio_s=audio_stats.avg_est_beat_audio_s,
+        n_beats_over_max_audio=audio_stats.n_beats_over_max_audio,
         n_micro_beats_split=micro_report.n_split_beats if micro_report else 0,
         micro_beat_split_ids=micro_report.split_beat_ids if micro_report else [],
-        micro_beat_warnings=micro_report.warnings if micro_report else [],
+        micro_beat_warnings=micro_beat_warnings,
         film_map_hash=identity.film_map_hash,
         film_map_meta_hash=identity.film_map_meta_hash,
         story_map_hash=identity.story_map_hash,
@@ -658,6 +710,8 @@ async def run_review(args: argparse.Namespace) -> int:
         max_attempts=args.playwright_max_attempts,
         recovery_timeout_s=args.playwright_recovery_timeout_s,
         session_file=args.chatgpt_session_file.expanduser().resolve() if args.chatgpt_session_file else None,
+        model_label=args.chatgpt_model_label,
+        intelligence_label=args.chatgpt_intelligence_label,
     ) as client:
         review_client = client
         fallback_client = None

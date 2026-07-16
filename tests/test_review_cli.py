@@ -5,8 +5,11 @@ import json
 
 import pytest
 
+from common.schema import ReviewBeat
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from review.__main__ import ReviewError, build_parser, build_review_with_client, resolve_chatgpt_profile_dir
+from review.llm_flow import request_narration, request_qa
+from review.models import OutlineBeat
 
 
 class FakeReviewClient:
@@ -110,6 +113,9 @@ def test_build_review_with_mock_client_end_to_end(tmp_path) -> None:
     assert meta.requested_max_qa_iterations == 2
     assert meta.effective_max_qa_iterations == 2
     assert meta.qa_iteration_policy == "configured"
+    assert meta.max_est_beat_audio_s is not None
+    assert meta.avg_est_beat_audio_s is not None
+    assert meta.n_beats_over_max_audio == 0
 
 
 def test_build_review_resumes_cached_revisions_without_client_calls(tmp_path) -> None:
@@ -157,6 +163,91 @@ def test_qa_ignores_invalid_beat_ids(tmp_path) -> None:
     beats, meta = asyncio.run(build_review_with_client(make_args(tmp_path, film_map_path), InvalidQaClient()))
     assert beats
     assert meta.qa_report[0]["issues"] == []
+
+def test_request_qa_retries_once_when_response_is_not_json() -> None:
+    class RetryQaClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def ask(self, prompt: str) -> str:
+            self.calls.append(prompt)
+            if len(self.calls) == 1:
+                return "Mình sẽ kiểm tra lại kịch bản này."
+            return json.dumps({"pass": True, "issues": [], "notes": "ok"})
+
+    beat = ReviewBeat(
+        beat_id=0,
+        narration="Minh phát hiện bí mật.",
+        from_seg_id=0,
+        to_seg_id=0,
+        src_tc_start=0,
+        src_tc_end=2,
+        is_hook=True,
+    )
+
+    import asyncio
+
+    result = asyncio.run(
+        request_qa(
+            RetryQaClient(),
+            film_map_view="SEG 0 hello",
+            beats=[beat],
+            glossary=[],
+            char_budget=100,
+            coverage_pct=1.0,
+            content_type="movie",
+            hook_mode="setup",
+            story_start_s=0.0,
+        )
+    )
+
+    assert result.passed is True
+
+def test_request_narration_retries_when_model_returns_placeholder_or_incomplete_payload() -> None:
+    class RetryNarrationClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def ask(self, prompt: str) -> str:
+            self.calls.append(prompt)
+            if len(self.calls) == 1:
+                return json.dumps(
+                    [
+                        {"beat_id": 0, "narration": "..."},
+                        {"beat_id": 1, "narration": "..."},
+                    ],
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                [
+                    {"beat_id": 0, "narration": "Minh phát hiện một bí mật quan trọng."},
+                    {"beat_id": 1, "narration": "Cả nhóm lập tức nhận ra tình hình đã đổi khác."},
+                ],
+                ensure_ascii=False,
+            )
+
+    outline = [
+        OutlineBeat(from_seg_id=0, to_seg_id=0, summary="hook", is_hook=True),
+        OutlineBeat(from_seg_id=1, to_seg_id=2, summary="diễn biến", is_hook=False),
+    ]
+
+    import asyncio
+
+    beats = asyncio.run(
+        request_narration(
+            RetryNarrationClient(),
+            outline=outline,
+            glossary=[],
+            char_targets=[80, 90],
+            content_type="movie",
+            hook_mode="setup",
+        )
+    )
+
+    assert [beat.narration for beat in beats] == [
+        "Minh phát hiện một bí mật quan trọng.",
+        "Cả nhóm lập tức nhận ra tình hình đã đổi khác.",
+    ]
 
 
 @pytest.mark.parametrize("backend", ["openai_api", "off"])

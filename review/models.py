@@ -48,6 +48,8 @@ class NarrationBeat(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("narration cannot be empty")
+        if not any(char.isalnum() for char in normalized):
+            raise ValueError("narration cannot be a placeholder")
         return normalized
 
 

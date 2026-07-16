@@ -1,5 +1,17 @@
 # PROJECT_LOG.md
 
+## 2026-07-17 - G2 ChatGPT submit/narration hardening
+
+- Playwright review now verifies prompt dispatch by waiting for a new user message; failed dispatch raises `prompt_submit_failed` quickly instead of waiting through the full response timeout.
+- Narration JSON validation now rejects placeholders, missing beat ids and duplicate beat ids, then retries once with a stricter complete-array prompt.
+- Live rerun on `gang-to-tai-xuat-cinesia-fast` used `GPT-5.6 Sol` + `Instant`, produced 248 micro-beats, regenerated AI33 voiceover, reran BGE-M3/CUDA G5 and rendered a new `recap.mp4`.
+
+## 2026-07-16 - G2 long movie micro-beat sync policy
+
+- G2 micro-beats are now the guarded default in movie production/visual/AI33 presets and `config.vi.fast.yaml`, so long movie recaps split oversized narration beats before TTS/G5 instead of forcing G5 to match 80s+ source spans.
+- `review.micro_beats` now splits by sentence with target 12s, soft max 18s, hard max about 25s; hook/setup beats remain intact but warn over 30s.
+- `ReviewMeta` now records estimated max/average beat audio length and count over max, and `work/review/micro_beats.json` records split ids, warnings and hard-over beat ids for QA.
+
 ## 2026-07-16 - GD5 legacy long-beat fail-closed guard
 
 - Legacy `long_beat` intra alignment now rejects a splice when refined drift does not improve the baseline or when the splice introduces source-order mismatch.

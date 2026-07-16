@@ -79,6 +79,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_coverage": 0.85,
         "max_qa_iterations": 2,
         "chatgpt_profile_dir": str(CHATGPT_PLAYWRIGHT_PROFILE_DIR),
+        "chatgpt_model_label": "GPT-5.6 Sol",
+        "chatgpt_intelligence_label": "Instant",
         "chatgpt_session_file": None,
         "chat_session_policy": "auto",
         "chat_session_meta": None,

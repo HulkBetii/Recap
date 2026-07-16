@@ -29,9 +29,14 @@ review:
   auto_soft_cap_s: 2100
   auto_hard_cap_s: 2700
   auto_long_score_threshold: 0.80
+  chatgpt_model_label: GPT-5.6 Sol
+  chatgpt_intelligence_label: Instant
   reply_timeout_s: 900
   max_qa_iterations: 3
   max_qa_rewrites_per_iteration: 6
+  micro_beats: true
+  target_beat_audio_s: 12
+  max_beat_audio_s: 18
   style_preset: viral-recap-vi
   style_strength: strong
   style_qa: true
@@ -69,13 +74,14 @@ visual_index:
   log_level: INFO
 
 match:
-  semantic_mode: tfidf
-  visual_mode: off
-  sentence_refinement_mode: off
+  semantic_mode: bge-m3
+  semantic_device: cuda
+  visual_mode: rerank
+  sentence_refinement_mode: guarded
   content_anchors: true
   exclude_non_story: true
   exclude_end_credits: true
   opening_intra_beat_align: true
   hook_min_brightness: 0.10
-  review_html: false
+  review_html: true
   log_level: INFO

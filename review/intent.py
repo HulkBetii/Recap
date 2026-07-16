@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from common.schema import ReviewBeat, ReviewIntent, StorySection
 
@@ -56,6 +57,40 @@ EN_QUERY_BY_INTENT = {
     "dialogue": "people talking face to face",
 }
 MAX_QUERY_WORDS = 24
+OBJECT_CUE_LIMIT = 3
+
+OBJECT_CUE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("món cơm cuộn", ("com cuon", "kimbap", "sushi")),
+    ("thịt cua", ("thit cua", "con cua", "cua hoang de", "king crab")),
+    ("túi tiền", ("tui tien", "tui tien", "bag tien", "bag of cash", "coc tien")),
+    ("biển số xe", ("bien so", "bien so xe", "license plate")),
+    ("điện thoại", ("dien thoai", "mobile phone", "cell phone", "smartphone")),
+    ("dãy số", ("day so", "numbers", "digits", "ma so")),
+    ("hợp đồng", ("hop dong", "contract", "paperwork")),
+    ("giấy tờ", ("giay to", "documents", "paper", "ho so")),
+    ("thẻ công vụ", ("the cong vu", "badge", "id card")),
+    ("chìa khóa", ("chia khoa", "key", "lock")),
+    ("dao", ("dao", "knife", "blade")),
+    ("súng", ("sung", "gun", "pistol", "rifle")),
+    ("xe tải", ("xe tai", "truck", "lorry", "van")),
+    ("camera", ("camera", "cctv", "surveillance")),
+    ("bằng chứng", ("bang chung", "evidence", "proof")),
+    ("vật chứng", ("vat chung",)),
+    ("cặp tiền", ("cap tien", "bundle of cash")),
+)
+
+OBJECT_QUERY_HINTS: tuple[tuple[str, tuple[str, str]], ...] = (
+    ("food", ("cận cảnh món ăn trên bàn", "food close-up on the table")),
+    ("money", ("cận cảnh túi tiền hoặc cọc tiền", "money close-up")),
+    ("vehicle", ("cận cảnh xe hoặc biển số xe", "vehicle or license plate close-up")),
+    ("document", ("cận cảnh giấy tờ hoặc hợp đồng", "document close-up")),
+    ("phone", ("cận cảnh điện thoại", "phone close-up")),
+    ("numbers", ("cận cảnh dãy số hoặc mã số", "numbers close-up")),
+    ("weapon", ("cận cảnh vũ khí", "weapon close-up")),
+    ("key", ("cận cảnh chìa khóa hoặc ổ khóa", "key or lock close-up")),
+    ("evidence", ("cận cảnh bằng chứng hoặc vật chứng", "evidence close-up")),
+    ("object", ("cận cảnh vật thể liên quan câu chuyện", "object close-up")),
+)
 
 
 def find_section(beat: ReviewBeat, sections: list[StorySection]) -> StorySection | None:
@@ -77,6 +112,41 @@ def contains_phrase(text: str, phrases: tuple[str, ...]) -> bool:
 
 def contains_exact_case_phrase(text: str, phrase: str) -> bool:
     return bool(re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", text))
+
+def normalize_search_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text)
+    stripped = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return stripped.replace("đ", "d").replace("Đ", "d").casefold()
+
+def infer_object_cues(text: str) -> list[str]:
+    normalized = normalize_search_text(text)
+    cues: list[str] = []
+    for cue, patterns in OBJECT_CUE_RULES:
+        if any(re.search(rf"(?<!\w){re.escape(pattern)}(?!\w)", normalized) for pattern in patterns):
+            cues.append(cue)
+    return dedupe(cues)[:OBJECT_CUE_LIMIT]
+
+def object_query_hint(object_cues: list[str]) -> tuple[str, str]:
+    normalized = {normalize_search_text(cue) for cue in object_cues}
+    if any(cue in normalized for cue in {"mon com cuon", "thit cua"}):
+        return ("cận cảnh món ăn trên bàn", "food close-up on the table")
+    if any(cue in normalized for cue in {"tui tien", "cap tien"}):
+        return ("cận cảnh túi tiền hoặc cọc tiền", "money close-up")
+    if any(cue in normalized for cue in {"bien so xe", "xe tai"}):
+        return ("cận cảnh xe hoặc biển số xe", "vehicle or license plate close-up")
+    if any(cue in normalized for cue in {"hop dong", "giay to", "the cong vu"}):
+        return ("cận cảnh giấy tờ hoặc hợp đồng", "document close-up")
+    if any(cue in normalized for cue in {"dien thoai"}):
+        return ("cận cảnh điện thoại", "phone close-up")
+    if any(cue in normalized for cue in {"day so"}):
+        return ("cận cảnh dãy số hoặc mã số", "numbers close-up")
+    if any(cue in normalized for cue in {"dao", "sung"}):
+        return ("cận cảnh vũ khí", "weapon close-up")
+    if any(cue in normalized for cue in {"chia khoa"}):
+        return ("cận cảnh chìa khóa hoặc ổ khóa", "key or lock close-up")
+    if any(cue in normalized for cue in {"bang chung", "vat chung", "camera"}):
+        return ("cận cảnh bằng chứng hoặc vật chứng", "evidence close-up")
+    return ("cận cảnh vật thể liên quan câu chuyện", "object close-up")
 
 
 def infer_visual_intent(beat: ReviewBeat, section: StorySection | None) -> str:
@@ -132,8 +202,17 @@ def build_review_intents(beats: list[ReviewBeat], sections: list[StorySection]) 
         mentioned_locations = [name for name in (section.locations if section else []) if contains_phrase(beat.narration, (name,))]
         locations = mentioned_locations[:1]
         visual_clause = narration_visual_clause(beat.narration)
-        visual_query_vi = compact_words(character_names + locations + [VI_QUERY_BY_INTENT[visual_intent], visual_clause])
-        visual_query_en = compact_words(character_names + locations + [EN_QUERY_BY_INTENT[visual_intent]])
+        object_cues = infer_object_cues(beat.narration)
+        object_hint_vi, object_hint_en = object_query_hint(object_cues) if object_cues else ("", "")
+        if object_cues:
+            visual_query_vi = compact_words(character_names + locations + object_cues + [object_hint_vi, visual_clause])
+            visual_query_en = compact_words(character_names + locations + object_cues + [object_hint_en])
+        else:
+            visual_query_vi = compact_words(character_names + locations + [VI_QUERY_BY_INTENT[visual_intent], visual_clause])
+            visual_query_en = compact_words(character_names + locations + [EN_QUERY_BY_INTENT[visual_intent]])
+        preferred_traits = ["close_up"] if visual_intent in {"reaction", "reveal", "character_intro"} else []
+        if object_cues:
+            preferred_traits = dedupe(["object_focus", "close_up", *preferred_traits])
         intents.append(
             ReviewIntent(
                 beat_id=beat.beat_id,
@@ -144,14 +223,14 @@ def build_review_intents(beats: list[ReviewBeat], sections: list[StorySection]) 
                 visual_query_vi=visual_query_vi,
                 visual_query_en=visual_query_en,
                 abstraction_class=ABSTRACTION_BY_INTENT.get(visual_intent, "general_story"),
-                visual_explicitness=0.7 if visual_intent == "action" else 0.45 if visual_intent in {"reveal", "reaction"} else 0.55,
+                visual_explicitness=0.75 if object_cues else 0.7 if visual_intent == "action" else 0.45 if visual_intent in {"reveal", "reaction"} else 0.55,
                 characters=[{"name": name, "entity_type": "person", "salience": 0.8} for name in (section.characters[:5] if section else [])],
                 action_cues=dedupe(action_cues),
                 emotion_cues=[cue for cue in ACTION_CUES.get(visual_intent, []) if cue in {"emotion", "tense reaction", "reaction"}],
                 location_cues=section.locations[:5] if section else [],
-                object_cues=[],
+                object_cues=object_cues,
                 negative_visual_cues=["title card", "credits", "logo"],
-                preferred_shot_traits=["close_up"] if visual_intent in {"reaction", "reveal", "character_intro"} else [],
+                preferred_shot_traits=preferred_traits,
                 warnings=warnings,
             )
         )

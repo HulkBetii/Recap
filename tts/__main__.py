@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
@@ -170,6 +171,74 @@ async def synthesize_one(
     cache.save_manifest(manifest)
     return final_path, entry
 
+def audio_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+async def repair_duplicate_audio_hashes(
+    *,
+    beats: list[ReviewBeat],
+    normalized_by_beat: dict[int, str],
+    results: list[tuple[Path, TtsManifestEntry]],
+    cache_salt: str,
+    cache: TtsCache,
+    manifest: dict[str, TtsManifestEntry],
+    provider_client: TtsProviderClient,
+    voice_id: str,
+    provider_mode: ProviderMode,
+    genmax_voice_id: str | None,
+    model: str,
+    openai_model: str,
+    openai_voice: str,
+    provider_config: dict[str, object],
+    speed: float,
+    normalize: bool,
+    semaphore: asyncio.Semaphore,
+    max_rounds: int = 2,
+) -> tuple[list[tuple[Path, TtsManifestEntry]], list[str]]:
+    warnings: list[str] = []
+    for round_index in range(max_rounds):
+        hashes: dict[str, tuple[int, TtsManifestEntry]] = {}
+        duplicate_indices: list[int] = []
+        duplicate_pairs: list[tuple[int, int, str]] = []
+        for index, ((path, entry), beat) in enumerate(zip(results, beats, strict=True)):
+            digest = audio_hash(path)
+            previous = hashes.get(digest)
+            if previous is None:
+                hashes[digest] = (beat.beat_id, entry)
+                continue
+            previous_beat_id, previous_entry = previous
+            if previous_entry.narration_hash == entry.narration_hash or normalized_by_beat.get(previous_beat_id) == normalized_by_beat.get(beat.beat_id):
+                continue
+            duplicate_indices.append(index)
+            duplicate_pairs.append((previous_beat_id, beat.beat_id, digest))
+        if not duplicate_indices:
+            break
+        for index in duplicate_indices:
+            beat = beats[index]
+            warnings.append(
+                f"duplicate audio hash detected for beat {beat.beat_id}; re-synthesizing with a fresh cache salt"
+            )
+            retry_path, retry_entry = await synthesize_one(
+                beat=beat,
+                text=normalized_by_beat[beat.beat_id],
+                cache_salt=f"{cache_salt}:duplicate-audio:{round_index}:{beat.beat_id}",
+                cache=cache,
+                manifest=manifest,
+                provider_client=provider_client,
+                voice_id=voice_id,
+                provider_mode=provider_mode,
+                genmax_voice_id=genmax_voice_id,
+                model=model,
+                openai_model=openai_model,
+                openai_voice=openai_voice,
+                provider_config=provider_config,
+                speed=speed,
+                normalize=normalize,
+                semaphore=semaphore,
+            )
+            results[index] = (retry_path, retry_entry)
+    return results, warnings
+
 
 async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProviderClient) -> tuple[list, TtsMeta]:  # type: ignore[no-untyped-def]
     logger = logging.getLogger("tts")
@@ -276,6 +345,25 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         for beat in beats
     ]
     results = await asyncio.gather(*tasks)
+    results, duplicate_warnings = await repair_duplicate_audio_hashes(
+        beats=beats,
+        normalized_by_beat=normalized_by_beat,
+        results=list(results),
+        cache_salt=cache_salt,
+        cache=cache,
+        manifest=manifest,
+        provider_client=provider_client,
+        voice_id=args.voice_id,
+        provider_mode=args.provider_mode,
+        genmax_voice_id=args.genmax_voice_id,
+        model=args.model,
+        openai_model=openai_model,
+        openai_voice=openai_voice,
+        provider_config=provider_config,
+        speed=args.speed,
+        normalize=normalize,
+        semaphore=semaphore,
+    )
     cached_audio_paths = [path for path, _entry in results]
     cache.save_manifest(manifest)
 
@@ -305,6 +393,7 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
     film_duration_s, duration_warnings = load_film_duration(args.film_meta.expanduser().resolve() if args.film_meta else None)
     warnings.extend(duration_warnings)
     warnings.extend(qa_report.warnings)
+    warnings.extend(duplicate_warnings)
     entries = [entry for _path, entry in results]
     provider_counts = dict(sorted(Counter(entry.provider for entry in entries).items()))
     fallback_count = sum(count for provider, count in provider_counts.items() if provider != provider_order[0])

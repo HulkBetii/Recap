@@ -3,6 +3,8 @@
 import json
 from typing import Protocol
 
+from pydantic import ValidationError
+
 from common.schema import ReviewBeat
 from review.budget import estimate_total_chars
 from review.json_utils import extract_json
@@ -85,11 +87,11 @@ Write Vietnamese narration for each recap beat.
 Return ONLY a JSON array of objects: {{"beat_id": number, "narration": string}}.
 
 Rules:
-- Dramatic fast-paced Vietnamese recap style.
+{movie_rule}
 - Use the glossary names consistently.
 - Do NOT quote original dialogue verbatim; transform into narration.
 - Stay within ±20% of each char_target where possible.
-- Hook beat must be gripping and placed first.
+{hook_rule}
 {style_block}
 GLOSSARY:
 {json.dumps(glossary, ensure_ascii=False)}
@@ -97,6 +99,22 @@ GLOSSARY:
 BEATS:
 {json.dumps(payload, ensure_ascii=False)}
 """.strip()
+
+def validate_narration_payload(data: object, *, expected_count: int) -> list[NarrationBeat]:
+    if not isinstance(data, list):
+        raise ValueError("narration response must be a JSON array")
+    beats = [NarrationBeat.model_validate(item) for item in data]
+    expected_ids = set(range(expected_count))
+    actual_ids = [beat.beat_id for beat in beats]
+    if len(beats) != expected_count:
+        raise ValueError(f"narration response has {len(beats)} beat(s), expected {expected_count}")
+    if len(actual_ids) != len(set(actual_ids)):
+        raise ValueError("narration response has duplicate beat_id values")
+    if set(actual_ids) != expected_ids:
+        missing = sorted(expected_ids.difference(actual_ids))
+        extra = sorted(set(actual_ids).difference(expected_ids))
+        raise ValueError(f"narration beat_id mismatch; missing={missing[:10]} extra={extra[:10]}")
+    return sorted(beats, key=lambda beat: beat.beat_id)
 
 
 def build_qa_prompt(
@@ -200,18 +218,33 @@ async def request_narration(
     content_type: str = "episode",
     hook_mode: str = "cold_open",
 ) -> list[NarrationBeat]:
-    response = await client.ask(
-        build_narration_prompt(
-            outline=outline,
-            glossary=glossary,
-            char_targets=char_targets,
-            style_sample=style_sample,
-            content_type=content_type,
-            hook_mode=hook_mode,
-        )
+    base_prompt = build_narration_prompt(
+        outline=outline,
+        glossary=glossary,
+        char_targets=char_targets,
+        style_sample=style_sample,
+        content_type=content_type,
+        hook_mode=hook_mode,
     )
-    data = extract_json(response)
-    return [NarrationBeat.model_validate(item) for item in data]
+    last_error: Exception | None = None
+    for attempt in range(2):
+        prompt = base_prompt
+        if attempt:
+            prompt += (
+                "\n\nYour previous answer was invalid: "
+                f"{last_error}. Return ONLY the complete JSON array, exactly one object "
+                f"for each beat_id 0..{len(outline) - 1}. Do not use placeholders like \"...\"."
+            )
+        response = await client.ask(prompt)
+        try:
+            data = extract_json(response)
+            return validate_narration_payload(data, expected_count=len(outline))
+        except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+            last_error = exc
+            if attempt == 0:
+                continue
+            raise
+    raise ValueError("narration request failed")
 
 
 async def request_qa(
@@ -226,18 +259,26 @@ async def request_qa(
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
 ) -> QaResult:
-    response = await client.ask(
-        build_qa_prompt(
-            film_map_view=film_map_view,
-            beats=beats,
-            glossary=glossary,
-            char_budget=char_budget,
-            coverage_pct=coverage_pct,
-            content_type=content_type,
-            hook_mode=hook_mode,
-        )
+    prompt = build_qa_prompt(
+        film_map_view=film_map_view,
+        beats=beats,
+        glossary=glossary,
+        char_budget=char_budget,
+        coverage_pct=coverage_pct,
+        content_type=content_type,
+        hook_mode=hook_mode,
+        story_start_s=story_start_s,
     )
-    data = extract_json(response)
+    response = await client.ask(prompt)
+    try:
+        data = extract_json(response)
+    except json.JSONDecodeError:
+        response = await client.ask(
+            prompt
+            + "\n\nYour previous answer was not valid JSON. "
+            + "Return ONLY the JSON object with keys pass, issues, notes. No prose, no markdown."
+        )
+        data = extract_json(response)
     if isinstance(data, dict) and isinstance(data.get("issues"), list):
         max_beat_id = len(beats) - 1
         data["issues"] = [

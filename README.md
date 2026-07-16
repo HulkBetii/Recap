@@ -90,6 +90,7 @@ python run.py --input path\to\video-vi.mp4 --run-dir runs\movie-vi01 --config co
 - `movie` preset ưu tiên kể mạch dễ hiểu từ đầu phim: `storymap`, `hook_mode=setup`, `target_ratio=auto`.
 - Với phim lẻ, `target_ratio=auto` tính theo story duration sau khi trừ non-story/intro ranges từ GĐ0. Policy cân bằng mặc định cho đa số phim khoảng `20–32%`, phim dày có thể lên `35–38%`, và không vượt `40%` hoặc `45 phút` tùy mức nào nhỏ hơn.
 - GĐ5 dùng `match_strategy=chronological`, `w_semantic=0.15`, `audio_delay_s=0.0`; semantic/story/intent chỉ làm tie-breaker, không kéo footage lệch nhịp nguồn.
+- Khi beat có source span quá ngắn hoặc thiếu footage, GĐ5 ưu tiên cụm shot lân cận cùng cảnh trước khi widen xa; `edl.qa.json` ghi `local_expansion_*` để review.
 - Không dùng cutoff intro cố định; GĐ0 `preflight` detect non-story/intro theo từng video.
 - Với nguồn tiếng Việt, `config.vi.stable.yaml` dùng `source_language=vi`, `translate_mode=none` và `aligner=whisperx`; GĐ1 giữ transcript Việt trực tiếp trong `film_map.json` và forced-align bằng WhisperX khi runtime có sẵn.
 
@@ -170,7 +171,9 @@ review:
   openai_fallback_model: null
 ```
 
-Sau khi prompt đã submit, recovery chỉ đợi tiếp response hiện tại, không gửi lại prompt. Lỗi login/profile/config hoặc parse/validate output không kích hoạt OpenAI. Khi fallback được cấu hình, `work/review/openai_usage.json` ghi trạng thái configured/allowed/blocked/triggered, lý do, số lần Playwright thử, model và token usage.
+Sau khi prompt đã submit, recovery chỉ đợi tiếp response hiện tại, không gửi lại prompt. Playwright xác nhận submit bằng việc thấy user message mới xuất hiện; nếu ChatGPT không nhận prompt, lỗi `prompt_submit_failed` xảy ra nhanh thay vì chờ hết timeout response dài. Lỗi login/profile/config hoặc parse/validate output không kích hoạt OpenAI. Khi fallback được cấu hình, `work/review/openai_usage.json` ghi trạng thái configured/allowed/blocked/triggered, lý do, số lần Playwright thử, model và token usage.
+
+Narration response phải là JSON array đầy đủ đúng `beat_id`; placeholder như `...`, thiếu beat hoặc duplicate beat sẽ bị reject và retry một lần bằng prompt sửa lỗi.
 
 Chuẩn bị lần đầu:
 
@@ -542,6 +545,7 @@ Long local ASR now overlaps chunks and atomically caches validated per-chunk tra
 - For long movie reviews, use the logged-in ChatGPT persistent profile and keep other Chrome windows for that profile closed before running GĐ2.
 - If using cookies from `auto_YT`, pass only a freshly captured `session_chatgpt.json`; stale cookies can trigger ChatGPT `expired-session` modal.
 - GĐ2 supports `--reply-timeout-s`; long movie outline/narration/QA can require `900` seconds per response.
+- Production-like GĐ2 presets can set `review.chatgpt_model_label` and `review.chatgpt_intelligence_label` (currently `GPT-5.6 Sol` + `Instant`). Playwright selects those labels before prompt submission, fails fast if they are unavailable, and includes them in review cache/session identity.
 - GĐ2 defaults to two Playwright attempts with a 60-second same-response recovery window. Only classified browser timeout/disconnect failures may reach the opt-in OpenAI fallback; login, profile, config, parse, validation, and programming errors fail directly.
 - `api_budget_guard=block` still allows Playwright but blocks OpenAI fallback in every quality mode. ASR/vision/TTS remain local or dedicated-provider workflows because Playwright cannot reliably produce timestamped transcript, frame-analysis, or audio contracts.
 - Local runtime artifacts are ignored: `.env`, `data/`, `runs/`, `work/`, and `out/` must not be committed.
@@ -567,7 +571,9 @@ python -m preflight `
 
 ### Current intro/opening policy
 
-The pipeline does not assume every movie has an intro. Run G?0 `python -m preflight` per video and only exclude opening/non-story footage when `video_profile.json` contains confident `non_story_ranges`. If detection is uncertain, the profile records `uncertain_intro` and downstream stages keep the opening footage. `skip_intro` / `drop_visual_before_s` remain debug overrides only, not default behavior. Movie micro-beats are experimental opt-in (`micro_beats: false` by default); use opening match QA/ordered fill for localized sync issues instead of splitting the whole film.
+The pipeline does not assume every movie has an intro. Run G?0 `python -m preflight` per video and only exclude opening/non-story footage when `video_profile.json` contains confident `non_story_ranges`. If detection is uncertain, the profile records `uncertain_intro` and downstream stages keep the opening footage. `skip_intro` / `drop_visual_before_s` remain debug overrides only, not default behavior.
+
+Long movie recaps should use G2 micro-beats for final/production-like exports. Production, visual, AI33 and `config.vi.fast.yaml` enable `review.micro_beats: true`, splitting long narration beats into sentence chunks around 12s, soft max 18s and hard max about 25s before TTS/G5. G2 also splits source-dense beats around source/audio ratio 2.3x+ whose audio is short but source window is too wide, using time-weighted film_map segment boundaries so G5 matches against a narrower source span. This keeps `review_script.json` unchanged as a contract, but increases beat count when needed. Hook/setup beats stay intact and warn if estimated over 30s.
 
 ### Movie story map and visual intent
 
@@ -581,7 +587,7 @@ python -m storymap `
   --output-qa runs\movie\story_map.qa.json
 ```
 
-`python -m review` can consume `--story-map` and writes `review_script.intent.json` without changing `review_script.json`. `python -m match` can consume `--review-intent` and `--story-map`; opening ordered fill is enabled by default to keep early footage chronological when the voiceover is setting up the film.
+`python -m review` can consume `--story-map` and writes `review_script.intent.json` without changing `review_script.json`. Deterministic `object_cues` make visual queries object-focused when narration mentions concrete items such as food, money, phones, documents, license plates, numbers, or weapons. `python -m match` can consume `--review-intent` and `--story-map`; opening ordered fill is enabled by default to keep early footage chronological when the voiceover is setting up the film. With visual rerank enabled, object-cue beats prioritize higher visual score inside the same chronology tier rather than jumping freely across the movie.
 
 ### Sync QA report
 

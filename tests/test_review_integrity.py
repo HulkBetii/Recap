@@ -90,3 +90,52 @@ def test_auto_duration_policy_change_invalidates_review_cache(tmp_path: Path) ->
     )
 
     assert first.cache_key != second.cache_key
+
+def test_micro_beat_policy_change_invalidates_review_cache(tmp_path: Path) -> None:
+    film_map = tmp_path / "film_map.json"
+    film_map.write_text("[]", encoding="utf-8")
+    style = tmp_path / "style.txt"
+    style.write_text("style", encoding="utf-8")
+
+    first = build_review_identity(film_map_path=film_map, settings=settings(), style_sample_path=style, story_map_path=None, video_profile_path=None)
+    enabled = build_review_identity(
+        film_map_path=film_map,
+        settings=settings() | {"micro_beats": True},
+        style_sample_path=style,
+        story_map_path=None,
+        video_profile_path=None,
+    )
+    retuned = build_review_identity(
+        film_map_path=film_map,
+        settings=settings() | {"target_beat_audio_s": 10, "max_beat_audio_s": 16},
+        style_sample_path=style,
+        story_map_path=None,
+        video_profile_path=None,
+    )
+
+    assert first.cache_key != enabled.cache_key
+    assert first.cache_key != retuned.cache_key
+
+def test_chatgpt_model_labels_change_review_identity(tmp_path: Path) -> None:
+    film_map = tmp_path / "film_map.json"
+    film_map.write_text("[]", encoding="utf-8")
+    style = tmp_path / "style.txt"
+    style.write_text("style", encoding="utf-8")
+
+    first = build_review_identity(
+        film_map_path=film_map,
+        settings=settings() | {"chatgpt_model_label": "GPT-5.6 Sol", "chatgpt_intelligence_label": "Instant"},
+        style_sample_path=style,
+        story_map_path=None,
+        video_profile_path=None,
+    )
+    second = build_review_identity(
+        film_map_path=film_map,
+        settings=settings() | {"chatgpt_model_label": "GPT-5.6 Pro", "chatgpt_intelligence_label": "Instant"},
+        style_sample_path=style,
+        story_map_path=None,
+        video_profile_path=None,
+    )
+
+    assert first.core_input_hash != second.core_input_hash
+    assert first.cache_key != second.cache_key
