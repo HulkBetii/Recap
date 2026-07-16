@@ -1,5 +1,78 @@
 # PROJECT_LOG.md
 
+## 2026-07-16 - GD5 legacy long-beat fail-closed guard
+
+- Legacy `long_beat` intra alignment now rejects a splice when refined drift does not improve the baseline or when the splice introduces source-order mismatch.
+- Beat 22 review on `gang-to-tai-xuat-cinesia-fast` showed baseline matching was cleaner than the legacy refinement path, so this guard falls back to baseline instead of rendering mismatched footage.
+- Bumped `MATCH_ALGORITHM_VERSION` to `19`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+
+## 2026-07-16 - GD5 strict ordered no-early-jump bridge
+
+- Strict content-anchor fill now keeps micro shot-heads inside the current interval instead of shaving tiny cursor offsets that accumulate into early jumps.
+- When a content-anchor interval has only a sub-`min_visual_clip` tail left and no longer usable source remains before the next anchor, strict fill can use that tail as a bridge instead of jumping tens of seconds early.
+- Bumped `MATCH_ALGORITHM_VERSION` to `18`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+
+## 2026-07-16 - GD5 content-anchor-aware drift guard
+
+- Guarded sentence refinement now uses the same content-anchor interval expected-source model as QA when deciding eligibility, local chunk improvement, warning count and final drift acceptance.
+- Clean content-anchor fills no longer trigger sentence refinement just because full-span linear drift would look high.
+- Bumped `MATCH_ALGORITHM_VERSION` to `17`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+
+## 2026-07-16 - GD5 sampled drift measurement for refinement guard
+
+- Guarded sentence refinement now measures baseline/refined drift by sampling along placements instead of only checking placement starts, reducing false positives on long but correctly aligned placements.
+- Bumped `MATCH_ALGORITHM_VERSION` to `16`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+
+## 2026-07-16 - GD5 interval-aware sentence refinement tuning
+
+- `content_anchor_long_beat` now uses content-anchor interval progress when scoring flexible anchors, so expected source progression follows the existing anchor plan instead of a single full-span line.
+- Guarded refinement now treats only jumps beyond expected progress as fatal; weak or non-improving chunks can fall back locally, and the beat is accepted only if the final refined result improves baseline drift and warnings.
+- Bumped `MATCH_ALGORITHM_VERSION` to `15`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+
+## 2026-07-16 - GD5 drift-aware sentence refinement tuning
+
+- `content_anchor_long_beat` flexible anchor scoring now adds a local drift prior and penalizes only source jumps beyond expected source progress, so long beats can move forward through source chronology without sticky early anchors.
+- Guarded sentence refinement now checks chunk-level replacement drift before splice; chunks that do not improve their local baseline drift fail closed instead of worsening the beat.
+- Bumped `MATCH_ALGORITHM_VERSION` to `14`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+
+## 2026-07-16 - GD5 flexible anchor continuity tuning
+
+- `content_anchor_long_beat` flexible sentence anchors now use continuity-aware DP instead of independent per-sentence greedy picks, penalizing large source jumps before guarded acceptance.
+- Reordered narration is still allowed when the semantic gain is decisive; weak or jumpy chunks continue to fail closed to the baseline content-anchor fill.
+- Bumped `MATCH_ALGORITHM_VERSION` to `13`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+
+## 2026-07-16 - GĐ5 guarded sentence refinement rollout
+
+- Added `match.sentence_refinement_mode=off|guarded`; production/visual movie presets use `guarded`, while stable/default remain `off`.
+- Guarded content-anchor sentence refinement now falls back to baseline content-anchor fill when timecodes are approximate, semantic scores are not BGE-M3, confidence is weak, local footage is insufficient, or splice safety fails.
+- Extended `edl.qa.json` and `edl.review.html` with sentence refinement mode/eligibility/reason, replaced duration, skipped chunks, low-confidence count and source jump metrics.
+- Added a GĐ5-only A/B command path via `--sentence-refinement-ab`, which writes baseline/guarded temp outputs plus `match_refinement_ab.qa.json` and `match_refinement_ab.html` without overwriting the main `edl.json`.
+- Bumped `MATCH_ALGORITHM_VERSION` to `11`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+
+## 2026-07-15 - GĐ5 content-anchor sentence refinement
+
+- GĐ5 long-beat intra alignment can now run after a content-anchor plan when full-span baseline drift still exceeds `max(18s, 1.5 * max_source_drift_s)`, so coarse beat-level anchors can be refined to sentence-level windows instead of masking narration/image mismatch.
+- Added `content_anchor_long_beat` flexible sentence anchors for cases where narration has reordered events inside one beat; the output timeline remains gapless/non-overlapping while local source windows may jump to the sentence-relevant footage.
+- Bumped `MATCH_ALGORITHM_VERSION` to `10`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+
+## 2026-07-15 - GĐ5 content-anchor strict ordered fill
+
+- GĐ5 now applies `strict_ordered_fill` when a beat has an active content-anchor plan, so nearby source candidates stay ahead of farther semantic/visual tie-breaks inside the same anchor plan.
+- Added a no-early-jump guard for strict content anchors: if audio-progress mapping lands near the end of the current anchor interval and would make the next clip too short, GÄ5 backs up to the previous fragment boundary and finishes usable footage in that interval first.
+- Bumped `MATCH_ALGORITHM_VERSION` to `8`; old EDL artifacts are stale and rebuild automatically through the orchestrator.
+- Real GÄ5-only retry on `runs/toan-tri-doc-gia-cinesia-unlimit` reduced beat 5 max drift from `61.925s` to `0.225s`; high-source-drift beats are now the four non-anchor beats 17/11/7/14, with overall max drift `17.720s`. Render was not rerun in this pass.
+
+## 2026-07-15 - Benign render tail-pad warnings
+
+- GĐ6 no longer records successful tail-padding under `1.0s` as a render warning; it remains an info log because this is normal audio/video frame alignment.
+- Larger successful tail-padding and any padding fallback/failure still stay in `render.meta.json.warnings` for QA visibility.
+
+## 2026-07-15 - AI33-only production TTS preset
+
+- Added `config.movie.production.ai33.yaml` as the production movie preset for bypassing Genmax while keeping the same CUDA/visual pipeline.
+- The preset pins GĐ3 to `provider_mode=ai33`, voice `vbee_hn_female_ngochuyen_full_24k-st`, `genmax_voice_id=null`, and concurrency `1`.
+- Live retry on `runs/toan-tri-doc-gia-cinesia-unlimit` completed 25/25 TTS beats with `provider_counts.ai33=25`, `fallback_count=0`, then reran match/render successfully.
+
 ## 2026-07-11 - GĐ5 opening intra-beat alignment
 
 - Added opt-in `opening_intra_beat_align` for `config.movie.visual.yaml`; stable and Vietnamese presets remain disabled.

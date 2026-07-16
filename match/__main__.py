@@ -14,6 +14,7 @@ from match.fill import assign_timeline, chronology_tier, fill_beat, fill_timelin
 from match.inputs import load_beats_timing, load_film_map, load_review_script, load_shots
 from match.intra_beat import alignment_queries, apply_hook_leading_brightness_guard, apply_intra_beat_alignment, long_beat_alignment_required, prepare_intra_beat_alignment_sentences, update_reuse_counts
 from match.qa import build_edl_qa
+from match.refinement_ab import run_sentence_refinement_ab
 from match.review_html import write_review_html
 from match.scoring import ScoringWeights, score_shot
 from match.semantic import DEFAULT_EMBEDDING_MODEL, SemanticConfig, SemanticError, compute_semantic_result
@@ -59,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic-cache-dir", default=None, type=Path)
     parser.add_argument("--content-anchors", action="store_true", default=True)
     parser.add_argument("--no-content-anchors", dest="content_anchors", action="store_false")
+    parser.add_argument("--sentence-refinement-mode", default="off", choices=["off", "guarded"])
+    parser.add_argument("--sentence-refinement-ab", action="store_true", default=False)
+    parser.add_argument("--sentence-refinement-ab-output-dir", default=None, type=Path)
     parser.add_argument("--min-clip", default=3.0, type=float)
     parser.add_argument("--max-clip", default=5.0, type=float)
     parser.add_argument("--min-visual-clip", default=0.6, type=float)
@@ -138,6 +142,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "semantic_cache_dir": str(args.semantic_cache_dir) if args.semantic_cache_dir else None,
         "content_anchors": args.content_anchors,
         "opening_intra_beat_align": args.opening_intra_beat_align,
+        "sentence_refinement_mode": args.sentence_refinement_mode,
         "hook_min_brightness": args.hook_min_brightness,
         "visual_index": visual_index_artifact_hash(args.visual_index.expanduser().resolve()) if args.visual_index and args.visual_index.expanduser().resolve().is_file() else None,
         "visual_mode": args.visual_mode,
@@ -196,6 +201,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise MatchError("--hook-min-brightness must be between 0 and 1")
     if args.semantic_batch_size <= 0:
         raise MatchError("--semantic-batch-size must be > 0")
+    if args.sentence_refinement_mode not in {"off", "guarded"}:
+        raise MatchError("--sentence-refinement-mode must be off or guarded")
     if args.review_thumbs_per_beat < 0:
         raise MatchError("--review-thumbs-per-beat must be >= 0")
     if args.max_repeat_per_beat < 0:
@@ -347,6 +354,12 @@ def run_match(args: argparse.Namespace) -> int:
         args.w_visual = 0.20
     if not hasattr(args, "content_anchors"):
         args.content_anchors = True
+    if not hasattr(args, "sentence_refinement_mode"):
+        args.sentence_refinement_mode = "off"
+    if not hasattr(args, "sentence_refinement_ab"):
+        args.sentence_refinement_ab = False
+    if not hasattr(args, "sentence_refinement_ab_output_dir"):
+        args.sentence_refinement_ab_output_dir = None
     validate_args(args)
     random.seed(args.seed)
     output_path = args.output.expanduser().resolve()
@@ -409,6 +422,7 @@ def run_match(args: argparse.Namespace) -> int:
         beats=review_beats,
         timings=timings,
         enabled=args.opening_intra_beat_align,
+        sentence_refinement_enabled=args.sentence_refinement_mode == "guarded",
         semantic_mode=args.semantic_mode,
         strict_timecodes=strict_timecodes,
         opening_guard_s=args.opening_guard_s,
@@ -451,6 +465,17 @@ def run_match(args: argparse.Namespace) -> int:
             logger.warning("Visual matching disabled: %s", exc)
     elif args.visual_mode != "off":
         warnings.append("visual matching requested but no usable visual index was provided")
+    sentence_refinement_runtime_mode = args.sentence_refinement_mode
+    sentence_refinement_runtime_reason: str | None = None
+    if sentence_refinement_runtime_mode == "guarded":
+        if not strict_timecodes:
+            warnings.append("sentence refinement disabled because film_map timecodes are not strict")
+            sentence_refinement_runtime_mode = "off"
+            sentence_refinement_runtime_reason = "timecodes are not strict"
+        elif semantic_result is None or semantic_result.provider != "bge-m3" or not semantic_result.query_shot_scores:
+            warnings.append("sentence refinement disabled because BGE-M3 sentence scores are unavailable")
+            sentence_refinement_runtime_mode = "off"
+            sentence_refinement_runtime_reason = "BGE-M3 sentence scores are unavailable"
     weights = ScoringWeights(args.w_motion, args.w_face, args.w_bright, args.w_reuse, args.w_semantic, args.w_visual if visual_scores else 0.0)
     reuse_counts: dict[int, int] = {}
     placements: list[EdlPlacement] = []
@@ -491,6 +516,7 @@ def run_match(args: argparse.Namespace) -> int:
                 min_visual_clip=args.min_visual_clip,
                 allow_dark_fallback=args.allow_dark_fallback,
             )
+        content_anchor_strict_ordered_fill = anchor_plan is not None
         result = fill_beat(
             beat=beat,
             timing=timing,
@@ -516,7 +542,7 @@ def run_match(args: argparse.Namespace) -> int:
             max_source_drift_s=args.max_source_drift_s,
             source_start_override=source_start_override,
             min_visual_clip=args.min_visual_clip,
-            strict_ordered_fill=in_opening_guard and args.opening_ordered_fill,
+            strict_ordered_fill=(in_opening_guard and args.opening_ordered_fill) or content_anchor_strict_ordered_fill,
             allow_dark_fallback=args.allow_dark_fallback,
             candidate_filter_ids=anchor_plan.candidate_ids if anchor_plan else None,
             dark_candidate_ids=anchor_plan.dark_candidate_ids if anchor_plan else None,
@@ -527,21 +553,68 @@ def run_match(args: argparse.Namespace) -> int:
         alignment_mode = None
         alignment_trigger_drift = None
         long_alignment_required = False
-        if beat.beat_id in intra_beat_alignment_sentences and not in_opening_guard and anchor_plan is None:
+        sentence_refinement_reason = "mode off"
+        sentence_refinement_eligible = False
+        sentence_refinement_replaced_duration_s = 0.0
+        sentence_refinement_skipped_chunks = 0
+        sentence_refinement_source_jumps: list[float] = []
+        sentence_refinement_low_confidence_count = 0
+        if beat.beat_id in intra_beat_alignment_sentences and not in_opening_guard:
             long_alignment_required, alignment_trigger_drift = long_beat_alignment_required(
                 beat=beat,
                 timing=timing,
                 placements=beat_placements,
                 max_source_drift_s=args.max_source_drift_s,
+                source_intervals=result.source_intervals if anchor_plan else None,
+                source_interval_weights=result.source_interval_weights if anchor_plan else None,
             )
-        if (
-            beat.beat_id in intra_beat_alignment_sentences
-            and (in_opening_guard or long_alignment_required)
-            and semantic_result is not None
-            and semantic_result.provider == "bge-m3"
-            and semantic_result.query_shot_scores
-        ):
-            alignment_mode = "opening" if in_opening_guard else "long_beat"
+        if args.sentence_refinement_mode == "guarded":
+            if in_opening_guard:
+                sentence_refinement_reason = "opening guard beat"
+            elif beat.beat_id not in intra_beat_alignment_sentences:
+                sentence_refinement_reason = "beat did not meet sentence refinement requirements"
+            elif not strict_timecodes:
+                sentence_refinement_reason = "timecodes are not strict"
+            elif semantic_result is None or semantic_result.provider != "bge-m3" or not semantic_result.query_shot_scores:
+                sentence_refinement_reason = "BGE-M3 sentence scores unavailable"
+            elif anchor_plan is None:
+                sentence_refinement_reason = "no content-anchor plan"
+            elif not long_alignment_required:
+                sentence_refinement_reason = (
+                    f"baseline drift {alignment_trigger_drift:.3f}s below threshold"
+                    if alignment_trigger_drift is not None
+                    else "baseline drift below threshold"
+                )
+            else:
+                sentence_refinement_reason = "eligible"
+                sentence_refinement_eligible = True
+        if beat.beat_id in intra_beat_alignment_sentences and (in_opening_guard or long_alignment_required):
+            if (
+                in_opening_guard
+                and semantic_result is not None
+                and semantic_result.provider == "bge-m3"
+                and semantic_result.query_shot_scores
+            ):
+                alignment_mode = "opening"
+            elif (
+                not in_opening_guard
+                and semantic_result is not None
+                and semantic_result.provider == "bge-m3"
+                and semantic_result.query_shot_scores
+                and sentence_refinement_eligible
+                and anchor_plan is not None
+            ):
+                alignment_mode = "content_anchor_long_beat"
+            elif (
+                not in_opening_guard
+                and semantic_result is not None
+                and semantic_result.provider == "bge-m3"
+                and semantic_result.query_shot_scores
+                and anchor_plan is None
+                and args.opening_intra_beat_align
+            ):
+                alignment_mode = "long_beat"
+        if alignment_mode is not None:
             intra_beat_result = apply_intra_beat_alignment(
                 beat=beat,
                 timing=timing,
@@ -554,9 +627,36 @@ def run_match(args: argparse.Namespace) -> int:
                 min_visual_clip=args.min_visual_clip,
                 allow_dark_fallback=args.allow_dark_fallback,
                 mode=alignment_mode,
+                max_source_drift_s=args.max_source_drift_s,
+                source_intervals=anchor_plan.intervals if anchor_plan else None,
+                source_interval_weights=result.source_interval_weights if anchor_plan else None,
             )
             beat_placements = intra_beat_result.placements
             result.warnings.extend(intra_beat_result.warnings)
+            if alignment_mode == "content_anchor_long_beat":
+                if intra_beat_result.rejected_reason:
+                    sentence_refinement_reason = f"rejected: {intra_beat_result.rejected_reason}"
+                elif intra_beat_result.accepted:
+                    sentence_refinement_reason = "accepted"
+                sentence_refinement_replaced_duration_s = round(
+                    sum(end - start for start, end in intra_beat_result.replaced_ranges),
+                    3,
+                )
+                sentence_refinement_skipped_chunks = sum(
+                    1
+                    for diagnostic in intra_beat_result.diagnostics
+                    if diagnostic.get("skip_reason") or diagnostic.get("rejection_reason")
+                )
+                sentence_refinement_source_jumps = [
+                    float(diagnostic["source_jump_s"])
+                    for diagnostic in intra_beat_result.diagnostics
+                    if diagnostic.get("source_jump_s") is not None
+                ]
+                sentence_refinement_low_confidence_count = sum(
+                    1
+                    for diagnostic in intra_beat_result.diagnostics
+                    if diagnostic.get("skip_reason") == "anchor score below threshold"
+                )
             if intra_beat_result.used:
                 update_reuse_counts(reuse_counts, reuse_counts_before, beat_placements)
 
@@ -592,6 +692,9 @@ def run_match(args: argparse.Namespace) -> int:
             result.warnings.append(
                 f"beat {beat.beat_id} end-credit guard excluded {len(excluded_end_credit_ids)} shot(s) while footage was insufficient"
             )
+        sentence_refinement_nonzero_source_jumps = [
+            jump for jump in sentence_refinement_source_jumps if jump > 1e-6
+        ]
         candidate_diagnostics[beat.beat_id] = {
             "window_start": result.window_start,
             "window_end": result.window_end,
@@ -606,11 +709,32 @@ def run_match(args: argparse.Namespace) -> int:
             "unused_source_reuse_count": result.unused_source_reuse_count,
             "overlapping_repeat_count": result.overlapping_repeat_count,
             "content_anchor_used": anchor_plan is not None,
+            "content_anchor_strict_ordered_fill": content_anchor_strict_ordered_fill,
             "content_anchor_intervals": result.source_intervals if anchor_plan else [],
             "content_anchor_interval_weights": result.source_interval_weights if anchor_plan else [],
             "content_anchor_segment_ids": anchor_plan.segment_ids if anchor_plan else [],
             "content_anchor_threshold": anchor_plan.threshold if anchor_plan else None,
             "content_anchor_capacity_s": anchor_plan.capacity_s if anchor_plan else None,
+            "sentence_refinement_requested_mode": args.sentence_refinement_mode,
+            "sentence_refinement_mode": sentence_refinement_runtime_mode,
+            "sentence_refinement_runtime_reason": sentence_refinement_runtime_reason,
+            "sentence_refinement_eligible": sentence_refinement_eligible,
+            "sentence_refinement_reason": sentence_refinement_reason,
+            "sentence_refinement_trigger_drift_s": alignment_trigger_drift,
+            "sentence_refinement_used": bool(alignment_mode == "content_anchor_long_beat" and intra_beat_result and intra_beat_result.used),
+            "sentence_refinement_accepted": bool(alignment_mode == "content_anchor_long_beat" and intra_beat_result and intra_beat_result.accepted),
+            "sentence_refinement_rejected_reason": intra_beat_result.rejected_reason if alignment_mode == "content_anchor_long_beat" and intra_beat_result else None,
+            "sentence_refinement_baseline_max_drift_s": round(intra_beat_result.baseline_max_drift_s, 3) if alignment_mode == "content_anchor_long_beat" and intra_beat_result and intra_beat_result.baseline_max_drift_s is not None else None,
+            "sentence_refinement_refined_max_drift_s": round(intra_beat_result.refined_max_drift_s, 3) if alignment_mode == "content_anchor_long_beat" and intra_beat_result and intra_beat_result.refined_max_drift_s is not None else None,
+            "sentence_refinement_baseline_warning_count": intra_beat_result.baseline_warning_count if alignment_mode == "content_anchor_long_beat" and intra_beat_result else None,
+            "sentence_refinement_refined_warning_count": intra_beat_result.refined_warning_count if alignment_mode == "content_anchor_long_beat" and intra_beat_result else None,
+            "sentence_refinement_replaced_duration_s": sentence_refinement_replaced_duration_s,
+            "sentence_refinement_skipped_chunks": sentence_refinement_skipped_chunks,
+            "sentence_refinement_source_jumps": sentence_refinement_source_jumps,
+            "sentence_refinement_source_jump_count": len(sentence_refinement_nonzero_source_jumps),
+            "sentence_refinement_max_source_jump_s": round(max(sentence_refinement_nonzero_source_jumps), 3) if sentence_refinement_nonzero_source_jumps else 0.0,
+            "sentence_refinement_avg_source_jump_s": round(sum(sentence_refinement_nonzero_source_jumps) / len(sentence_refinement_nonzero_source_jumps), 3) if sentence_refinement_nonzero_source_jumps else 0.0,
+            "sentence_refinement_low_confidence_count": sentence_refinement_low_confidence_count,
             "opening_intra_beat_align_used": bool(alignment_mode == "opening" and intra_beat_result and intra_beat_result.used),
             "opening_intra_beat_chunks": intra_beat_result.diagnostics if alignment_mode == "opening" and intra_beat_result else [],
             "opening_intra_beat_replaced_ranges": [list(item) for item in intra_beat_result.replaced_ranges] if alignment_mode == "opening" and intra_beat_result else [],
@@ -734,6 +858,8 @@ def run_match(args: argparse.Namespace) -> int:
         candidate_diagnostics=candidate_diagnostics,
         end_credit_guard_enabled=args.exclude_end_credits,
         excluded_end_credit_ids=sorted(end_credit_shot_ids),
+        sentence_refinement_mode=sentence_refinement_runtime_mode,
+        sentence_refinement_requested_mode=args.sentence_refinement_mode,
     )
     sync_qa = build_sync_qa(beats=review_beats, timings=timings, placements=placements, fps=None, short_clip_threshold_s=args.min_visual_clip)
     combined_scores = {
@@ -771,6 +897,8 @@ def main() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
     try:
+        if args.sentence_refinement_ab:
+            return run_sentence_refinement_ab(args, run_match)
         return run_match(args)
     except (MatchError, SemanticError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(2, f"match: error: {exc}\n")

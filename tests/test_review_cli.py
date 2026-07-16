@@ -104,6 +104,29 @@ def test_build_review_with_mock_client_end_to_end(tmp_path) -> None:
     assert (tmp_path / "work" / "review" / "qa.json").exists()
     assert (tmp_path / "work" / "review" / "style_qa.json").exists()
     assert meta.style_preset == "viral-recap-vi"
+    assert meta.story_duration_s == 4.0
+    assert meta.target_duration_base_s == 4.0
+    assert meta.auto_duration_policy is None
+    assert meta.requested_max_qa_iterations == 2
+    assert meta.effective_max_qa_iterations == 2
+    assert meta.qa_iteration_policy == "configured"
+
+
+def test_build_review_resumes_cached_revisions_without_client_calls(tmp_path) -> None:
+    film_map_path = write_film_map(tmp_path)
+
+    import asyncio
+
+    asyncio.run(build_review_with_client(make_args(tmp_path, film_map_path), FakeReviewClient()))
+
+    class NoCallClient:
+        async def ask(self, prompt: str) -> str:
+            raise AssertionError("cached review resume should not call client")
+
+    _beats, meta = asyncio.run(build_review_with_client(make_args(tmp_path, film_map_path), NoCallClient()))
+
+    assert "revisions/narration-1.json" in meta.cache_hits
+    assert "revisions/qa-1.json" in meta.cache_hits
 
 
 def test_build_review_falls_back_duration_without_meta(tmp_path) -> None:
@@ -152,3 +175,39 @@ def test_review_cli_defaults_to_locked_auto_yt_profile() -> None:
 def test_review_runtime_rejects_any_other_profile(tmp_path) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(ReviewError, match="profile is locked"):
         resolve_chatgpt_profile_dir(tmp_path / "other-profile")
+
+
+def test_build_review_resumes_cached_opening_revision_without_client_calls(tmp_path) -> None:
+    class OpeningRewriteClient(FakeReviewClient):
+        async def ask(self, prompt: str) -> str:
+            self.calls.append(prompt)
+            if "Opening coherence: rewrite this as a clear movie setup beat" in prompt:
+                return json.dumps(
+                    {
+                        "beat_id": 0,
+                        "narration": "Minh va Lan bat dau cau chuyen trong mot khu nha yen tinh, noi mot dau hieu la xuat hien va buoc ho phai tim cach hieu chuyen dang xay ra.",
+                    },
+                    ensure_ascii=False,
+                )
+            return await super().ask(prompt)
+
+    film_map_path = write_film_map(tmp_path)
+    args = make_args(tmp_path, film_map_path)
+    args.content_type = "movie"
+    args.hook_mode = "setup"
+    args.opening_coherence_qa = True
+
+    import asyncio
+
+    _beats, first_meta = asyncio.run(build_review_with_client(args, OpeningRewriteClient()))
+    assert first_meta.n_opening_rewrites == 1
+    assert (tmp_path / "work" / "review" / "opening_coherence_revision.json").exists()
+
+    class NoCallClient:
+        async def ask(self, prompt: str) -> str:
+            raise AssertionError("cached opening coherence resume should not call client")
+
+    _beats, meta = asyncio.run(build_review_with_client(args, NoCallClient()))
+
+    assert "opening_coherence_revision.json" in meta.cache_hits
+    assert meta.n_opening_rewrites == 1

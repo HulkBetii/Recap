@@ -21,6 +21,7 @@ from preflight.integrity import PREFLIGHT_CACHE_VERSION, preflight_identity
 from review.__main__ import build_parser as build_review_parser
 from review.integrity import REVIEW_CACHE_VERSION, build_review_identity
 from review.style import DEFAULT_STYLE_SAMPLE
+from match.version import MATCH_ALGORITHM_VERSION
 from run import run_pipeline, should_fallback_timecode, sync_review_fallback_reporting
 from storymap.cache import stable_hash as storymap_stable_hash
 from visual_index.integrity import PREPROCESSING_VERSION, media_identity_hash, sha256_file, visual_index_config_hash
@@ -122,7 +123,7 @@ def write_stage_outputs(command: list[str]) -> None:
     elif stage == "match":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")
-        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[],"algorithm_version":"6"}), encoding="utf-8")
+        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[],"algorithm_version":MATCH_ALGORITHM_VERSION}), encoding="utf-8")
         output.with_name("edl.qa.json").write_text(json.dumps({"version":1,"semantic_enabled":True,"min_semantic_score":0.12,"beats":[]}), encoding="utf-8")
         flag(command, "--output-sync-qa").write_text(json.dumps({"version":1,"summary":{},"beats":[]}), encoding="utf-8")
         flag(command, "--output-visual-qa").write_text(json.dumps({"version":1,"visual_mode":"off","visual_enabled":False,"beats":[]}), encoding="utf-8")
@@ -324,6 +325,26 @@ def test_review_command_passes_playwright_retry_and_budget_fallback_gate(tmp_pat
     assert "--block-openai-fallback" in command
 
 
+def test_review_command_passes_auto_duration_policy(tmp_path: Path) -> None:
+    paths = build_paths(tmp_path / "run")
+    config = load_config(write_config(tmp_path))
+    config["review"].update(
+        {
+            "auto_max_ratio": 0.35,
+            "auto_soft_cap_s": 1800,
+            "auto_hard_cap_s": 2400,
+            "auto_long_score_threshold": 0.8,
+        }
+    )
+
+    command = build_command("review", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
+
+    assert command[command.index("--auto-max-ratio") + 1] == "0.35"
+    assert command[command.index("--auto-soft-cap-s") + 1] == "1800"
+    assert command[command.index("--auto-hard-cap-s") + 1] == "2400"
+    assert command[command.index("--auto-long-score-threshold") + 1] == "0.8"
+
+
 def test_review_fallback_does_not_require_openai_key_during_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     film = tmp_path / "film.mp4"
     film.write_bytes(b"film")
@@ -480,6 +501,7 @@ def test_match_command_uses_movie_chronological_defaults(tmp_path: Path) -> None
     assert "--opening-story-visual-start" in command
     assert "--ordered-fill-by-audio-progress" in command
     assert "--no-opening-intra-beat-align" in command
+    assert command[command.index("--sentence-refinement-mode") + 1] == "off"
     assert command[command.index("--hook-min-brightness") + 1] == "0.0"
     assert command[command.index("--visual-mode") + 1] == "off"
 
@@ -491,11 +513,13 @@ def test_match_command_enables_opening_intra_beat_alignment_when_configured(tmp_
     paths = build_paths(tmp_path / "run")
     config = load_config(write_config(tmp_path))
     config["match"]["opening_intra_beat_align"] = True
+    config["match"]["sentence_refinement_mode"] = "guarded"
     config["match"]["hook_min_brightness"] = 0.1
 
     command = build_command("match", paths, tmp_path / "film.mp4", config, force=False, python_exe="python")
 
     assert "--opening-intra-beat-align" in command
+    assert command[command.index("--sentence-refinement-mode") + 1] == "guarded"
     assert command[command.index("--hook-min-brightness") + 1] == "0.1"
 
 def test_visual_config_runs_visual_index_and_passes_to_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

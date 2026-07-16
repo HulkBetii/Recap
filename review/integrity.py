@@ -12,6 +12,10 @@ REVIEW_PROMPT_VERSION = "review-prompts-v1"
 REVIEW_CONFIG_FIELDS = (
     "target_ratio",
     "tts_cps",
+    "auto_max_ratio",
+    "auto_soft_cap_s",
+    "auto_hard_cap_s",
+    "auto_long_score_threshold",
     "min_coverage",
     "max_qa_iterations",
     "max_qa_rewrites_per_iteration",
@@ -74,7 +78,17 @@ def build_review_identity(
     video_profile_digest = file_hash(video_profile_path) if video_profile_path else None
     config_payload = {name: _value(settings, name) for name in REVIEW_CONFIG_FIELDS}
     config_payload["target_ratio"] = str(config_payload.get("target_ratio"))
-    for name in ("tts_cps", "min_coverage", "target_beat_audio_s", "max_beat_audio_s", "non_story_tail_s"):
+    for name in (
+        "tts_cps",
+        "auto_max_ratio",
+        "auto_soft_cap_s",
+        "auto_hard_cap_s",
+        "auto_long_score_threshold",
+        "min_coverage",
+        "target_beat_audio_s",
+        "max_beat_audio_s",
+        "non_story_tail_s",
+    ):
         if config_payload.get(name) is not None:
             config_payload[name] = float(config_payload[name])
     for name in ("max_qa_iterations", "max_qa_rewrites_per_iteration", "target_sentence_chars", "max_sentence_chars"):

@@ -215,10 +215,19 @@ class ReviewMeta(BaseModel):
     glossary: list[dict[str, Any]] = Field(default_factory=list)
     target_video_s: float = Field(gt=0)
     char_budget: int = Field(gt=0)
+    story_duration_s: float | None = Field(default=None, gt=0)
+    target_duration_base_s: float | None = Field(default=None, gt=0)
+    auto_duration_policy: str | None = None
+    auto_duration_raw_ratio: float | None = Field(default=None, gt=0)
+    auto_duration_raw_target_s: float | None = Field(default=None, gt=0)
+    auto_duration_cap_applied: str | None = None
     est_total_chars: int = Field(ge=0)
     coverage_pct: float = Field(ge=0, le=1)
     qa_report: list[dict[str, Any]] = Field(default_factory=list)
     n_qa_iterations: int = Field(ge=0)
+    requested_max_qa_iterations: int | None = Field(default=None, ge=0)
+    effective_max_qa_iterations: int | None = Field(default=None, ge=0)
+    qa_iteration_policy: str | None = None
     model_versions: dict[str, str] = Field(default_factory=dict)
     llm_backend: str = "chatgpt_playwright"
     video_profile_path: str | None = None

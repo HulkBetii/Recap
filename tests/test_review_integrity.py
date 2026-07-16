@@ -10,8 +10,12 @@ def settings() -> dict:
     return {
         "target_ratio": "auto",
         "tts_cps": 15,
+        "auto_max_ratio": 0.40,
+        "auto_soft_cap_s": 2100,
+        "auto_hard_cap_s": 2700,
+        "auto_long_score_threshold": 0.80,
         "min_coverage": 0.85,
-        "max_qa_iterations": 3,
+        "max_qa_iterations": 2,
         "max_qa_rewrites_per_iteration": 6,
         "content_type": "movie",
         "hook_mode": "setup",
@@ -69,3 +73,20 @@ def test_operational_browser_settings_do_not_change_review_cache(tmp_path: Path)
     second = build_review_identity(film_map_path=film_map, settings=second_settings, style_sample_path=style, story_map_path=None, video_profile_path=None)
 
     assert first.cache_key == second.cache_key
+
+def test_auto_duration_policy_change_invalidates_review_cache(tmp_path: Path) -> None:
+    film_map = tmp_path / "film_map.json"
+    film_map.write_text("[]", encoding="utf-8")
+    style = tmp_path / "style.txt"
+    style.write_text("style", encoding="utf-8")
+
+    first = build_review_identity(film_map_path=film_map, settings=settings(), style_sample_path=style, story_map_path=None, video_profile_path=None)
+    second = build_review_identity(
+        film_map_path=film_map,
+        settings=settings() | {"auto_soft_cap_s": 1800},
+        style_sample_path=style,
+        story_map_path=None,
+        video_profile_path=None,
+    )
+
+    assert first.cache_key != second.cache_key

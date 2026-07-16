@@ -19,11 +19,13 @@ from review.integrity import REVIEW_CACHE_VERSION, ReviewIdentity, build_review_
 from review.llm_flow import regenerate_beat, request_narration, request_outline, request_qa
 from review.micro_beats import split_long_beats
 from review.movie_mode import (
+    AutoDurationPolicy,
     apply_hook_mode,
     check_opening_coherence,
     opening_rewrite_issue,
     replace_narration,
     resolve_content_defaults,
+    resolve_qa_iterations,
     resolve_target_ratio,
     story_start_from_profile,
 )
@@ -74,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--target-ratio", default=str(DEFAULT_TARGET_RATIO), help="Float ratio or auto")
     parser.add_argument("--tts-cps", default=DEFAULT_TTS_CPS, type=float)
+    parser.add_argument("--auto-max-ratio", default=0.40, type=float, help="Max effective ratio for --target-ratio auto in movie mode")
+    parser.add_argument("--auto-soft-cap-s", default=2100.0, type=float, help="Soft duration cap in seconds for movie auto ratio")
+    parser.add_argument("--auto-hard-cap-s", default=2700.0, type=float, help="Hard duration cap in seconds for movie auto ratio")
+    parser.add_argument("--auto-long-score-threshold", default=0.80, type=float, help="Complexity score required to exceed soft cap")
     parser.add_argument("--min-coverage", default=DEFAULT_MIN_COVERAGE, type=float)
     parser.add_argument("--max-qa-iterations", default=DEFAULT_MAX_QA_ITERATIONS, type=int)
     parser.add_argument("--max-qa-rewrites-per-iteration", default=6, type=int)
@@ -136,6 +142,14 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         args.story_map = None
     if not hasattr(args, "review_intent_output"):
         args.review_intent_output = None
+    if not hasattr(args, "auto_max_ratio"):
+        args.auto_max_ratio = 0.40
+    if not hasattr(args, "auto_soft_cap_s"):
+        args.auto_soft_cap_s = 2100.0
+    if not hasattr(args, "auto_hard_cap_s"):
+        args.auto_hard_cap_s = 2700.0
+    if not hasattr(args, "auto_long_score_threshold"):
+        args.auto_long_score_threshold = 0.80
     if not hasattr(args, "llm_backend"):
         args.llm_backend = "chatgpt_playwright"
     if args.llm_backend != "chatgpt_playwright":
@@ -159,6 +173,14 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         raise ReviewError("--target-ratio must be > 0")
     if args.tts_cps <= 0:
         raise ReviewError("--tts-cps must be > 0")
+    if not 0 < args.auto_max_ratio <= 0.40:
+        raise ReviewError("--auto-max-ratio must be > 0 and <= 0.40")
+    if args.auto_soft_cap_s <= 0 or args.auto_hard_cap_s <= 0:
+        raise ReviewError("auto duration caps must be > 0")
+    if args.auto_hard_cap_s < args.auto_soft_cap_s:
+        raise ReviewError("--auto-hard-cap-s must be >= --auto-soft-cap-s")
+    if not 0 <= args.auto_long_score_threshold <= 1:
+        raise ReviewError("--auto-long-score-threshold must be between 0 and 1")
     if not 0 <= args.min_coverage <= 1:
         raise ReviewError("--min-coverage must be between 0 and 1")
     if args.max_qa_iterations < 0:
@@ -195,8 +217,32 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
     style_guide = build_style_guide(style_config, cleaned_style_sample)
     if story_sections and args.content_type == "movie":
         style_guide = style_guide + "\n" + story_map_prompt_context(story_sections)
-    auto_duration = resolve_target_ratio(args.target_ratio, content_type=args.content_type, film_map=film_map, duration_s=duration_s)
-    target_video_s, char_budget = compute_budget(duration_s, auto_duration.target_ratio, args.tts_cps)
+    auto_duration = resolve_target_ratio(
+        args.target_ratio,
+        content_type=args.content_type,
+        film_map=film_map,
+        duration_s=duration_s,
+        video_profile=video_profile,
+        story_sections=story_sections,
+        auto_policy=AutoDurationPolicy(
+            max_ratio=args.auto_max_ratio,
+            soft_cap_s=args.auto_soft_cap_s,
+            hard_cap_s=args.auto_hard_cap_s,
+            long_score_threshold=args.auto_long_score_threshold,
+        ),
+    )
+    warnings.extend(auto_duration.warnings or [])
+    target_video_s, char_budget = compute_budget(auto_duration.target_duration_base_s, auto_duration.target_ratio, args.tts_cps)
+    qa_iteration_policy = resolve_qa_iterations(
+        args.max_qa_iterations,
+        content_type=args.content_type,
+        target_video_s=target_video_s,
+        char_budget=char_budget,
+    )
+    effective_max_qa_iterations = qa_iteration_policy.effective_max_qa_iterations
+    if qa_iteration_policy.warning:
+        warnings.append(qa_iteration_policy.warning)
+        logger.warning(qa_iteration_policy.warning)
 
     cache = ReviewCache(work_dir, force=args.force)
     cache.prepare()
@@ -265,17 +311,18 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             style_config=style_config,
             style_guide=style_guide,
             logger=logger,
-            max_iterations=args.max_qa_iterations,
+            max_iterations=effective_max_qa_iterations,
         )
         warnings.extend(readability_warnings)
     qa_report: list[dict] = []
     n_qa_iterations = 0
 
-    for iteration in range(args.max_qa_iterations + 1):
+    for iteration in range(effective_max_qa_iterations + 1):
         current_coverage = coverage_ratio(beats, len(film_map))
-        if iteration == 0 and cache.has("qa.json"):
-            logger.info("[3/4] Using cached qa.json")
-            qa = QaResult.model_validate(cache.read_json("qa.json"))
+        qa_cache_path = "qa.json" if iteration == 0 else f"revisions/qa-{iteration}.json"
+        if cache.has(qa_cache_path):
+            logger.info("[3/4] Using cached %s", qa_cache_path)
+            qa = QaResult.model_validate(cache.read_json(qa_cache_path))
         else:
             logger.info("[3/4] Requesting QA iteration %d", iteration)
             qa = await request_qa(
@@ -294,9 +341,15 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             else:
                 cache.write_json(f"revisions/qa-{iteration}.json", qa)
         qa_report.append(qa.model_dump_public())
-        if qa.passed or not qa.issues or iteration >= args.max_qa_iterations:
+        if qa.passed or not qa.issues or iteration >= effective_max_qa_iterations:
             n_qa_iterations = iteration
             break
+        narration_revision_path = f"revisions/narration-{iteration + 1}.json"
+        if cache.has(narration_revision_path):
+            logger.info("[3/4] Using cached %s", narration_revision_path)
+            narration = [NarrationBeat.model_validate(item) for item in cache.read_json(narration_revision_path)]
+            beats = derive_review_beats(outline=outline_result.outline, narration=narration, film_map=film_map)
+            continue
         narration_by_id = {item.beat_id: item for item in narration}
         limited_issues = qa.issues[:args.max_qa_rewrites_per_iteration] if args.max_qa_rewrites_per_iteration else []
         if len(qa.issues) > len(limited_issues):
@@ -325,17 +378,21 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
     if args.opening_coherence_qa:
         opening_check = check_opening_coherence(beats, content_type=args.content_type, hook_mode=args.hook_mode, story_start_s=story_start_s)
         opening_coherence_report = {"passed": opening_check.passed, "issues": opening_check.issues, "warnings": opening_check.warnings}
-        if not opening_check.passed and beats and args.max_qa_iterations > 0:
-            revised = await regenerate_beat(
-                client,
-                beat=beats[0],
-                issue=opening_rewrite_issue(opening_check),
-                glossary=outline_result.glossary,
-                char_target=char_targets[0] if char_targets else 400,
-                style_sample=style_guide,
-            )
+        if not opening_check.passed and beats and effective_max_qa_iterations > 0:
+            if cache.has("opening_coherence_revision.json"):
+                logger.info("[3/4] Using cached opening_coherence_revision.json")
+                revised = NarrationBeat.model_validate(cache.read_json("opening_coherence_revision.json"))
+            else:
+                revised = await regenerate_beat(
+                    client,
+                    beat=beats[0],
+                    issue=opening_rewrite_issue(opening_check),
+                    glossary=outline_result.glossary,
+                    char_target=char_targets[0] if char_targets else 400,
+                    style_sample=style_guide,
+                )
+                cache.write_json("opening_coherence_revision.json", revised)
             narration = replace_narration(narration, revised)
-            cache.write_json("opening_coherence_revision.json", revised)
             beats = derive_review_beats(outline=outline_result.outline, narration=narration, film_map=film_map)
             n_opening_rewrites = 1
             opening_check = check_opening_coherence(beats, content_type=args.content_type, hook_mode=args.hook_mode, story_start_s=story_start_s)
@@ -403,10 +460,19 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         glossary=outline_result.glossary,
         target_video_s=target_video_s,
         char_budget=char_budget,
+        story_duration_s=auto_duration.story_duration_s,
+        target_duration_base_s=auto_duration.target_duration_base_s,
+        auto_duration_policy=auto_duration.auto_duration_policy,
+        auto_duration_raw_ratio=auto_duration.auto_duration_raw_ratio,
+        auto_duration_raw_target_s=auto_duration.auto_duration_raw_target_s,
+        auto_duration_cap_applied=auto_duration.auto_duration_cap_applied,
         est_total_chars=estimate_total_chars(beats),
         coverage_pct=coverage_pct,
         qa_report=qa_report,
         n_qa_iterations=n_qa_iterations,
+        requested_max_qa_iterations=qa_iteration_policy.requested_max_qa_iterations,
+        effective_max_qa_iterations=qa_iteration_policy.effective_max_qa_iterations,
+        qa_iteration_policy=qa_iteration_policy.policy,
         model_versions={"llm": args.llm_backend},
         llm_backend=args.llm_backend,
         created_at=datetime.now(timezone.utc),

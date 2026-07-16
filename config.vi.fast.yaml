@@ -1,0 +1,81 @@
+orchestrator:
+  quality_mode: balanced
+  text_llm_backend: chatgpt_playwright
+  api_budget_guard: warn
+  auto_fallback: false
+  fallback_on_timecode_warn: true
+  fallback_ingest_asr_provider: openai-gpt4o-hybrid
+  fallback_max_vision_frames: 0
+  runtime_preflight: true
+  log_level: INFO
+
+ingest:
+  source_language: vi
+  translate_mode: none
+  device: cuda
+  asr_provider: faster-whisper
+  aligner: whisperx
+  max_vision_frames: 0
+  drop_non_korean_intro_s: 0
+  drop_visual_before_s: 0
+  timecode_quality: strict
+  log_level: INFO
+
+review:
+  content_type: movie
+  hook_mode: setup
+  target_ratio: auto
+  auto_max_ratio: 0.40
+  auto_soft_cap_s: 2100
+  auto_hard_cap_s: 2700
+  auto_long_score_threshold: 0.80
+  reply_timeout_s: 900
+  max_qa_iterations: 3
+  max_qa_rewrites_per_iteration: 6
+  style_preset: viral-recap-vi
+  style_strength: strong
+  style_qa: true
+  target_sentence_chars: 160
+  max_sentence_chars: 220
+  drop_non_story_beats: true
+  non_story_tail_s: 300
+  headless: false
+  log_level: INFO
+
+tts:
+  provider_mode: ai33
+  voice_id: vbee_hn_female_ngochuyen_full_24k-st
+  genmax_voice_id: VU16byTywsWv5JpI8rbc
+  concurrency: 1
+  normalize: true
+  text_normalization: vi
+  pronunciation_qa: true
+  log_level: INFO
+
+shots:
+  detector: ffmpeg-scene
+  frame_sampling: batch
+  face_detection: "on"
+  end_credit_guard: true
+  max_shot_len: 8
+  log_level: INFO
+
+visual_index:
+  enabled: true
+  frame_sampling: batch
+  device: cuda
+  batch_size: 16
+  keyframes_per_shot: 2
+  log_level: INFO
+
+match:
+  semantic_mode: tfidf
+  visual_mode: off
+  sentence_refinement_mode: off
+  content_anchors: true
+  exclude_non_story: true
+  exclude_end_credits: true
+  opening_intra_beat_align: true
+  hook_min_brightness: 0.10
+  review_html: false
+  log_level: INFO

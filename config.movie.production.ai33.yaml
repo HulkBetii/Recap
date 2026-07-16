@@ -6,6 +6,7 @@ orchestrator:
   fallback_on_timecode_warn: true
   fallback_ingest_asr_provider: openai-gpt4o-hybrid
   fallback_max_vision_frames: 0
+  runtime_preflight: true
   python: null
   log_level: INFO
 
@@ -27,10 +28,10 @@ ingest:
   source_language: ko
   translate_mode: ko-en
   vision_model: gpt-4.1-mini
-  device: cpu
+  device: cuda
   asr_policy: preset
   asr_provider: faster-whisper
-  aligner: none
+  aligner: whisperx
   transcript_input: null
   timecode_quality: strict
   max_segment_s: 30
@@ -74,6 +75,7 @@ review:
   chat_session_policy: auto
   chat_session_meta: null
   chat_title: null
+  reply_timeout_s: 900
   style_sample: examples/style/viral_recap_vi.cleaned.txt
   style_preset: viral-recap-vi
   style_strength: strong
@@ -86,13 +88,15 @@ review:
   log_level: INFO
 
 tts:
-  voice_id: null
-  provider_mode: auto
+  voice_id: vbee_hn_female_ngochuyen_full_24k-st
+  provider_mode: ai33
   genmax_voice_id: null
   model: eleven_multilingual_v2
+  openai_model: gpt-4o-mini-tts
+  openai_voice: coral
   speed: 1.0
   inter_beat_pause: 0.15
-  concurrency: 3
+  concurrency: 1
   normalize: true
   cost_per_1k_chars: 0.0
   text_normalization: vi
@@ -128,7 +132,7 @@ visual_index:
   enabled: true
   embedding_mode: siglip2
   embedding_model: google/siglip2-base-patch16-384
-  device: auto
+  device: cuda
   batch_size: 16
   keyframes_per_shot: 2
   frame_sampling: batch
@@ -167,10 +171,9 @@ match:
   match_strategy: chronological
   chronology_weight: 0.70
   max_source_drift_s: 12
-  sentence_refinement_mode: guarded
   semantic_mode: bge-m3
   semantic_model: BAAI/bge-m3
-  semantic_device: auto
+  semantic_device: cuda
   semantic_batch_size: 16
   semantic_cache_dir: null
   visual_mode: rerank
@@ -178,6 +181,7 @@ match:
   visual_cache_dir: null
   visual_device: cuda
   visual_batch_size: 32
+  sentence_refinement_mode: guarded
   output_visual_qa: null
   film_map: auto
   output_qa: null

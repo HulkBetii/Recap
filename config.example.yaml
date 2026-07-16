@@ -57,9 +57,16 @@ review:
   content_type: movie
   hook_mode: setup
   target_ratio: auto
+  # target_ratio=auto uses story duration after non-story ranges are removed.
+  # Most movies land around 20-32%; dense movies may reach 35-38%.
+  auto_max_ratio: 0.40
+  auto_soft_cap_s: 2100
+  auto_hard_cap_s: 2700
+  auto_long_score_threshold: 0.80
   tts_cps: 15
   min_coverage: 0.85
-  max_qa_iterations: 3
+  # Long movie recaps clamp effective QA to 1 when target >= 35 min or char budget > 30k.
+  max_qa_iterations: 2
   max_qa_rewrites_per_iteration: 6
   opening_coherence_qa: true
   micro_beats: false
@@ -171,6 +178,7 @@ match:
   match_strategy: chronological
   chronology_weight: 0.70
   max_source_drift_s: 12
+  sentence_refinement_mode: off
   semantic_mode: bge-m3
   semantic_model: BAAI/bge-m3
   semantic_device: auto

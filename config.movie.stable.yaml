@@ -56,9 +56,13 @@ review:
   content_type: movie
   hook_mode: setup
   target_ratio: auto
+  auto_max_ratio: 0.40
+  auto_soft_cap_s: 2100
+  auto_hard_cap_s: 2700
+  auto_long_score_threshold: 0.80
   tts_cps: 15
   min_coverage: 0.85
-  max_qa_iterations: 3
+  max_qa_iterations: 2
   max_qa_rewrites_per_iteration: 6
   opening_coherence_qa: true
   micro_beats: false

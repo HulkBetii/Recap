@@ -63,6 +63,9 @@ def write_review_html(
         for beat in qa.get("beats", []) if isinstance(beat, dict)
         for selected in beat.get("selected", []) if isinstance(selected, dict)
     ]
+    refinement_summary = qa.get("sentence_refinement_summary", {})
+    if not isinstance(refinement_summary, dict):
+        refinement_summary = {}
     avg_semantic = sum(semantic_values) / len(semantic_values) if semantic_values else 0.0
     min_semantic = min(semantic_values) if semantic_values else 0.0
     avg_visual = sum(visual_values) / len(visual_values) if visual_values else 0.0
@@ -80,6 +83,7 @@ def write_review_html(
         "<section class=\"summary\">",
         f"<div><b>Total beats:</b> {len(beats)} | <b>placements:</b> {len(placements)} | <b>intro excluded:</b> {escape(_fmt(qa.get('n_intro_excluded')))} | <b>end-credit excluded:</b> {escape(_fmt(qa.get('n_end_credit_excluded')))}</div>",
         f"<div><b>selected_from_non_story:</b> {escape(_fmt(qa.get('selected_from_non_story')))} | <b>avg semantic:</b> {avg_semantic:.3f} | <b>min semantic:</b> {min_semantic:.3f} | <b>avg visual:</b> {avg_visual:.3f} | <b>warnings:</b> {warnings_count}</div>",
+        f"<div><b>sentence refinement:</b> {escape(_fmt(qa.get('sentence_refinement_mode')))} | <b>requested:</b> {escape(_fmt(qa.get('sentence_refinement_requested_mode')))} | <b>eligible beats:</b> {escape(_fmt(refinement_summary.get('eligible_beats')))} | <b>used beats:</b> {escape(_fmt(refinement_summary.get('used_beats')))} | <b>accepted:</b> {escape(_fmt(refinement_summary.get('accepted_beats')))} | <b>rejected:</b> {escape(_fmt(refinement_summary.get('rejected_beats')))} | <b>max jump:</b> {escape(_fmt(refinement_summary.get('max_source_jump_s')))}s</div>",
         "</section>",
     ]
     for beat in sorted(beats, key=lambda item: item.beat_id):
@@ -113,6 +117,20 @@ def write_review_html(
                 if isinstance(item, (list, tuple)) and len(item) == 2
             )
             anchor_info = f" | Content anchor: {escape(intervals)}"
+        refinement_info = ""
+        if isinstance(qa_beat, dict):
+            refinement_info = (
+                f" | Sentence refinement: {escape(_fmt(qa_beat.get('sentence_refinement_mode')))}"
+                f" | Eligible: {escape(_fmt(qa_beat.get('sentence_refinement_eligible')))}"
+                f" | Accepted: {escape(_fmt(qa_beat.get('sentence_refinement_accepted')))}"
+                f" | Reason: {escape(_fmt(qa_beat.get('sentence_refinement_reason')))}"
+                f" | Trigger drift: {escape(_fmt(qa_beat.get('sentence_refinement_trigger_drift_s')))}s"
+                f" | Guard drift: {escape(_fmt(qa_beat.get('sentence_refinement_baseline_max_drift_s')))}->{escape(_fmt(qa_beat.get('sentence_refinement_refined_max_drift_s')))}s"
+                f" | Guard warnings: {escape(_fmt(qa_beat.get('sentence_refinement_baseline_warning_count')))}->{escape(_fmt(qa_beat.get('sentence_refinement_refined_warning_count')))}"
+                f" | Rejected: {escape(_fmt(qa_beat.get('sentence_refinement_rejected_reason')))}"
+                f" | Replaced: {escape(_fmt(qa_beat.get('sentence_refinement_replaced_duration_s')))}s"
+                f" | Jumps: {escape(_fmt(qa_beat.get('sentence_refinement_source_jump_count')))}"
+            )
         intra_beat_info = ""
         if isinstance(qa_beat, dict) and qa_beat.get("intra_beat_align_used", qa_beat.get("opening_intra_beat_align_used")):
             ranges = qa_beat.get("intra_beat_replaced_ranges", qa_beat.get("opening_intra_beat_replaced_ranges", []))
@@ -124,13 +142,19 @@ def write_review_html(
                 f" | Hook brightness guard: shot {escape(_fmt(qa_beat.get('hook_leading_original_shot')))}"
                 f" -> {escape(str(qa_beat.get('hook_leading_replacement_shots', [])))}"
             )
-        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}{visual_query}{capacity_info}{anchor_info}{intra_beat_info}{hook_guard_info}</div>")
+        parts.append(f"<div class=\"meta\">Source: {beat.src_tc_start:.3f}–{beat.src_tc_end:.3f}s | Hook: {beat.is_hook} | Avg semantic: {escape(_fmt(qa_beat.get('avg_semantic_score') if isinstance(qa_beat, dict) else None))}{repeat_info}{drift_info}{visual_query}{capacity_info}{anchor_info}{refinement_info}{intra_beat_info}{hook_guard_info}</div>")
         if beat_warnings:
             parts.append("<ul class=\"warn\">" + "".join(f"<li>{escape(str(warning))}</li>" for warning in beat_warnings) + "</ul>")
         intra_beat_chunks = qa_beat.get("intra_beat_chunks", qa_beat.get("opening_intra_beat_chunks", [])) if isinstance(qa_beat, dict) else []
         if intra_beat_chunks:
             mode = qa_beat.get("intra_beat_align_mode") or "opening"
-            parts.append(f"<h3>{escape(str(mode).replace('_', ' ').title())} intra-beat alignment</h3><div class=\"grid\">")
+            if mode == "content_anchor_long_beat":
+                heading = "Sentence refinement"
+            elif mode == "long_beat":
+                heading = "Long-beat alignment"
+            else:
+                heading = "Opening intra-beat alignment"
+            parts.append(f"<h3>{escape(heading)}</h3><div class=\"grid\">")
             for chunk in intra_beat_chunks:
                 if not isinstance(chunk, dict):
                     continue
@@ -140,7 +164,12 @@ def write_review_html(
                     if isinstance(source_window, (list, tuple)) and len(source_window) == 2
                     else "-"
                 )
-                status = "replaced" if chunk.get("replaced") else f"skipped: {chunk.get('skip_reason', 'not eligible')}"
+                if chunk.get("replaced"):
+                    status = "replaced"
+                elif chunk.get("rejection_reason"):
+                    status = f"rejected: {chunk.get('rejection_reason')}"
+                else:
+                    status = f"skipped: {chunk.get('skip_reason', 'not eligible')}"
                 replacement_range = chunk.get("replacement_range", [])
                 replacement_text = (
                     f"{float(replacement_range[0]):.3f}-{float(replacement_range[1]):.3f}"
@@ -149,11 +178,14 @@ def write_review_html(
                 )
                 parts.append(
                     "<article class=\"clip\"><div class=\"meta\">"
+                    + f"mode={escape(_fmt(chunk.get('selection_mode')))}<br>"
                     + f"TL {escape(_fmt(chunk.get('tl_start')))}-{escape(_fmt(chunk.get('tl_end')))}<br>"
                     + f"replace {escape(replacement_text)}<br>"
                     + f"anchor shot {escape(_fmt(chunk.get('anchor_shot_index')))} @ {escape(_fmt(chunk.get('anchor_source_s')))}s<br>"
                     + f"semantic={escape(_fmt(chunk.get('semantic_score')))} shift={escape(_fmt(chunk.get('baseline_shift_s')))}s<br>"
-                    + f"window={escape(window_text)} | selected={escape(str(chunk.get('selected_shot_ids', [])))}<br>"
+                    + f"window={escape(window_text)} | jump={escape(_fmt(chunk.get('source_jump_s')))}s<br>"
+                    + f"selected={escape(str(chunk.get('selected_shot_ids', [])))} | skip={escape(_fmt(chunk.get('skip_reason')))}<br>"
+                    + f"reject={escape(_fmt(chunk.get('rejection_reason')))}<br>"
                     + f"{escape(status)}</div><p>{escape(str(chunk.get('text', '')))}</p></article>"
                 )
             parts.append("</div>")

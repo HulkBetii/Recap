@@ -222,15 +222,15 @@ repo/
 - GD5 la CLI local/offline, chay bang `python -m match`.
 - GD5 doc `review_script.json`, `beats_timing.json`, `shots.json` va optional `film_map.json`; sinh `edl.json` + `edl.meta.json` + `edl.qa.json` + `edl.review.html`; khong decode video, khong dung API.
 - Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding qua optional deps `semantic-embed`; `tfidf` van la fallback nhe. Semantic la soft bonus, khong hard filter.
-- `content_anchors=true` uses narration-only beat-to-segment semantic scores for beats whose source span is at least 4x the audio duration. G5 restricts fill/chronology to the relevant timecode clusters; compact beats and failed anchors keep legacy matching.
+- `content_anchors=true` uses narration-only beat-to-segment semantic scores for beats whose source span is at least 4x the audio duration. G5 restricts fill/chronology to the relevant timecode clusters and uses strict ordered fill inside anchor plans so closer source candidates beat farther semantic/visual tie-breakers. Strict anchor fill also has a no-early-jump guard: if audio progress lands inside/near the end of the current anchor interval while starting at that cursor would make the next clip too short, G5 backs up to the previous fragment boundary, keeps micro shot-heads instead of shaving them, and may use a final sub-`min_visual_clip` tail bridge only when that bridge is the last source before the next anchor interval. Legacy `long_beat` intra alignment now fail-closes too: if the splice does not improve drift or introduces source-order mismatch, G5 falls back to the baseline placements. Compact beats and failed anchors keep legacy matching.
 - Content anchors require strict timecodes; G5 disables them automatically when sibling `film_map.meta.json` has `approximate_timecodes=true`.
-- `opening_intra_beat_align` remains the backward-compatible opt-in flag for sentence-level alignment in `config.movie.visual.yaml`. It still analyzes at most the first 30s of the first eligible opening beat, and now prepares full-beat anchors for non-opening beats whose source/audio ratio is at least 2.5.
-- Non-opening alignment runs only with strict timecodes + BGE-M3, no existing content-anchor plan, and baseline drift above `max(18s, 1.5 * max_source_drift_s)`. Same-anchor sentences are coalesced, low-confidence transitions attach to the next strong anchor, dark-only ending shots remain eligible, and source windows stay monotonic without overlap.
+- `opening_intra_beat_align` remains the backward-compatible opt-in flag for sentence-level opening + legacy long-beat alignment. `sentence_refinement_mode=off|guarded` separately gates the newer content-anchor sentence refinement path; movie production variants and `config.movie.visual.yaml` set it to `guarded`, while stable/default keep `off`.
+- Non-opening alignment runs only with strict timecodes + BGE-M3 and baseline drift above `max(18s, 1.5 * max_source_drift_s)`. When no content-anchor plan exists, long-beat source windows stay monotonic without overlap as before. When `content_anchor_used=true` and `sentence_refinement_mode=guarded`, `content_anchor_long_beat` refinement uses continuity-aware flexible per-sentence anchor selection with a local drift prior and content-anchor interval progress; narration may still jump/reorder when semantic gain is decisive, but unexpected source jumps beyond expected progress are penalized before guard acceptance. Unexpected source jumps above 45s are fatal; weak/non-improving chunks can fall back to baseline locally, and the beat is accepted only if final refined drift improves baseline and warning count does not increase.
 - Intra-beat splice trims replacement boundaries when necessary so both retained baseline fragments and replacement fragments remain at least `min_visual_clip`; if a valid trim is impossible, that replacement range is skipped with a warning instead of creating a flash cut.
 - G5 `--hook-min-brightness` replaces only the first hook placement when its shot-average brightness is below the configured threshold and a brighter chronological local fill exists. Stable/default config keeps `0.0`; `config.movie.visual.yaml` uses `0.10`.
 - Movie matching mac dinh dung `match_strategy=chronological`: bam source timecode/chronology truoc; semantic/story/intent chi la soft tie-breaker de tranh audio mot noi hinh mot noi. `semantic` strategy chi dung cho debug/experiment.
-- `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse, `expected_src_position`, `source_drift_s`, `chronology_score` va warnings `low semantic match`/`high source drift` theo beat.
-- `edl.review.html` la QA artifact truc quan tu `match/review_html.py`, dung thumbnails san co trong `shots.json`, hien narration/source span/selected clip metrics/drift/warnings de review nhanh bang browser.
+- `edl.qa.json` la debug artifact tu `match/qa.py`, ghi provider/model/device/cache hits, selected shots, semantic rank/score, motion/brightness/face/reuse, `expected_src_position`, `source_drift_s`, `chronology_score`, sentence refinement eligibility/reason/jump/skipped-chunk metrics va warnings `low semantic match`/`high source drift` theo beat.
+- `edl.review.html` la QA artifact truc quan tu `match/review_html.py`, dung thumbnails san co trong `shots.json`, hien narration/source span/selected clip metrics/drift/warnings va sentence refinement diagnostics de review nhanh bang browser.
 - Face la soft bonus, khong phai hard filter. Shot `face_count=0` van duoc chon neu motion/brightness/semantic tot.
 - GD5 co `--min-visual-clip` (default `0.6`) de tranh flash-cut/khung hinh giat do placement qua ngan; pause gap ngan duoc absorb bang source capacity hoac slowdown toi da 10%, co the phan bo qua ca hai placement ke nhau thay vi tao filler clip rieng.
 - Sau khi absorb short clip, GD5 split placement dai hon `--max-clip` thanh cac segment lien tuc cung source/shot de giu contract moi placement <= 5s.
@@ -241,8 +241,8 @@ repo/
 - `allow_dark_fallback=true` mặc định cho stable/visual presets; chỉ shot story bị loại duy nhất vì `too_dark` được relax. Non-story, no-frame, transition spike và too-short luôn bị loại cứng.
 - `--exclude-end-credits` hard-exclude `is_end_credit=true` trước semantic/visual, anchors, dark fallback, repeat và pause filler. Visual preset bật policy; stable/default tắt. Khi thiếu footage, GĐ5 warning/underfill thay vì dùng credit-only.
 - Repeat fallback dùng phần source chưa dùng trong shot trước, sau đó mới chọn span overlap thấp nhất; tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier.
-- `edl.meta.json` ghi `algorithm_version` và counters dark/capacity/reuse/end-credit; algorithm version 6 invalidates artifacts created before end-credit exclusion.
-- Cache GD5 nam trong `--work-dir/plan.json`; embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
+- `edl.meta.json` ghi `algorithm_version` va counters dark/capacity/reuse/end-credit; algorithm version 19 invalidates artifacts created before the guarded long-beat fail-closed/no-early-jump updates.
+- Cache GD5 nam trong `--work-dir/plan.json`; cache key gom `sentence_refinement_mode`, embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
 - Test tu dong dung JSON fixtures/mock; khong dung video/ffmpeg/API.
 
 
@@ -375,7 +375,10 @@ repo/
 
 - Phim lẻ dùng mode single-video: một input phim tạo một recap độc lập; GĐ2 phải kể arc trọn vẹn từ mở đầu, twist, cao trào đến kết.
 - Phim bộ nhiều tập cần series memory riêng ở bước sau: glossary/entity bible + episode summaries để mỗi tập vẫn ra một review riêng nhưng giữ tên nhân vật và mạch truyện xuyên suốt.
-- Config phim lẻ nên cân nhắc `target_ratio` khoảng `0.22–0.28` nếu muốn video gọn; test thực tế `DemThanhDoiSanQuy` đạt ratio khoảng `0.253`.
+- Config phim lẻ mặc định giữ `target_ratio=auto`; GĐ2 tự tính theo `story_duration_s` sau khi trừ union `video_profile.non_story_ranges`. Nếu thiếu `video_profile`, dùng full duration và ghi warning trong meta.
+- Auto-duration phim lẻ dùng policy deterministic `balanced-v1`, không gọi thêm LLM/API: đa số phim rơi vào khoảng `20–32%` story duration, phim nhẹ có thể `18–22%`, phim dày `30–35%`, cực dày `35–38%`.
+- Guard mặc định: `auto_max_ratio=0.40`; soft cap `2100s` chỉ được vượt khi `complexity_score >= 0.80`; hard cap tuyệt đối là `min(2700s, 40% story_duration_s)`. Fixed numeric ratio vẫn dùng full duration legacy.
+- Movie/vi presets mặc định `max_qa_iterations=2`; GĐ2 tự clamp effective QA xuống `1` khi `target_video_s >= 2100s` hoặc `char_budget > 30000` để tránh timeout toàn-script. Chỉ override lên 3 khi cần và chấp nhận rủi ro timeout cho recap dài.
 
 ## 29. E2E LESSONS TỪ PHIM LẺ DÀI
 
@@ -514,3 +517,8 @@ repo/
 - Cache smoke phải chứng minh unchanged reuse, profile-only vision invalidation, glossary giữ aligned transcript, và film identity rebuild toàn bộ artifacts GĐ1.
 - `work/release-gate/report.json` là audit artifact gitignored. Không ghi key/token; secret findings luôn redact.
 - Release hiện tại là `1.0.2`, tag `v1.0.2`; các tag `v1.0.0` và `v1.0.1` phải giữ nguyên. Chỉ tạo release/tag tiếp theo khi CI xanh, local media gate xanh không `-AllowDirty`, report pass, secret scan sạch và main đồng bộ remote.
+## 39. AI33-ONLY PRODUCTION VARIANT
+
+- `config.movie.production.ai33.yaml` is the AI33-only movie production preset for runs that must bypass Genmax audio.
+- It pins `tts.provider_mode=ai33`, keeps the VBee voice `vbee_hn_female_ngochuyen_full_24k-st`, and sets `genmax_voice_id=null` so no Genmax or OpenAI TTS fallback is selected.
+- Use this preset when the AI33 server is healthy but Genmax audio is flaky or should be skipped for the whole run.

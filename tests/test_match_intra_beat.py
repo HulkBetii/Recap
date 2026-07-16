@@ -4,6 +4,7 @@ from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
 from match.intra_beat import (
     AlignmentChunk,
     apply_hook_leading_brightness_guard,
+    apply_intra_beat_alignment,
     coalesce_alignment_chunks,
     estimate_sentence_timings,
     fill_local_window,
@@ -12,9 +13,11 @@ from match.intra_beat import (
     prepare_intra_beat_alignment_sentences,
     prepare_opening_alignment_sentences,
     recompute_reuse_flags,
+    select_flexible_anchors,
     select_monotonic_anchors,
     shared_entity_tokens,
     splice_placements,
+    should_accept_guarded_refinement,
 )
 
 
@@ -83,6 +86,70 @@ def test_monotonic_dp_never_moves_anchor_backward() -> None:
     anchor_ids = [chunk.anchor_shot_index for chunk in chunks]
     assert anchor_ids == sorted(anchor_ids)
     assert anchor_ids[-1] == 2
+
+def test_flexible_anchor_can_follow_reordered_narration() -> None:
+    current_beat = beat(source_end=60.0)
+    current_timing = timing(duration=60.0)
+    sentences = estimate_sentence_timings(current_beat, current_timing)[:2]
+    shots = [shot(0, 0, 10), shot(1, 40, 50)]
+    scores = {
+        (1, sentences[0].sentence_index, 1): 0.80,
+        (1, sentences[1].sentence_index, 0): 0.82,
+    }
+
+    chunks = select_flexible_anchors(
+        beat=current_beat,
+        timing=current_timing,
+        sentences=sentences,
+        shots=shots,
+        query_shot_scores=scores,
+    )
+
+    assert [chunk.anchor_shot_index for chunk in chunks] == [1, 0]
+
+
+def test_flexible_anchor_prefers_continuity_when_far_match_is_only_slightly_better() -> None:
+    current_beat = beat(source_end=300.0)
+    current_timing = timing(duration=60.0)
+    sentences = estimate_sentence_timings(current_beat, current_timing)[:2]
+    shots = [shot(0, 0, 10), shot(1, 30, 40), shot(2, 240, 250)]
+    scores = {
+        (1, sentences[0].sentence_index, 0): 0.72,
+        (1, sentences[1].sentence_index, 1): 0.66,
+        (1, sentences[1].sentence_index, 2): 0.70,
+    }
+
+    chunks = select_flexible_anchors(
+        beat=current_beat,
+        timing=current_timing,
+        sentences=sentences,
+        shots=shots,
+        query_shot_scores=scores,
+    )
+
+    assert [chunk.anchor_shot_index for chunk in chunks] == [0, 1]
+
+
+def test_flexible_anchor_allows_far_jump_when_semantic_gain_is_decisive() -> None:
+    current_beat = beat(source_end=300.0)
+    current_timing = timing(duration=60.0)
+    sentences = estimate_sentence_timings(current_beat, current_timing)[:2]
+    shots = [shot(0, 0, 10), shot(1, 30, 40), shot(2, 240, 250)]
+    scores = {
+        (1, sentences[0].sentence_index, 0): 0.72,
+        (1, sentences[1].sentence_index, 1): 0.40,
+        (1, sentences[1].sentence_index, 2): 0.99,
+    }
+
+    chunks = select_flexible_anchors(
+        beat=current_beat,
+        timing=current_timing,
+        sentences=sentences,
+        shots=shots,
+        query_shot_scores=scores,
+    )
+
+    assert [chunk.anchor_shot_index for chunk in chunks] == [0, 2]
 
 
 def test_shared_character_name_is_detected_across_adjacent_sentences() -> None:
@@ -227,6 +294,30 @@ def test_prepare_intra_beat_alignment_includes_full_non_opening_long_beat() -> N
     assert result[1][-1].tl_end == 260.0
 
 
+def test_prepare_intra_beat_alignment_allows_guarded_sentence_refinement_without_opening_flag() -> None:
+    current_beat = beat(source_end=180.0)
+    current_timing = BeatTiming(
+        beat_id=1,
+        audio_path="audio/1.mp3",
+        tl_start=200.0,
+        tl_end=260.0,
+        duration=60.0,
+    )
+
+    result = prepare_intra_beat_alignment_sentences(
+        beats=[current_beat],
+        timings=[current_timing],
+        enabled=False,
+        sentence_refinement_enabled=True,
+        semantic_mode="bge-m3",
+        strict_timecodes=True,
+        opening_guard_s=120.0,
+    )
+
+    assert len(result[1]) == 4
+    assert result[1][0].tl_start == 200.0
+
+
 def test_long_beat_alignment_requires_large_baseline_drift() -> None:
     current_beat = beat(source_end=180.0)
     current_timing = timing(duration=60.0)
@@ -334,3 +425,212 @@ def test_low_confidence_transition_merges_into_next_strong_anchor() -> None:
         strict_timecodes=True,
         opening_guard_s=120,
     ) == {}
+
+def test_guarded_refinement_acceptance_requires_drift_improvement_and_no_new_warnings() -> None:
+    accepted, reason = should_accept_guarded_refinement(
+        baseline_max_drift_s=20.0,
+        refined_max_drift_s=19.8,
+        baseline_warning_count=1,
+        refined_warning_count=1,
+    )
+    assert accepted is False
+    assert reason and "did not improve" in reason
+
+    accepted, reason = should_accept_guarded_refinement(
+        baseline_max_drift_s=20.0,
+        refined_max_drift_s=18.9,
+        baseline_warning_count=1,
+        refined_warning_count=2,
+    )
+    assert accepted is False
+    assert reason and "warning count" in reason
+
+    accepted, reason = should_accept_guarded_refinement(
+        baseline_max_drift_s=20.0,
+        refined_max_drift_s=18.9,
+        baseline_warning_count=1,
+        refined_warning_count=1,
+    )
+    assert accepted is True
+    assert reason is None
+
+def test_long_beat_alignment_fails_closed_when_refinement_worsens_drift(monkeypatch) -> None:
+    current_beat = beat(source_end=100.0)
+    current_timing = BeatTiming(
+        beat_id=1,
+        audio_path="audio/1.mp3",
+        tl_start=0.0,
+        tl_end=100.0,
+        duration=100.0,
+    )
+    baseline = [
+        EdlPlacement(
+            tl_start=10.0,
+            tl_end=20.0,
+            src="film.mp4",
+            src_in=10.0,
+            src_out=20.0,
+            beat_id=1,
+            shot_index=0,
+            speed=1.0,
+        )
+    ]
+    chunks = [
+        AlignmentChunk(
+            beat_id=1,
+            sentence_indices=(0,),
+            text="bad far anchor",
+            tl_start=10.0,
+            tl_end=20.0,
+            anchor_shot_index=1,
+            anchor_source_s=85.0,
+            semantic_score=0.95,
+            baseline_source_s=15.0,
+        )
+    ]
+
+    monkeypatch.setattr("match.intra_beat.select_monotonic_anchors", lambda **kwargs: chunks)
+
+    result = apply_intra_beat_alignment(
+        beat=current_beat,
+        timing=current_timing,
+        baseline_placements=baseline,
+        sentences=estimate_sentence_timings(current_beat, current_timing),
+        shots=[shot(0, 10.0, 20.0), shot(1, 80.0, 100.0)],
+        query_shot_scores={},
+        reuse_counts_before={},
+        max_clip=5.0,
+        min_visual_clip=0.6,
+        allow_dark_fallback=False,
+        mode="long_beat",
+        max_source_drift_s=12.0,
+    )
+
+    assert result.used is False
+    assert result.accepted is False
+    assert result.rejected_reason and "did not improve" in result.rejected_reason
+    assert result.placements == baseline
+    assert all(not diagnostic.get("replaced", False) for diagnostic in result.diagnostics)
+
+def test_guarded_refinement_falls_back_when_local_refinement_does_not_improve(monkeypatch) -> None:
+    current_beat = beat(source_end=300.0)
+    current_timing = timing(duration=60.0)
+    sentences = estimate_sentence_timings(current_beat, current_timing)[:2]
+    chunks = [
+        AlignmentChunk(1, (0,), "first", 10.0, 25.0, 0, 15.0, 0.95, 12.0),
+        AlignmentChunk(1, (1,), "second", 25.0, 40.0, 3, 255.0, 0.95, 42.0),
+    ]
+    baseline = [
+        EdlPlacement(tl_start=10, tl_end=25, src="film.mp4", src_in=0, src_out=15, beat_id=1, shot_index=0, speed=1),
+        EdlPlacement(tl_start=25, tl_end=40, src="film.mp4", src_in=30, src_out=45, beat_id=1, shot_index=1, speed=1),
+        EdlPlacement(tl_start=40, tl_end=55, src="film.mp4", src_in=60, src_out=75, beat_id=1, shot_index=2, speed=1),
+        EdlPlacement(tl_start=55, tl_end=70, src="film.mp4", src_in=240, src_out=255, beat_id=1, shot_index=3, speed=1),
+    ]
+    shots = [
+        shot(0, 0, 30),
+        shot(1, 30, 60),
+        shot(2, 60, 90),
+        shot(3, 240, 270),
+    ]
+
+    monkeypatch.setattr("match.intra_beat.select_flexible_anchors", lambda **kwargs: chunks)
+    monkeypatch.setattr(
+        "match.intra_beat.fill_local_window",
+        lambda **kwargs: [
+            EdlPlacement(
+                tl_start=kwargs["tl_start"],
+                tl_end=kwargs["tl_end"],
+                src="film.mp4",
+                src_in=kwargs["window_start"],
+                src_out=kwargs["window_start"] + (kwargs["tl_end"] - kwargs["tl_start"]),
+                beat_id=kwargs["beat_id"],
+                shot_index=kwargs["shots"][0].index,
+                speed=1,
+            )
+        ],
+    )
+
+    result = apply_intra_beat_alignment(
+        beat=current_beat,
+        timing=current_timing,
+        baseline_placements=baseline,
+        sentences=sentences,
+        shots=shots,
+        query_shot_scores={},
+        reuse_counts_before={},
+        max_clip=5.0,
+        min_visual_clip=0.6,
+        allow_dark_fallback=False,
+        mode="content_anchor_long_beat",
+        max_source_drift_s=12.0,
+    )
+
+    assert result.used is False
+    assert result.accepted is False
+    assert result.rejected_reason and "did not improve local baseline" in result.rejected_reason
+    assert result.placements == baseline
+    assert result.warnings == []
+    assert all(not diagnostic.get("replaced", False) for diagnostic in result.diagnostics)
+
+
+def test_guarded_refinement_falls_back_when_source_jump_exceeds_cap(monkeypatch) -> None:
+    current_beat = beat(source_end=300.0)
+    current_timing = timing(duration=60.0)
+    sentences = estimate_sentence_timings(current_beat, current_timing)[:2]
+    chunks = [
+        AlignmentChunk(1, (0,), "first", 10.0, 25.0, 0, 15.0, 0.95, 12.0),
+        AlignmentChunk(1, (1,), "second", 25.0, 40.0, 3, 255.0, 0.95, 42.0),
+    ]
+    baseline = [
+        EdlPlacement(tl_start=10, tl_end=25, src="film.mp4", src_in=0, src_out=15, beat_id=1, shot_index=0, speed=1),
+        EdlPlacement(tl_start=25, tl_end=40, src="film.mp4", src_in=30, src_out=45, beat_id=1, shot_index=1, speed=1),
+        EdlPlacement(tl_start=40, tl_end=55, src="film.mp4", src_in=60, src_out=75, beat_id=1, shot_index=2, speed=1),
+        EdlPlacement(tl_start=55, tl_end=70, src="film.mp4", src_in=240, src_out=255, beat_id=1, shot_index=3, speed=1),
+    ]
+    shots = [
+        shot(0, 0, 30),
+        shot(1, 30, 60),
+        shot(2, 60, 90),
+        shot(3, 240, 270),
+    ]
+
+    monkeypatch.setattr("match.intra_beat.select_flexible_anchors", lambda **kwargs: chunks)
+    monkeypatch.setattr(
+        "match.intra_beat.max_source_drift_for_range",
+        lambda **kwargs: 0.0 if kwargs["placements"] is not baseline else 100.0,
+    )
+    monkeypatch.setattr(
+        "match.intra_beat.fill_local_window",
+        lambda **kwargs: [
+            EdlPlacement(
+                tl_start=kwargs["tl_start"],
+                tl_end=kwargs["tl_end"],
+                src="film.mp4",
+                src_in=kwargs["window_start"],
+                src_out=kwargs["window_start"] + (kwargs["tl_end"] - kwargs["tl_start"]),
+                beat_id=kwargs["beat_id"],
+                shot_index=kwargs["shots"][0].index,
+                speed=1,
+            )
+        ],
+    )
+
+    result = apply_intra_beat_alignment(
+        beat=current_beat,
+        timing=current_timing,
+        baseline_placements=baseline,
+        sentences=sentences,
+        shots=shots,
+        query_shot_scores={},
+        reuse_counts_before={},
+        max_clip=5.0,
+        min_visual_clip=0.6,
+        allow_dark_fallback=False,
+        mode="content_anchor_long_beat",
+        max_source_drift_s=12.0,
+    )
+
+    assert result.used is False
+    assert result.accepted is False
+    assert result.rejected_reason and "unexpected source jump exceeds hard cap" in result.rejected_reason
+    assert result.placements == baseline

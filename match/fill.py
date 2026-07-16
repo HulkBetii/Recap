@@ -158,14 +158,36 @@ def fill_beat(
             break
         available = [shot for shot in candidates if shot.index not in used_in_beat]
         if min_visual_clip > 0:
-            long_enough = [
-                shot
-                for shot in available
-                if any(end - start + 1e-6 >= min_visual_clip for start, end in shot_source_ranges(shot, active_intervals))
-            ]
+            long_enough = []
+            for shot in available:
+                ranges = shot_source_ranges(shot, active_intervals)
+                if any(end - start + 1e-6 >= min_visual_clip for start, end in ranges):
+                    long_enough.append(shot)
+                elif any(
+                    ordered_fill_short_bridge_allowed(
+                        selected_range=(start, end),
+                        source_cursor=source_cursor,
+                        source_intervals=active_intervals,
+                        available_shots=available,
+                        min_visual_clip=min_visual_clip,
+                        strict_ordered_fill=strict_ordered_fill,
+                        match_strategy=match_strategy,
+                    )
+                    for start, end in ranges
+                ):
+                    long_enough.append(shot)
             available = long_enough
         if not available:
             break
+        if strict_ordered_fill:
+            source_cursor = guard_source_cursor_no_early_jump(
+                source_cursor,
+                fragments=fragments,
+                available_shots=available,
+                source_intervals=active_intervals,
+                min_visual_clip=min_visual_clip,
+                max_source_drift_s=max_source_drift_s,
+            )
         ranked = rank_shots(available, reuse_counts, weights, semantic_scores, visual_scores, beat.beat_id)
         if ordered_fill or match_strategy in {"chronological", "hybrid"}:
             ranked = rank_for_ordered_fill(
@@ -200,10 +222,30 @@ def fill_beat(
             used_in_beat.add(shot.index)
             continue
         src_start, src_end = selected_range
-        if match_strategy == "chronological" and src_start < source_cursor < src_end:
-            src_start = max(src_start, source_cursor)
+        if match_strategy == "chronological":
+            src_start = ordered_fill_source_start(
+                src_start,
+                src_end,
+                source_cursor,
+                strict_ordered_fill=strict_ordered_fill,
+                min_visual_clip=min_visual_clip,
+            )
         usable_len = max(0.0, src_end - src_start)
-        if usable_len <= 0 or (min_visual_clip > 0 and usable_len + 1e-6 < min_visual_clip):
+        short_bridge_allowed = (
+            usable_len > 0
+            and min_visual_clip > 0
+            and usable_len + 1e-6 < min_visual_clip
+            and ordered_fill_short_bridge_allowed(
+                selected_range=(src_start, src_end),
+                source_cursor=source_cursor,
+                source_intervals=active_intervals,
+                available_shots=available,
+                min_visual_clip=min_visual_clip,
+                strict_ordered_fill=strict_ordered_fill,
+                match_strategy=match_strategy,
+            )
+        )
+        if usable_len <= 0 or (min_visual_clip > 0 and usable_len + 1e-6 < min_visual_clip and not short_bridge_allowed):
             used_in_beat.add(shot.index)
             continue
         clip_len = min(max_clip, usable_len, remaining)
@@ -484,6 +526,90 @@ def source_position_for_progress(
         offset -= weight
     return intervals[-1][1]
 
+def guard_source_cursor_no_early_jump(
+    source_cursor: float,
+    *,
+    fragments: list[Fragment],
+    available_shots: list[Shot],
+    source_intervals: list[tuple[float, float]],
+    min_visual_clip: float,
+    max_source_drift_s: float,
+) -> float:
+    if len(source_intervals) < 2 or not fragments or not available_shots:
+        return source_cursor
+    last_fragment = fragments[-1]
+    last_interval_index = source_interval_index(source_intervals, last_fragment.src_out)
+    cursor_interval_index = source_interval_index(source_intervals, source_cursor)
+    if (
+        last_interval_index is None
+        or cursor_interval_index is None
+        or cursor_interval_index < last_interval_index
+    ):
+        return source_cursor
+    if cursor_interval_index == last_interval_index:
+        interval_start, interval_end = source_intervals[last_interval_index]
+        lower_bound = max(interval_start, last_fragment.src_out)
+        if (
+            source_cursor > lower_bound + 1e-6
+            and not interval_has_available_source_after(
+                available_shots,
+                (interval_start, interval_end),
+                source_cursor,
+                min_visual_clip=min_visual_clip,
+            )
+            and interval_has_available_source_after(
+                available_shots,
+                (interval_start, interval_end),
+                lower_bound,
+                min_visual_clip=min_visual_clip,
+            )
+        ):
+            return lower_bound
+        return source_cursor
+    prior_interval_end = source_intervals[last_interval_index][1]
+    if source_cursor - prior_interval_end > max_source_drift_s:
+        return source_cursor
+    for interval_index in range(last_interval_index, cursor_interval_index):
+        interval_start, interval_end = source_intervals[interval_index]
+        lower_bound = max(interval_start, last_fragment.src_out) if interval_index == last_interval_index else interval_start
+        if interval_has_available_source_after(
+            available_shots,
+            (interval_start, interval_end),
+            lower_bound,
+            min_visual_clip=min_visual_clip,
+        ):
+            return lower_bound
+    return source_cursor
+
+def source_interval_index(
+    intervals: list[tuple[float, float]],
+    position: float,
+    *,
+    epsilon: float = 1e-3,
+) -> int | None:
+    for index, (start, end) in enumerate(intervals):
+        if start - epsilon <= position <= end + epsilon:
+            return index
+    return None
+
+def interval_has_available_source_after(
+    shots: list[Shot],
+    interval: tuple[float, float],
+    lower_bound: float,
+    *,
+    min_visual_clip: float,
+) -> bool:
+    minimum = max(min_visual_clip, 1e-6)
+    interval_start, interval_end = interval
+    if interval_end - max(interval_start, lower_bound) + 1e-6 < minimum:
+        return False
+    for shot in shots:
+        for start, end in shot_source_ranges(shot, [interval]):
+            usable_start = max(start, lower_bound)
+            if end - usable_start + 1e-6 >= minimum:
+                return True
+    return False
+
 
 def choose_source_range(
     ranges: list[tuple[float, float]],
@@ -500,6 +626,47 @@ def choose_source_range(
         ),
     )
 
+
+def ordered_fill_source_start(
+    src_start: float,
+    src_end: float,
+    source_cursor: float,
+    *,
+    strict_ordered_fill: bool,
+    min_visual_clip: float,
+) -> float:
+    if source_cursor <= src_start or source_cursor >= src_end:
+        return src_start
+    if not strict_ordered_fill:
+        return source_cursor
+    if source_cursor - src_start < max(min_visual_clip, 1e-6):
+        return src_start
+    return source_cursor
+
+def ordered_fill_short_bridge_allowed(
+    *,
+    selected_range: tuple[float, float],
+    source_cursor: float,
+    source_intervals: list[tuple[float, float]],
+    available_shots: list[Shot],
+    min_visual_clip: float,
+    strict_ordered_fill: bool,
+    match_strategy: str,
+) -> bool:
+    if not strict_ordered_fill or match_strategy != "chronological" or min_visual_clip <= 0:
+        return False
+    interval_index = source_interval_index(source_intervals, source_cursor)
+    if interval_index is None:
+        return False
+    interval_start, interval_end = source_intervals[interval_index]
+    if selected_range[1] < interval_end - 1e-6:
+        return False
+    return not interval_has_available_source_after(
+        available_shots,
+        (interval_start, interval_end),
+        source_cursor,
+        min_visual_clip=min_visual_clip,
+    )
 
 def uncovered_source_ranges(
     shot: Shot,

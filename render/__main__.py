@@ -14,6 +14,8 @@ from render.compose import concat_video, mux_voiceover, pad_video_by_tail, pad_v
 from render.cut import RenderParams, clamp_source, cut_temp_clip, temp_cache_key
 from render.quantize import quantize_placements
 
+TAIL_PAD_WARNING_THRESHOLD_S = 1.0
+
 class RenderError(RuntimeError):
     pass
 
@@ -123,8 +125,10 @@ def run_render(args: argparse.Namespace) -> int:
         padded_video = args.work_dir / "video_only_padded.mp4"
         target_label = "delayed audio duration" if args.audio_delay_s > 0 else "audio duration"
         shortage_s = mux_audio_duration - video_only_duration
-        warnings.append(f"video-only concat was tail-padded from {video_only_duration:.3f}s to {target_label} {mux_audio_duration:.3f}s")
-        logging.info("tail-pad video-only concat to voiceover duration")
+        tail_pad_message = f"video-only concat was tail-padded from {video_only_duration:.3f}s to {target_label} {mux_audio_duration:.3f}s"
+        if shortage_s > TAIL_PAD_WARNING_THRESHOLD_S:
+            warnings.append(tail_pad_message)
+        logging.info("%s", tail_pad_message)
         try:
             pad_frames = pad_video_by_tail(
                 video_path=video_only,

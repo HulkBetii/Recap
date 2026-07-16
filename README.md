@@ -45,6 +45,12 @@ python -m pip install -e ".[movie-visual,dev]"
 python run.py --input path\to\film.mp4 --run-dir runs\movie01 --config config.movie.production.yaml
 ```
 
+AI33-only variant when Genmax audio should be skipped:
+
+```powershell
+python run.py --input path\to\film.mp4 --run-dir runs\movie01 --config config.movie.production.ai33.yaml
+```
+
 Preset phim lẻ ổn định không dùng Visual Index:
 
 ```powershell
@@ -82,6 +88,7 @@ python run.py --input path\to\video-vi.mp4 --run-dir runs\movie-vi01 --config co
 ```
 
 - `movie` preset ưu tiên kể mạch dễ hiểu từ đầu phim: `storymap`, `hook_mode=setup`, `target_ratio=auto`.
+- Với phim lẻ, `target_ratio=auto` tính theo story duration sau khi trừ non-story/intro ranges từ GĐ0. Policy cân bằng mặc định cho đa số phim khoảng `20–32%`, phim dày có thể lên `35–38%`, và không vượt `40%` hoặc `45 phút` tùy mức nào nhỏ hơn.
 - GĐ5 dùng `match_strategy=chronological`, `w_semantic=0.15`, `audio_delay_s=0.0`; semantic/story/intent chỉ làm tie-breaker, không kéo footage lệch nhịp nguồn.
 - Không dùng cutoff intro cố định; GĐ0 `preflight` detect non-story/intro theo từng video.
 - Với nguồn tiếng Việt, `config.vi.stable.yaml` dùng `source_language=vi`, `translate_mode=none` và `aligner=whisperx`; GĐ1 giữ transcript Việt trực tiếp trong `film_map.json` và forced-align bằng WhisperX khi runtime có sẵn.
@@ -177,10 +184,14 @@ GĐ2 khóa profile ChatGPT tại `D:\VibeCoding\auto_YT\data\chrome_user_data\PR
 python -m review `
   --film-map out\film_map.json `
   --output out\review_script.json `
-  --target-ratio 0.33 `
+  --target-ratio auto `
+  --auto-max-ratio 0.40 `
+  --auto-soft-cap-s 2100 `
+  --auto-hard-cap-s 2700 `
+  --auto-long-score-threshold 0.80 `
   --tts-cps 15 `
   --min-coverage 0.85 `
-  --max-qa-iterations 3 `
+  --max-qa-iterations 2 `
   --work-dir work\review `
   --chatgpt-profile-dir D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1
 ```
@@ -197,11 +208,15 @@ Artifacts cache GĐ2:
 - `work/review/cache_manifest.json`
 
 Manifest GĐ2 hash nội dung `film_map`, metadata, story map, video profile, style sample và generation config. Thay đổi semantic input sẽ xóa đồng nhất toàn bộ artifact review; browser profile/headless/timeout không làm đổi cache. Thêm `--force` để rebuild cache GĐ2.
+
+Các knob `auto_*` chỉ có tác dụng khi `--target-ratio auto`. Fixed numeric ratio như `0.33` vẫn dùng full duration legacy, không trừ non-story ranges.
+
+Preset phim lẻ mặc định dùng `--max-qa-iterations 2`; GĐ2 tự clamp effective QA xuống `1` khi `target_video_s >= 2100s` hoặc `char_budget > 30000` để tránh timeout với script dài khoảng 35 phút. Tăng lên 3 chỉ khi cần review sâu hơn và chấp nhận thời gian chạy dài hơn.
 ## Chạy GĐ3
 
 GĐ3 nhận `review_script.json` và tạo `audio/<beat_id>.mp3`, `voiceover.mp3`, `beats_timing.json`, `tts_meta.json`.
 
-Provider mặc định là `auto`: thử AI33.PRO Vivoo V3, sau đó Genmax khi có key + voice riêng, rồi OpenAI `gpt-4o-mini-tts` khi có `OPENAI_API_KEY`. Production preset dùng Genmax voice `VU16byTywsWv5JpI8rbc`; provider thiếu key được bỏ qua, và GĐ3 fail-fast nếu không có provider nào.
+Provider mặc định là `auto`: thử AI33.PRO Vivoo V3, sau đó Genmax khi có key + voice riêng, rồi OpenAI `gpt-4o-mini-tts` khi có `OPENAI_API_KEY`. Production preset dùng Genmax voice `VU16byTywsWv5JpI8rbc`; provider thiếu key được bỏ qua, và GĐ3 fail-fast nếu không có provider nào. If Genmax audio is unhealthy, use `config.movie.production.ai33.yaml` to pin AI33-only with the same VBee voice.
 
 Env vars:
 
@@ -348,6 +363,8 @@ Visual score chỉ rerank candidates trong source window/widen hiện có; nếu
 
 GD5 nhan `review_script.json`, `beats_timing.json`, `shots.json` va tao `edl.json` + `edl.meta.json` + `edl.qa.json`. Neu truyen them `--film-map`, GD5 co the dung semantic offline: `bge-m3` multilingual embedding la default orchestrator, con `tfidf` la fallback nhe. Stage nay chi xu ly JSON, khong decode video va khong dung API.
 
+Movie production/visual presets set `sentence_refinement_mode=guarded`; the guarded path is fail-closed, so it only keeps a refinement when drift improves and warning count does not rise. You can also run `--sentence-refinement-ab` to compare baseline vs guarded into temp outputs and write `match_refinement_ab.qa.json` + `match_refinement_ab.html` without touching the main `edl.json`.
+
 ```powershell
 python -m match `
   --review-script out\review_script.json `
@@ -365,6 +382,7 @@ python -m match `
   --semantic-batch-size 16 `
   --semantic-cache-dir work\match\semantic `
   --content-anchors `
+  --sentence-refinement-mode guarded `
   --match-strategy chronological `
   --chronology-weight 0.70 `
   --max-source-drift-s 12 `
@@ -385,21 +403,21 @@ Nguyên tắc GĐ5:
 
 - Semantic Phase 2 dung `BAAI/bge-m3` local multilingual embedding; `tfidf` van giu lam fallback khong can dependency nang.
 - Movie matching mac dinh la `chronological`: bam timecode/source chronology truoc, semantic/story/intent chi lam soft tie-breaker de tranh audio mot noi hinh mot noi.
-- Beat co source span rat rong dung narration-only semantic de tao content timecode anchors. Candidate fill va chronology chi chay trong cac anchor interval; beat compact hoac anchor khong du capacity se fallback behavior cu.
+- Beat co source span rat rong dung narration-only semantic de tao content timecode anchors. Candidate fill va chronology chi chay trong cac anchor interval; content-anchor beat dung strict ordered fill de uu tien shot gan source cursor truoc semantic/visual tie-breaker xa hon. Strict anchor fill co no-early-jump guard: neu audio progress nam sat cuoi interval hien tai va bat dau tai cursor se lam clip ke tiep qua ngan, GD5 lui ve ranh gioi fragment truoc de lay het footage usable trong interval hien tai truoc khi nhay canh. Beat compact hoac anchor khong du capacity se fallback behavior cu.
 - Content anchors tu dong tat khi `film_map.meta.json` ghi `approximate_timecodes=true`, vi anchor hep khong an toan khi segment timecode con tho.
 - Cai embedding deps khi dung `bge-m3`: `pip install -e ".[semantic-embed]"`.
-- `edl.qa.json` ghi provider/model/device/cache hits, từng beat chọn shot nào, semantic rank/score, `expected_src_position`, `source_drift_s`, `chronology_score` và warning `low semantic match`/`high source drift`.
-- `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse/drift và warnings theo beat.
+- `edl.qa.json` ghi provider/model/device/cache hits, từng beat chọn shot nào, semantic rank/score, `expected_src_position`, `source_drift_s`, `chronology_score`, sentence refinement eligibility/reason/jump/skipped-chunk metrics và warning `low semantic match`/`high source drift`.
+- `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse/drift, sentence refinement diagnostics và warnings theo beat.
 - Face l? ?i?m c?ng m?m, kh?ng l?c c?ng.
 - Placement m?c ??nh 1:1 speed `1.0`.
 - `min_visual_clip` mac dinh `0.6s` de tranh flash-cut; pause gap ngan duoc absorb bang source capacity hoac slowdown toi da 10% tren hai clip ke nhau, va placement dai hon `max_clip` se duoc split lien tuc cung source/shot.
 - Khi thiếu footage, GĐ5 tính diversity capacity theo tối đa một clip `max_clip` cho mỗi shot. Nó thử shot usable rồi shot story chỉ bị loại vì tối trong cùng source window trước khi widen, và không vượt quá `max_widen`.
 - Repeat fallback ưu tiên phần source chưa dùng của các shot đã chọn, tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier, rồi mới dùng span có overlap thấp nhất.
 - `edl.qa.json`/HTML hiển thị capacity, widen count, dark fallback, unused-source reuse và overlapping repeat; `edl.meta.json.algorithm_version` làm stale artifact tự rebuild qua orchestrator.
-- Visual preset bật `opening_intra_beat_align` cho cả opening và long-beat hardening. Opening vẫn chỉ phân tích 30 giây đầu; non-opening beat chỉ splice khi timecode strict, dùng BGE-M3, chưa có content-anchor plan và baseline drift vượt `max(18s, 1.5 * max_source_drift_s)`. Các câu cùng anchor được gộp, transition confidence thấp gắn vào anchor mạnh kế tiếp, source window giữ thứ tự và không overlap.
+- Visual preset bật `opening_intra_beat_align` cho cả opening và long-beat hardening, and `sentence_refinement_mode=guarded` for the content-anchor sentence refinement rollout. Opening vẫn chỉ phân tích 30 giây đầu; non-opening beat chỉ splice khi timecode strict, dùng BGE-M3 và baseline drift vượt `max(18s, 1.5 * max_source_drift_s)`. Long-beat alignment cũng có thể chạy sau content anchors nếu anchor cấp beat vẫn quá thô so với narration cấp câu; mode `content_anchor_long_beat` chọn anchor linh hoạt theo từng câu nên có thể theo narration bị kể đảo thứ tự bằng source jump cục bộ, trong khi timeline output vẫn kín và không overlap. Standard long-beat mode vẫn giữ source window theo thứ tự và không overlap.
 - `hook_min_brightness=0.10` trong visual preset tránh mở video bằng placement quá tối; stable/default giữ `0.0`. QA HTML/JSON ghi mode, trigger drift, replaced ranges, source windows và shot thay thế hook.
 - Visual preset bật `end_credit_guard` ở GĐ4 và `exclude_end_credits` ở GĐ5. Guard chỉ hard-exclude blank/credit-only trong 600 giây cuối; cảnh post-credit có story image và credit overlay vẫn được giữ. Credit-only không quay lại qua dark fallback, repeat hoặc pause filler.
-- Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic, `content_anchors`, `opening_intra_beat_align` và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
+- Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic, `content_anchors`, `opening_intra_beat_align`, `sentence_refinement_mode` và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
 
 ## Chạy GĐ6
 

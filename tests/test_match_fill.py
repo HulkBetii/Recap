@@ -135,6 +135,120 @@ def test_fill_stays_inside_disjoint_content_anchor_intervals() -> None:
     assert source_position_for_progress(content_intervals, 0.5, weights=[5.0, 15.0]) == 93.33333333333333
 
 
+def test_content_anchor_strict_order_prefers_near_shot_over_far_semantic_score() -> None:
+    source_shots = [shot(0, 8, 10), shot(1, 80, 84)]
+    content_intervals = [(0.0, 10.0), (80.0, 90.0)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=100, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=2, duration=2)
+    common = dict(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(0.0, 0.0, 0.0, 0.0, 1.0),
+        min_clip=1,
+        max_clip=2,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=False,
+        allow_speedfit=False,
+        match_strategy="chronological",
+        max_source_drift_s=120,
+        semantic_scores={(0, 1): 1.0},
+        candidate_filter_ids={0, 1},
+        dark_candidate_ids=set(),
+        source_intervals=content_intervals,
+    )
+
+    loose = fill_beat(**common)
+    strict = fill_beat(**common, strict_ordered_fill=True)
+
+    assert loose.fragments[0].shot_index == 1
+    assert strict.fragments[0].shot_index == 0
+
+def test_content_anchor_strict_order_does_not_jump_to_next_interval_early() -> None:
+    source_shots = [shot(0, 0, 3, motion=1.0), shot(1, 3, 4, motion=0.0), shot(2, 80, 84, motion=0.0)]
+    content_intervals = [(0.0, 4.0), (80.0, 84.0)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=0, src_tc_end=84, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=6, duration=6)
+    common = dict(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(1.0, 0.0, 0.0, 0.0, 0.5),
+        min_clip=1,
+        max_clip=3,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=False,
+        allow_speedfit=False,
+        match_strategy="chronological",
+        max_source_drift_s=12,
+        semantic_scores={(0, 2): 1.0},
+        candidate_filter_ids={0, 1, 2},
+        dark_candidate_ids=set(),
+        source_intervals=content_intervals,
+    )
+
+    loose = fill_beat(**common)
+    strict = fill_beat(**common, strict_ordered_fill=True)
+
+    assert [fragment.shot_index for fragment in loose.fragments] == [0, 2]
+    assert [fragment.shot_index for fragment in strict.fragments] == [0, 1, 2]
+
+def test_content_anchor_strict_order_keeps_micro_shot_heads_before_jump() -> None:
+    source_shots = [
+        shot(1111, 6378.6, 6382.133),
+        shot(1112, 6382.133, 6385.133),
+        shot(1113, 6385.133, 6386.967),
+        shot(1114, 6386.967, 6388.333),
+        shot(1115, 6388.333, 6390.8),
+        shot(1116, 6390.8, 6391.933),
+        shot(1117, 6391.933, 6394.133),
+        shot(1138, 6470.567, 6472.367),
+    ]
+    content_intervals = [(6380.12, 6392.12), (6470.34, 6482.34)]
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=0, src_tc_start=6380.12, src_tc_end=6482.34, is_hook=False)
+    timing = BeatTiming(beat_id=0, audio_path="0.mp3", tl_start=0, tl_end=13.613, duration=13.613)
+
+    result = fill_beat(
+        beat=beat,
+        timing=timing,
+        shots=source_shots,
+        reuse_counts={},
+        weights=ScoringWeights(1.0, 0.0, 0.0, 0.0, 0.5),
+        min_clip=0.5,
+        max_clip=5,
+        min_visual_clip=0.6,
+        widen_margin=0,
+        max_widen=0,
+        allow_repeat=False,
+        allow_speedfit=False,
+        match_strategy="chronological",
+        max_source_drift_s=12,
+        semantic_scores={(0, 1138): 1.0},
+        candidate_filter_ids={item.index for item in source_shots},
+        dark_candidate_ids=set(),
+        source_intervals=content_intervals,
+        strict_ordered_fill=True,
+    )
+
+    placements = assign_timeline(result.fragments, timing)
+    drifts = []
+    for placement in placements:
+        progress = (placement.tl_start - timing.tl_start) / timing.duration
+        expected = source_position_for_progress(
+            result.source_intervals,
+            progress,
+            weights=result.source_interval_weights,
+        )
+        drifts.append(abs(placement.src_in - expected))
+
+    assert max(drifts) <= 12.0
+
 def test_repeat_avoids_adjacent_shot_when_same_tier_alternative_exists() -> None:
     ranked = [shot(0, 10, 15), shot(1, 16, 21), shot(2, 40, 45)]
 

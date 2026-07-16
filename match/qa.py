@@ -41,6 +41,8 @@ def build_edl_qa(
     candidate_diagnostics: dict[int, dict[str, Any]] | None = None,
     end_credit_guard_enabled: bool = False,
     excluded_end_credit_ids: list[int] | None = None,
+    sentence_refinement_mode: str = "off",
+    sentence_refinement_requested_mode: str | None = None,
 ) -> dict[str, Any]:
     review_intents = review_intents or {}
     story_sections = story_sections or {}
@@ -60,6 +62,14 @@ def build_edl_qa(
                 warning_by_beat[beat.beat_id].append(warning)
                 break
     beat_reports: list[dict[str, Any]] = []
+    refinement_eligible_beats = 0
+    refinement_used_beats = 0
+    refinement_accepted_beats = 0
+    refinement_rejected_beats = 0
+    refinement_replaced_duration_s = 0.0
+    refinement_skipped_chunks = 0
+    refinement_source_jumps: list[float] = []
+    refinement_low_confidence_count = 0
     for beat in beats:
         candidate_info = candidate_diagnostics.get(beat.beat_id, {})
         dark_candidate_ids = {int(item) for item in candidate_info.get("dark_candidate_ids", [])}
@@ -85,6 +95,23 @@ def build_edl_qa(
         ]
         beat_drifts: list[float] = []
         semantic_override = False
+        sentence_refinement_source_jumps = [
+            float(item)
+            for item in candidate_info.get("sentence_refinement_source_jumps", [])
+            if isinstance(item, (int, float))
+        ]
+        if candidate_info.get("sentence_refinement_eligible"):
+            refinement_eligible_beats += 1
+        if candidate_info.get("sentence_refinement_used"):
+            refinement_used_beats += 1
+        if candidate_info.get("sentence_refinement_accepted"):
+            refinement_accepted_beats += 1
+        if candidate_info.get("sentence_refinement_rejected_reason"):
+            refinement_rejected_beats += 1
+        refinement_replaced_duration_s += float(candidate_info.get("sentence_refinement_replaced_duration_s", 0.0) or 0.0)
+        refinement_skipped_chunks += int(candidate_info.get("sentence_refinement_skipped_chunks", 0) or 0)
+        refinement_low_confidence_count += int(candidate_info.get("sentence_refinement_low_confidence_count", 0) or 0)
+        refinement_source_jumps.extend(jump for jump in sentence_refinement_source_jumps if jump > 1e-6)
         for placement in beat_selected:
             shot = shots_by_index.get(placement.shot_index)
             semantic_score = semantic_scores.get((beat.beat_id, placement.shot_index), 0.0)
@@ -269,11 +296,32 @@ def build_edl_qa(
             "unused_source_reuse_count": candidate_info.get("unused_source_reuse_count", 0),
             "overlapping_repeat_count": candidate_info.get("overlapping_repeat_count", 0),
             "content_anchor_used": bool(candidate_info.get("content_anchor_used", False)),
+            "content_anchor_strict_ordered_fill": bool(candidate_info.get("content_anchor_strict_ordered_fill", False)),
             "content_anchor_intervals": candidate_info.get("content_anchor_intervals", []),
             "content_anchor_interval_weights": candidate_info.get("content_anchor_interval_weights", []),
             "content_anchor_segment_ids": candidate_info.get("content_anchor_segment_ids", []),
             "content_anchor_threshold": candidate_info.get("content_anchor_threshold"),
             "content_anchor_capacity_s": candidate_info.get("content_anchor_capacity_s"),
+            "sentence_refinement_mode": candidate_info.get("sentence_refinement_mode", sentence_refinement_mode),
+            "sentence_refinement_requested_mode": candidate_info.get("sentence_refinement_requested_mode", sentence_refinement_requested_mode),
+            "sentence_refinement_runtime_reason": candidate_info.get("sentence_refinement_runtime_reason"),
+            "sentence_refinement_eligible": bool(candidate_info.get("sentence_refinement_eligible", False)),
+            "sentence_refinement_reason": candidate_info.get("sentence_refinement_reason"),
+            "sentence_refinement_trigger_drift_s": candidate_info.get("sentence_refinement_trigger_drift_s"),
+            "sentence_refinement_used": bool(candidate_info.get("sentence_refinement_used", False)),
+            "sentence_refinement_accepted": bool(candidate_info.get("sentence_refinement_accepted", False)),
+            "sentence_refinement_rejected_reason": candidate_info.get("sentence_refinement_rejected_reason"),
+            "sentence_refinement_baseline_max_drift_s": candidate_info.get("sentence_refinement_baseline_max_drift_s"),
+            "sentence_refinement_refined_max_drift_s": candidate_info.get("sentence_refinement_refined_max_drift_s"),
+            "sentence_refinement_baseline_warning_count": candidate_info.get("sentence_refinement_baseline_warning_count"),
+            "sentence_refinement_refined_warning_count": candidate_info.get("sentence_refinement_refined_warning_count"),
+            "sentence_refinement_replaced_duration_s": candidate_info.get("sentence_refinement_replaced_duration_s"),
+            "sentence_refinement_skipped_chunks": candidate_info.get("sentence_refinement_skipped_chunks", 0),
+            "sentence_refinement_source_jumps": candidate_info.get("sentence_refinement_source_jumps", []),
+            "sentence_refinement_source_jump_count": candidate_info.get("sentence_refinement_source_jump_count", 0),
+            "sentence_refinement_max_source_jump_s": candidate_info.get("sentence_refinement_max_source_jump_s"),
+            "sentence_refinement_avg_source_jump_s": candidate_info.get("sentence_refinement_avg_source_jump_s"),
+            "sentence_refinement_low_confidence_count": candidate_info.get("sentence_refinement_low_confidence_count", 0),
             "opening_intra_beat_align_used": bool(candidate_info.get("opening_intra_beat_align_used", False)),
             "opening_intra_beat_chunks": candidate_info.get("opening_intra_beat_chunks", []),
             "opening_intra_beat_replaced_ranges": candidate_info.get("opening_intra_beat_replaced_ranges", []),
@@ -309,6 +357,22 @@ def build_edl_qa(
         "visual_device": visual_result.device if visual_result else None,
         "visual_cache_hits": visual_result.cache_hits if visual_result else [],
         "visual_warnings": visual_result.warnings if visual_result else [],
+        "sentence_refinement_mode": sentence_refinement_mode,
+        "sentence_refinement_requested_mode": sentence_refinement_requested_mode or sentence_refinement_mode,
+        "sentence_refinement_summary": {
+            "mode": sentence_refinement_mode,
+            "requested_mode": sentence_refinement_requested_mode or sentence_refinement_mode,
+            "eligible_beats": refinement_eligible_beats,
+            "used_beats": refinement_used_beats,
+            "accepted_beats": refinement_accepted_beats,
+            "rejected_beats": refinement_rejected_beats,
+            "replaced_duration_s": round(refinement_replaced_duration_s, 3),
+            "skipped_chunks": refinement_skipped_chunks,
+            "source_jump_count": len(refinement_source_jumps),
+            "max_source_jump_s": round(max(refinement_source_jumps), 3) if refinement_source_jumps else 0.0,
+            "avg_source_jump_s": round(sum(refinement_source_jumps) / len(refinement_source_jumps), 3) if refinement_source_jumps else 0.0,
+            "low_confidence_count": refinement_low_confidence_count,
+        },
         "min_semantic_score": min_semantic_score,
         "short_clip_threshold_s": short_clip_threshold_s,
         "n_intro_excluded": len(excluded_intro),
