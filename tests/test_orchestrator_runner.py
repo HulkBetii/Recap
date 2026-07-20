@@ -76,7 +76,16 @@ def write_stage_outputs(command: list[str]) -> None:
     if stage == "preflight":
         output = flag(command, "--output")
         args = stage_args(command, build_preflight_parser())
-        input_hash, config_hash = preflight_identity(args.input, classifier=args.classifier, max_intro_s=args.max_intro_s, sample_every_s=args.sample_every_s, confidence_threshold=args.confidence_threshold, uncertain_threshold=args.uncertain_threshold)
+        input_hash, config_hash = preflight_identity(
+            args.input,
+            classifier=args.classifier,
+            max_intro_s=args.max_intro_s,
+            sample_every_s=args.sample_every_s,
+            confidence_threshold=args.confidence_threshold,
+            uncertain_threshold=args.uncertain_threshold,
+            manual_ranges_hash=file_hash(args.manual_ranges) if getattr(args, "manual_ranges", None) else None,
+            anime_context_hash=file_hash(args.anime_context) if getattr(args, "anime_context", None) else None,
+        )
         output.write_text(json.dumps({"input_path":str(args.input),"duration_s":2,"intro":{"detected":False,"confidence":0,"reasons":[]},"non_story_ranges":[],"classifier":args.classifier,"created_at":NOW,"warnings":[],"cache_hits":[],"input_hash":input_hash,"config_hash":config_hash,"cache_version":PREFLIGHT_CACHE_VERSION}), encoding="utf-8")
     elif stage == "ingest":
         output = flag(command, "--output")
@@ -99,8 +108,15 @@ def write_stage_outputs(command: list[str]) -> None:
         args = stage_args(command, build_review_parser())
         output.write_text(json.dumps([{"beat_id":0,"narration":"Má»Ÿ Ä‘áº§u","from_seg_id":0,"to_seg_id":0,"src_tc_start":0,"src_tc_end":2,"is_hook":True}]), encoding="utf-8")
         style_path = Path(args.style_sample).expanduser().resolve() if args.style_sample else DEFAULT_STYLE_SAMPLE
-        identity = build_review_identity(film_map_path=args.film_map,settings=args,style_sample_path=style_path,story_map_path=args.story_map,video_profile_path=args.video_profile)
-        output.with_name("review_script.meta.json").write_text(json.dumps({"glossary":[],"target_video_s":2,"char_budget":30,"est_total_chars":6,"coverage_pct":1,"qa_report":[],"n_qa_iterations":0,"model_versions":{},"created_at":NOW,"warnings":[],"cache_hits":[],"film_map_hash":identity.film_map_hash,"film_map_meta_hash":identity.film_map_meta_hash,"story_map_hash":identity.story_map_hash,"video_profile_hash":identity.video_profile_hash,"config_hash":identity.config_hash,"cache_version":REVIEW_CACHE_VERSION}), encoding="utf-8")
+        identity = build_review_identity(
+            film_map_path=args.film_map,
+            settings=args,
+            style_sample_path=style_path,
+            story_map_path=args.story_map,
+            video_profile_path=args.video_profile,
+            context_file_path=args.context_file,
+        )
+        output.with_name("review_script.meta.json").write_text(json.dumps({"glossary":[],"target_video_s":2,"char_budget":30,"est_total_chars":6,"coverage_pct":1,"qa_report":[],"n_qa_iterations":0,"model_versions":{},"created_at":NOW,"warnings":[],"cache_hits":[],"film_map_hash":identity.film_map_hash,"film_map_meta_hash":identity.film_map_meta_hash,"story_map_hash":identity.story_map_hash,"video_profile_hash":identity.video_profile_hash,"context_file_path":str(args.context_file) if args.context_file else None,"context_file_hash":identity.context_file_hash,"config_hash":identity.config_hash,"cache_version":REVIEW_CACHE_VERSION}), encoding="utf-8")
         if "--review-intent-output" in command:
             flag(command, "--review-intent-output").write_text(json.dumps([{"beat_id":0,"story_section_id":0,"story_section_type":"setup","visual_intent":"character_intro","chronology_mode":"ordered","warnings":[]}]), encoding="utf-8")
     elif stage == "tts":
@@ -577,6 +593,71 @@ def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:
     assert config["match"]["match_strategy"] == "hybrid"
     assert config["match"]["w_semantic"] == 0.45
 
+
+def test_anime_series_preset_passes_japanese_and_strict_visual_options(tmp_path: Path) -> None:
+    config = load_config(Path("config.anime.series.yaml"))
+    paths = build_paths(tmp_path / "run")
+    film = tmp_path / "anime.mp4"
+
+    ingest = build_command("ingest", paths, film, config, force=False, python_exe="python")
+    storymap = build_command("storymap", paths, film, config, force=False, python_exe="python")
+    review = build_command("review", paths, film, config, force=False, python_exe="python")
+    shots = build_command("shots", paths, film, config, force=False, python_exe="python")
+    match = build_command("match", paths, film, config, force=False, python_exe="python")
+
+    assert ingest[ingest.index("--source-language") + 1] == "ja"
+    assert ingest[ingest.index("--translate-mode") + 1] == "ja-en"
+    assert ingest[ingest.index("--aligner") + 1] == "whisperx"
+    assert storymap[storymap.index("--content-type") + 1] == "anime_series"
+    assert review[review.index("--content-type") + 1] == "anime_series"
+    assert shots[shots.index("--face-detection") + 1] == "off"
+    assert "--exclude-non-story" in match
+    assert "--exclude-end-credits" in match
+    assert match[match.index("--match-strategy") + 1] == "chronological"
+    assert match[match.index("--w-face") + 1] == "0.0"
+    assert match[match.index("--w-visual") + 1] == "0.0"
+
+def test_anime_movie_preset_uses_movie_setup_opening(tmp_path: Path) -> None:
+    config = load_config(Path("config.anime.movie.yaml"))
+    paths = build_paths(tmp_path / "run")
+    film = tmp_path / "anime.mp4"
+
+    review = build_command("review", paths, film, config, force=False, python_exe="python")
+    storymap = build_command("storymap", paths, film, config, force=False, python_exe="python")
+
+    assert review[review.index("--content-type") + 1] == "anime_movie"
+    assert review[review.index("--hook-mode") + 1] == "setup"
+    assert "--opening-coherence-qa" in review
+    assert storymap[storymap.index("--content-type") + 1] == "anime_movie"
+
+def test_orchestrator_passes_anime_manual_ranges_and_context_files(tmp_path: Path) -> None:
+    manual_ranges = tmp_path / "manual_ranges.yaml"
+    manual_ranges.write_text(
+        "non_story_ranges:\n  - start_s: 0\n    end_s: 10\n    label: studio_logo\n    confidence: 1.0\n",
+        encoding="utf-8",
+    )
+    context = tmp_path / "anime_context.yaml"
+    context.write_text("title: Example\nkind: anime_movie\n", encoding="utf-8")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "preflight": {"manual_ranges": str(manual_ranges), "anime_context": str(context)},
+                "review": {"content_type": "anime_movie", "context_file": str(context)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    paths = build_paths(tmp_path / "run")
+    film = tmp_path / "anime.mp4"
+
+    preflight_command = build_command("preflight", paths, film, config, force=False, python_exe="python")
+    review_command = build_command("review", paths, film, config, force=False, python_exe="python")
+
+    assert preflight_command[preflight_command.index("--manual-ranges") + 1] == str(manual_ranges)
+    assert preflight_command[preflight_command.index("--anime-context") + 1] == str(context)
+    assert review_command[review_command.index("--context-file") + 1] == str(context)
 
 def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(tmp_path: Path) -> None:
     config = load_config(Path("config.movie.production.yaml"))

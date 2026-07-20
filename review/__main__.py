@@ -7,7 +7,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.schema import ReviewBeat, ReviewMeta, StorySection, VideoProfile, validate_review_intents, validate_review_script, validate_story_map, write_json
+from common.inputs import load_anime_context
+from common.schema import AnimeContext, ReviewBeat, ReviewMeta, StorySection, VideoProfile, validate_review_intents, validate_review_script, validate_story_map, write_json
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from review.budget import allocate_char_targets, compute_budget, estimate_total_chars
 from review.cache import ReviewCache
@@ -68,6 +69,61 @@ def resolve_chatgpt_profile_dir(configured_path: Path) -> Path:
     return canonical
 
 
+def resolve_optional_file(path: Path | None, *, label: str) -> Path | None:
+    if path is None:
+        return None
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise ReviewError(f"{label} does not exist: {resolved}")
+    return resolved
+
+def anime_context_glossary(context: AnimeContext | None) -> list[dict]:
+    if context is None:
+        return []
+    glossary: list[dict] = []
+    for character in context.characters:
+        aliases = [character.name_vi, *character.aliases]
+        if character.name_original:
+            aliases.append(character.name_original)
+        aliases = list(dict.fromkeys(alias for alias in aliases if alias))
+        glossary.append(
+            {
+                "name": character.name_vi,
+                "canonical_name": character.name_vi,
+                "vi": character.name_vi,
+                "aliases": [alias for alias in aliases if alias != character.name_vi],
+                "role": character.role or "",
+                "description": character.role or "",
+                "name_original": character.name_original,
+                "pronunciation": character.pronunciation,
+            }
+        )
+    for term in context.terms:
+        aliases = list(dict.fromkeys([term.term, *term.aliases]))
+        glossary.append(
+            {
+                "name": term.term,
+                "canonical_name": term.term,
+                "term": term.term,
+                "aliases": [alias for alias in aliases if alias != term.term],
+                "role": term.meaning_vi or "",
+                "description": term.meaning_vi or "",
+                "pronunciation": term.pronunciation,
+            }
+        )
+    return glossary
+
+def merge_glossaries(base: list[dict], extra: list[dict]) -> list[dict]:
+    output: list[dict] = []
+    seen: set[str] = set()
+    for entry in [*extra, *base]:
+        key = str(entry.get("canonical_name") or entry.get("name") or entry.get("term") or entry).strip().casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(entry)
+    return output
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Stage 2 review: film_map.json -> review_script.json")
     parser.add_argument("--film-map", required=True, type=Path)
@@ -77,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-coverage", default=DEFAULT_MIN_COVERAGE, type=float)
     parser.add_argument("--max-qa-iterations", default=DEFAULT_MAX_QA_ITERATIONS, type=int)
     parser.add_argument("--max-qa-rewrites-per-iteration", default=6, type=int)
-    parser.add_argument("--content-type", default="episode", choices=["episode", "movie"])
+    parser.add_argument("--content-type", default="episode", choices=["episode", "movie", "anime_series", "anime_movie"])
     parser.add_argument("--hook-mode", default=None, choices=["cold_open", "setup", "off"])
     parser.add_argument("--opening-coherence-qa", dest="opening_coherence_qa", action="store_true", default=None)
     parser.add_argument("--no-opening-coherence-qa", dest="opening_coherence_qa", action="store_false")
@@ -86,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-beat-audio-s", default=12.0, type=float)
     parser.add_argument("--max-beat-audio-s", default=18.0, type=float)
     parser.add_argument("--style-sample", default=None)
+    parser.add_argument("--context-file", default=None, type=Path)
     parser.add_argument("--style-preset", default=DEFAULT_STYLE_PRESET)
     parser.add_argument("--style-strength", default=DEFAULT_STYLE_STRENGTH, choices=["medium", "strong"])
     parser.add_argument("--style-qa", action="store_true", default=True)
@@ -136,6 +193,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         args.story_map = None
     if not hasattr(args, "review_intent_output"):
         args.review_intent_output = None
+    if not hasattr(args, "context_file"):
+        args.context_file = None
     if not hasattr(args, "llm_backend"):
         args.llm_backend = "chatgpt_playwright"
     if args.llm_backend != "chatgpt_playwright":
@@ -179,6 +238,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
     film_map = load_film_map(film_map_path)
     duration_s, warnings = load_duration(film_map_path, film_map)
     video_profile = load_video_profile(args.video_profile)
+    context_file_path = resolve_optional_file(args.context_file, label="context file")
+    anime_context = load_anime_context(context_file_path) if context_file_path else None
     story_sections = load_story_map(args.story_map, duration_s=duration_s)
     story_start_s = story_start_from_profile(video_profile)
     film_map_view = build_film_map_view(film_map)
@@ -193,7 +254,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         max_sentence_chars=args.max_sentence_chars,
     )
     style_guide = build_style_guide(style_config, cleaned_style_sample)
-    if story_sections and args.content_type == "movie":
+    if story_sections and args.content_type in {"movie", "anime_movie"}:
         style_guide = style_guide + "\n" + story_map_prompt_context(story_sections)
     auto_duration = resolve_target_ratio(args.target_ratio, content_type=args.content_type, film_map=film_map, duration_s=duration_s)
     target_video_s, char_budget = compute_budget(duration_s, auto_duration.target_ratio, args.tts_cps)
@@ -206,6 +267,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         style_sample_path=style_sample_path,
         story_map_path=args.story_map,
         video_profile_path=args.video_profile,
+        context_file_path=context_file_path,
     )
     cache.reconcile(identity.cache_key)
 
@@ -225,9 +287,17 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             content_type=args.content_type,
             hook_mode=args.hook_mode,
             story_start_s=story_start_s,
+            anime_context=anime_context,
         )
         outline_result = apply_hook_mode(outline_result, content_type=args.content_type, hook_mode=args.hook_mode, film_map=film_map, story_start_s=story_start_s)
         cache.write_json("outline.json", outline_result)
+
+    if anime_context:
+        outline_result = OutlineResult(
+            glossary=merge_glossaries(outline_result.glossary, anime_context_glossary(anime_context)),
+            outline=outline_result.outline,
+            hook=outline_result.hook,
+        )
 
     char_targets = allocate_char_targets(outline_result.outline, char_budget)
     if cache.has("narration.json"):
@@ -243,6 +313,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             style_sample=style_guide,
             content_type=args.content_type,
             hook_mode=args.hook_mode,
+            anime_context=anime_context,
         )
         cache.write_json("narration.json", narration)
 
@@ -266,6 +337,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             style_guide=style_guide,
             logger=logger,
             max_iterations=args.max_qa_iterations,
+            anime_context=anime_context,
+            content_type=args.content_type,
         )
         warnings.extend(readability_warnings)
     qa_report: list[dict] = []
@@ -288,6 +361,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                 content_type=args.content_type,
                 hook_mode=args.hook_mode,
                 story_start_s=story_start_s,
+                anime_context=anime_context,
             )
             if iteration == 0:
                 cache.write_json("qa.json", qa)
@@ -311,6 +385,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                 glossary=outline_result.glossary,
                 char_target=char_targets[min(issue.beat_id, len(char_targets) - 1)],
                 style_sample=style_guide,
+                anime_context=anime_context,
+                content_type=args.content_type,
             )
             narration_by_id[revised.beat_id] = revised
         narration = [narration_by_id[index] for index in sorted(narration_by_id)]
@@ -333,6 +409,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                 glossary=outline_result.glossary,
                 char_target=char_targets[0] if char_targets else 400,
                 style_sample=style_guide,
+                anime_context=anime_context,
+                content_type=args.content_type,
             )
             narration = replace_narration(narration, revised)
             cache.write_json("opening_coherence_revision.json", revised)
@@ -345,7 +423,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         cache.write_json("opening_coherence.json", opening_coherence_report)
 
     pre_story_dropped: list[int] = []
-    if args.content_type == "movie" and story_start_s > 0:
+    if args.content_type in {"movie", "anime_movie"} and story_start_s > 0:
         kept_beats = []
         for beat in beats:
             if not beat.is_hook and beat.src_tc_end <= story_start_s + 1e-6:
@@ -379,7 +457,16 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
 
     non_story_report = None
     if args.drop_non_story_beats:
-        beats, non_story_report = drop_non_story_beats(beats, film_map, duration_s=duration_s, tail_s=args.non_story_tail_s)
+        manual_non_story_ranges = list(video_profile.non_story_ranges) if video_profile else []
+        if anime_context:
+            manual_non_story_ranges.extend(anime_context.non_story_ranges)
+        beats, non_story_report = drop_non_story_beats(
+            beats,
+            film_map,
+            duration_s=duration_s,
+            tail_s=args.non_story_tail_s,
+            non_story_ranges=manual_non_story_ranges,
+        )
         cache.write_json("non_story_beats.json", {
             "dropped_beat_ids": non_story_report.dropped_beat_ids,
             "warnings": non_story_report.warnings,
@@ -432,6 +519,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         opening_warnings=opening_warnings,
         qa_rewrite_limited=any("qa rewrite limited" in warning for warning in warnings),
         video_profile_path=str(args.video_profile) if args.video_profile else None,
+        context_file_path=str(context_file_path) if context_file_path else None,
         story_start_s=story_start_s,
         pre_story_dropped_beat_ids=pre_story_dropped,
         micro_beats_enabled=args.micro_beats,
@@ -444,6 +532,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         film_map_meta_hash=identity.film_map_meta_hash,
         story_map_hash=identity.story_map_hash,
         video_profile_hash=identity.video_profile_hash,
+        context_file_hash=identity.context_file_hash,
         config_hash=identity.config_hash,
         cache_version=REVIEW_CACHE_VERSION,
     )
@@ -486,6 +575,8 @@ async def ensure_style_readability(
     style_guide: str,
     logger: logging.Logger,
     max_iterations: int,
+    anime_context: AnimeContext | None,
+    content_type: str,
 ) -> tuple[list[NarrationBeat], list[ReviewBeat], list[dict], int, list[str]]:
     if cache.has("narration_style_checked.json") and cache.has("style_qa.json"):
         logger.info("[2/4] Using cached narration_style_checked.json")
@@ -525,6 +616,8 @@ async def ensure_style_readability(
                 glossary=glossary,
                 char_target=char_targets[min(issue.beat_id, len(char_targets) - 1)],
                 style_sample=style_guide,
+                anime_context=anime_context,
+                content_type=content_type,
             )
             narration_by_id[revised.beat_id] = revised
             rewritten.add(revised.beat_id)
@@ -570,12 +663,15 @@ async def run_review(args: argparse.Namespace) -> int:
     if args.micro_beats is None:
         args.micro_beats = False
     style_sample_path = Path(args.style_sample).expanduser().resolve() if args.style_sample else DEFAULT_STYLE_SAMPLE
+    context_file_path = resolve_optional_file(args.context_file, label="context file")
+    args.context_file = context_file_path
     identity = build_review_identity(
         film_map_path=args.film_map,
         settings=args,
         style_sample_path=style_sample_path,
         story_map_path=args.story_map,
         video_profile_path=args.video_profile,
+        context_file_path=context_file_path,
     )
     setattr(args, "_review_identity", identity)
     session_meta_path = (args.chat_session_meta or (work_dir / "chat_session_meta.json")).expanduser().resolve()

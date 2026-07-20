@@ -1,18 +1,41 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from typing import Protocol
 
-from common.schema import ReviewBeat
+from common.schema import AnimeContext, ReviewBeat
 from review.budget import estimate_total_chars
 from review.json_utils import extract_json
 from review.models import NarrationBeat, OutlineBeat, OutlineResult, QaResult
 
+MOVIE_CONTENT_TYPES = {"movie", "anime_movie"}
 
 class ChatClient(Protocol):
     async def ask(self, prompt: str) -> str:
         ...
 
+def build_anime_context_block(anime_context: AnimeContext | None, *, content_type: str) -> str:
+    if anime_context is None:
+        return ""
+    payload = anime_context.model_dump(mode="json", exclude_none=True)
+    continuity_rule = (
+        "- Series continuity: stay inside this episode and the provided continuity notes; do not add future-episode spoilers."
+        if content_type == "anime_series"
+        else "- Standalone movie continuity: treat this as a self-contained anime movie unless the context explicitly says otherwise."
+    )
+    return f"""
+ANIME CONTEXT:
+{json.dumps(payload, ensure_ascii=False)}
+
+ANIME RULES:
+- Use characters.name_vi as the canonical Vietnamese names; aliases/name_original are for recognition only.
+- Preserve special terms from terms.term/meaning_vi consistently.
+- Treat non_story_ranges as forbidden source zones for story beats, especially opening_theme, ending_theme, next_episode_preview, recap_previous_episode, eyecatch, sponsor_card, title_card, and studio_logo.
+- Do not quote original dialogue or theme-song lyrics verbatim; transform everything into commentary/narration.
+- Do not build OP/ED/preview/recap-only beats.
+- Flag unsupported spoilers, unclear episode continuity, or glossary/name drift during QA.
+{continuity_rule}
+""".strip()
 
 def build_outline_prompt(
     *,
@@ -24,9 +47,12 @@ def build_outline_prompt(
     content_type: str = "episode",
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
+    anime_context: AnimeContext | None = None,
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
-    if content_type == "movie" and hook_mode == "setup":
+    anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
+    content_label = "anime recap script" if content_type in {"anime_series", "anime_movie"} else "movie recap script"
+    if content_type in MOVIE_CONTENT_TYPES and hook_mode == "setup":
         hook_rule = f"- hook: use the first story/setup beat at or after story_start_s={story_start_s:.1f}s; do NOT use excluded intro/opening footage or jump to a later twist/ending."
         pacing_rule = "- Movie mode: prioritize clear premise, characters, cause/effect, and story comprehension over viral shock."
     elif hook_mode == "off":
@@ -36,7 +62,7 @@ def build_outline_prompt(
         hook_rule = "- hook: list of exciting segment ids for a cold-open, usually from later in the story, without spoiling the ending."
         pacing_rule = "- Episode mode: fast recap pacing is allowed, but keep plot logic clear."
     return f"""
-You are planning a Vietnamese movie recap script.
+You are planning a Vietnamese {content_label}.
 Return ONLY valid JSON with keys: glossary, outline, hook.
 
 Rules:
@@ -51,10 +77,10 @@ Rules:
 - Non-hook outline beats must be chronological and cover at least {min_coverage:.0%} of segment ids.
 - Target recap length: about {target_video_s:.1f}s, char budget about {char_budget} Vietnamese characters.
 {style_block}
+{anime_block}
 FILM_MAP:
 {film_map_view}
 """.strip()
-
 
 def build_narration_prompt(
     *,
@@ -65,9 +91,15 @@ def build_narration_prompt(
     content_type: str = "episode",
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
+    anime_context: AnimeContext | None = None,
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
-    movie_rule = "- Movie mode: write cleaner, more explanatory Vietnamese; reduce jokes/clickbait; make cause/effect and character relations easy to follow." if content_type == "movie" else "- Dramatic fast-paced Vietnamese recap style."
+    anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
+    movie_rule = (
+        "- Movie mode: write cleaner, more explanatory Vietnamese; reduce jokes/clickbait; make cause/effect and character relations easy to follow."
+        if content_type in MOVIE_CONTENT_TYPES
+        else "- Dramatic fast-paced Vietnamese recap style."
+    )
     hook_rule = "- Setup hook must explain the initial premise from the start of the film, not a later twist." if hook_mode == "setup" else "- Hook beat must be gripping and placed first."
     payload = [
         {
@@ -86,18 +118,19 @@ Return ONLY a JSON array of objects: {{"beat_id": number, "narration": string}}.
 
 Rules:
 - Dramatic fast-paced Vietnamese recap style.
+{movie_rule}
+{hook_rule}
 - Use the glossary names consistently.
 - Do NOT quote original dialogue verbatim; transform into narration.
 - Stay within ±20% of each char_target where possible.
-- Hook beat must be gripping and placed first.
 {style_block}
+{anime_block}
 GLOSSARY:
 {json.dumps(glossary, ensure_ascii=False)}
 
 BEATS:
 {json.dumps(payload, ensure_ascii=False)}
 """.strip()
-
 
 def build_qa_prompt(
     *,
@@ -109,9 +142,15 @@ def build_qa_prompt(
     content_type: str = "episode",
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
+    anime_context: AnimeContext | None = None,
 ) -> str:
     payload = [beat.model_dump() for beat in beats]
-    opening_rule = f"- Movie opening: beat 0 must clearly establish who/where/problem/why it matters and its source span must start at or after story_start_s={story_start_s:.1f}s; flag confusing cold-open twist, excluded intro footage, or hype without context." if content_type == "movie" else "- Opening should be engaging and accurate."
+    opening_rule = (
+        f"- Movie opening: beat 0 must clearly establish who/where/problem/why it matters and its source span must start at or after story_start_s={story_start_s:.1f}s; flag confusing cold-open twist, excluded intro footage, or hype without context."
+        if content_type in MOVIE_CONTENT_TYPES
+        else "- Opening should be engaging and accurate."
+    )
+    anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
     return f"""
 Review this Vietnamese recap script against the film map.
 Return ONLY valid JSON: {{"pass": boolean, "issues": [{{"beat_id": number, "type": string, "suggestion": string}}], "notes": string}}.
@@ -122,7 +161,9 @@ Check:
 - Names: use glossary consistently.
 - Length: total characters should be near {char_budget}; current={estimate_total_chars(beats)}.
 - Non-story credits/outro/production-info beats should be removed, not rewritten longer.
+- Anime QA when context is present: reject OP/ED/theme-song/preview/recap-only beats, glossary drift, unsupported future spoilers, non-story source range usage, and unclear episode continuity.
 {opening_rule}
+{anime_block}
 
 GLOSSARY:
 {json.dumps(glossary, ensure_ascii=False)}
@@ -134,7 +175,6 @@ REVIEW_SCRIPT:
 {json.dumps(payload, ensure_ascii=False)}
 """.strip()
 
-
 def build_regenerate_prompt(
     *,
     beat: ReviewBeat,
@@ -142,8 +182,11 @@ def build_regenerate_prompt(
     glossary: list[dict],
     char_target: int,
     style_sample: str = "",
+    anime_context: AnimeContext | None = None,
+    content_type: str = "episode",
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
+    anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
     return f"""
 Regenerate only this one Vietnamese recap beat.
 Return ONLY JSON: {{"beat_id": {beat.beat_id}, "narration": string}}.
@@ -156,13 +199,13 @@ Rules:
 - Aim for about {char_target} Vietnamese characters.
 - Keep narration TTS-friendly with natural punctuation and no long run-on sentence.
 {style_block}
+{anime_block}
 CURRENT_BEAT:
 {json.dumps(beat.model_dump(), ensure_ascii=False)}
 
 GLOSSARY:
 {json.dumps(glossary, ensure_ascii=False)}
 """.strip()
-
 
 async def request_outline(
     client: ChatClient,
@@ -175,6 +218,7 @@ async def request_outline(
     content_type: str = "episode",
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
+    anime_context: AnimeContext | None = None,
 ) -> OutlineResult:
     response = await client.ask(
         build_outline_prompt(
@@ -185,10 +229,11 @@ async def request_outline(
             style_sample=style_sample,
             content_type=content_type,
             hook_mode=hook_mode,
+            story_start_s=story_start_s,
+            anime_context=anime_context,
         )
     )
     return normalize_outline(OutlineResult.model_validate(normalize_outline_payload(extract_json(response))))
-
 
 async def request_narration(
     client: ChatClient,
@@ -199,6 +244,7 @@ async def request_narration(
     style_sample: str = "",
     content_type: str = "episode",
     hook_mode: str = "cold_open",
+    anime_context: AnimeContext | None = None,
 ) -> list[NarrationBeat]:
     response = await client.ask(
         build_narration_prompt(
@@ -208,11 +254,11 @@ async def request_narration(
             style_sample=style_sample,
             content_type=content_type,
             hook_mode=hook_mode,
+            anime_context=anime_context,
         )
     )
     data = extract_json(response)
     return [NarrationBeat.model_validate(item) for item in data]
-
 
 async def request_qa(
     client: ChatClient,
@@ -225,6 +271,7 @@ async def request_qa(
     content_type: str = "episode",
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
+    anime_context: AnimeContext | None = None,
 ) -> QaResult:
     response = await client.ask(
         build_qa_prompt(
@@ -235,6 +282,8 @@ async def request_qa(
             coverage_pct=coverage_pct,
             content_type=content_type,
             hook_mode=hook_mode,
+            story_start_s=story_start_s,
+            anime_context=anime_context,
         )
     )
     data = extract_json(response)
@@ -249,7 +298,6 @@ async def request_qa(
         ]
     return QaResult.model_validate(data)
 
-
 async def regenerate_beat(
     client: ChatClient,
     *,
@@ -258,12 +306,21 @@ async def regenerate_beat(
     glossary: list[dict],
     char_target: int,
     style_sample: str = "",
+    anime_context: AnimeContext | None = None,
+    content_type: str = "episode",
 ) -> NarrationBeat:
     response = await client.ask(
-        build_regenerate_prompt(beat=beat, issue=issue, glossary=glossary, char_target=char_target, style_sample=style_sample)
+        build_regenerate_prompt(
+            beat=beat,
+            issue=issue,
+            glossary=glossary,
+            char_target=char_target,
+            style_sample=style_sample,
+            anime_context=anime_context,
+            content_type=content_type,
+        )
     )
     return NarrationBeat.model_validate(extract_json(response))
-
 
 def normalize_outline_payload(data: object) -> object:
     if not isinstance(data, dict):
@@ -283,7 +340,6 @@ def normalize_outline_payload(data: object) -> object:
     elif hook is None:
         data = {**data, "hook": []}
     return data
-
 
 def normalize_outline(outline_result: OutlineResult) -> OutlineResult:
     hook_ids = set(outline_result.hook)

@@ -4,7 +4,10 @@ import argparse
 import json
 from pathlib import Path
 
-from ingest.__main__ import load_transcript, load_translations, load_vision
+import pytest
+
+from common.schema import IntroDetection, NonStoryRange, TranslatedSegment, VideoProfile, VisionSegment
+from ingest.__main__ import IngestError, build_parser, load_transcript, load_translations, load_vision, run_ingest
 from ingest.cache import StageCache
 from orchestrator.config import load_config
 from orchestrator.graph import build_paths
@@ -74,6 +77,29 @@ def test_load_translations_none_does_not_need_openai_client(tmp_path: Path) -> N
     assert warnings == 0
     assert translated[0].en == "Xin chào mọi người"
 
+def test_load_translations_passes_japanese_source_language_to_client(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / "work", force=False)
+    cache.prepare()
+    segment = TranslatedSegment(id=0, tc_start=0, tc_end=2, ko="こんにちは", en="placeholder")
+    seen = {}
+
+    class Client:
+        def translate_segments(self, transcript, logger=None, source_language="ko"):  # type: ignore[no-untyped-def]
+            seen["source_language"] = source_language
+            return [
+                TranslatedSegment(id=item.id, tc_start=item.tc_start, tc_end=item.tc_end, ko=item.ko, en=f"translated-{item.id}")
+                for item in transcript
+            ], 0
+
+    class Logger:
+        def info(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+    translated, warnings = load_translations(cache, [segment.model_copy(update={"en": "こんにちは"})], Client(), Logger(), translate_mode="ja-en", source_language="ja")
+    assert seen["source_language"] == "ja"
+    assert warnings == 0
+    assert translated[0].en == "translated-0"
+
 def test_load_vision_no_selected_gaps_does_not_need_openai_client(tmp_path: Path) -> None:
     cache = StageCache(tmp_path / "work", force=False)
     cache.prepare()
@@ -102,6 +128,52 @@ def test_load_vision_no_selected_gaps_does_not_need_openai_client(tmp_path: Path
     assert warnings == 0
     assert cache.has("vision.json")
 
+def test_load_vision_excludes_manual_non_story_gaps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / "work", force=False)
+    cache.prepare()
+    translated = [TranslatedSegment(id=0, tc_start=10, tc_end=20, ko="こんにちは", en="Hello")]
+    profile = VideoProfile(
+        input_path="anime.mp4",
+        duration_s=70,
+        intro=IntroDetection(detected=False, confidence=0, reasons=[]),
+        non_story_ranges=[
+            NonStoryRange(start_s=0, end_s=10, label="opening_theme", confidence=1.0),
+            NonStoryRange(start_s=20, end_s=40, label="next_episode_preview", confidence=1.0),
+        ],
+        classifier="heuristic",
+        created_at="2026-07-20T00:00:00Z",
+    )
+    seen_gaps = []
+
+    def fake_describe_gaps(**kwargs):  # type: ignore[no-untyped-def]
+        seen_gaps.extend(kwargs["gaps"])
+        return [
+            VisionSegment(gap_id=gap.id, tc_start=gap.tc_start, tc_end=gap.tc_end, scene_desc="Story visual.")
+            for gap in kwargs["gaps"]
+        ], 0
+
+    class Logger:
+        def info(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+    monkeypatch.setattr("ingest.__main__.describe_gaps", fake_describe_gaps)
+    vision, warnings = load_vision(
+        cache=cache,
+        input_path=tmp_path / "anime.mp4",
+        translated=translated,
+        duration=70,
+        gap_threshold=4,
+        max_vision_frames=10,
+        max_visual_gap_s=20,
+        client=object(),
+        logger=Logger(),
+        video_profile=profile,
+    )
+
+    assert warnings == 0
+    assert [gap.tc_start for gap in seen_gaps] == [40, 60]
+    assert [item.tc_start for item in vision] == [40, 60]
+
 def test_orchestrator_passes_vietnamese_source_options_to_ingest(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"ingest": {"source_language": "vi", "translate_mode": "none"}}), encoding="utf-8")
@@ -111,6 +183,51 @@ def test_orchestrator_passes_vietnamese_source_options_to_ingest(tmp_path: Path)
     assert command[command.index("--translate-mode") + 1] == "none"
 
 
+
+def test_ingest_parser_accepts_japanese_translation_mode(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        [
+            "--input",
+            str(tmp_path / "anime.mp4"),
+            "--output",
+            str(tmp_path / "film_map.json"),
+            "--source-language",
+            "ja",
+            "--translate-mode",
+            "ja-en",
+        ]
+    )
+
+    assert args.source_language == "ja"
+    assert args.translate_mode == "ja-en"
+
+def test_run_ingest_rejects_invalid_japanese_translation_pair(tmp_path: Path) -> None:
+    film = tmp_path / "anime.mp4"
+    film.write_bytes(b"film")
+    args = build_parser().parse_args(
+        [
+            "--input",
+            str(film),
+            "--output",
+            str(tmp_path / "film_map.json"),
+            "--source-language",
+            "ja",
+            "--translate-mode",
+            "ko-en",
+        ]
+    )
+
+    with pytest.raises(IngestError, match="translate_mode=ko-en is not valid for source_language=ja"):
+        run_ingest(args)
+
+def test_orchestrator_passes_japanese_source_options_to_ingest(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"ingest": {"source_language": "ja", "translate_mode": "ja-en"}}), encoding="utf-8")
+    config = load_config(config_path)
+    command = build_command("ingest", build_paths(tmp_path / "run"), tmp_path / "anime.mp4", config, force=False, python_exe="python")
+
+    assert command[command.index("--source-language") + 1] == "ja"
+    assert command[command.index("--translate-mode") + 1] == "ja-en"
 
 def test_vietnamese_stable_config_uses_whisperx_alignment() -> None:
     config = load_config(Path("config.vi.stable.yaml"))

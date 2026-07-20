@@ -12,8 +12,30 @@ AsrProvider = Literal["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "
 AlignerProvider = Literal["none", "whisperx", "qwen3"]
 TimecodeQuality = Literal["strict", "approximate"]
 TranscriptCorrectionMode = Literal["off", "glossary", "openai"]
-SourceLanguage = Literal["ko", "vi"]
-TranslateMode = Literal["ko-en", "none"]
+SourceLanguage = Literal["ko", "vi", "ja"]
+TranslateMode = Literal["ko-en", "ja-en", "none"]
+AnimeContentType = Literal["anime_series", "anime_movie"]
+ContentType = Literal["episode", "movie", "anime_series", "anime_movie"]
+AnimeNonStoryLabel = Literal[
+    "opening_theme",
+    "ending_theme",
+    "next_episode_preview",
+    "eyecatch",
+    "recap_previous_episode",
+    "sponsor_card",
+    "title_card",
+    "studio_logo",
+]
+ANIME_NON_STORY_LABELS = {
+    "opening_theme",
+    "ending_theme",
+    "next_episode_preview",
+    "eyecatch",
+    "recap_previous_episode",
+    "sponsor_card",
+    "title_card",
+    "studio_logo",
+}
 
 StorySectionType = Literal["setup", "inciting_incident", "conflict", "investigation", "reveal", "climax", "ending", "non_story"]
 VisualIntent = Literal["character_intro", "dialogue", "location", "action", "reaction", "reveal", "transition", "ending"]
@@ -258,6 +280,8 @@ class ReviewMeta(BaseModel):
     film_map_meta_hash: str | None = None
     story_map_hash: str | None = None
     video_profile_hash: str | None = None
+    context_file_path: str | None = None
+    context_file_hash: str | None = None
     config_hash: str | None = None
     cache_version: str | None = None
 
@@ -340,6 +364,105 @@ class NonStoryRange(BaseModel):
     def validate_range(self) -> "NonStoryRange":
         if self.end_s <= self.start_s:
             raise ValueError("end_s must be greater than start_s")
+        return self
+
+class AnimeNonStoryRange(NonStoryRange):
+    label: AnimeNonStoryLabel
+    confidence: float = Field(default=1.0, ge=0, le=1)
+
+class AnimeCharacter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name_vi: str
+    name_original: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    role: str | None = None
+    pronunciation: str | None = None
+
+    @field_validator("name_vi", "name_original", "role", "pronunciation")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("aliases")
+    @classmethod
+    def normalize_aliases(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def validate_character(self) -> "AnimeCharacter":
+        if not self.name_vi:
+            raise ValueError("character name_vi cannot be empty")
+        return self
+
+class AnimeTerm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    term: str
+    meaning_vi: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    pronunciation: str | None = None
+
+    @field_validator("term", "meaning_vi", "pronunciation")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("aliases")
+    @classmethod
+    def normalize_aliases(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def validate_term(self) -> "AnimeTerm":
+        if not self.term:
+            raise ValueError("anime term cannot be empty")
+        return self
+
+class AnimeContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    kind: AnimeContentType
+    season: int | str | None = None
+    episode_number: int | str | None = None
+    episode_title: str | None = None
+    movie_year: int | None = Field(default=None, ge=1900)
+    arc: str | None = None
+    continuity_notes: str | None = None
+    characters: list[AnimeCharacter] = Field(default_factory=list)
+    terms: list[AnimeTerm] = Field(default_factory=list)
+    pronunciation_hints: list[str] = Field(default_factory=list)
+    non_story_ranges: list[AnimeNonStoryRange] = Field(default_factory=list)
+
+    @field_validator("title", "episode_title", "arc", "continuity_notes")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("pronunciation_hints")
+    @classmethod
+    def normalize_pronunciation_hints(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def validate_context(self) -> "AnimeContext":
+        if not self.title:
+            raise ValueError("anime context title cannot be empty")
+        if self.kind == "anime_series" and self.episode_number is None:
+            raise ValueError("anime_series context requires episode_number")
         return self
 
 class IntroDetection(BaseModel):

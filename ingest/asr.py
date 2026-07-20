@@ -111,10 +111,10 @@ def reassign_ids(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
     return [segment.model_copy(update={"id": index}) for index, segment in enumerate(ordered)]
 
 
-def detect_transcript_warnings(segments: list[TranscriptSegment]) -> list[str]:
+def detect_transcript_warnings(segments: list[TranscriptSegment], *, source_language: str = "ko") -> list[str]:
     warnings: list[str] = []
     for segment in segments:
-        if is_non_korean_cjk_text(segment.ko):
+        if source_language == "ko" and is_non_korean_cjk_text(segment.ko):
             warnings.append(f"segment #{segment.id} has high non-Korean CJK/Japanese character count")
         words = segment.ko.split()
         if len(words) >= 6:
@@ -259,7 +259,7 @@ def apply_alignment(
 
 
 def whisperx_language_code(source_language: str) -> str:
-    language_map = {"ko": "ko", "vi": "vi"}
+    language_map = {"ko": "ko", "vi": "vi", "ja": "ja"}
     return language_map.get(source_language, source_language)
 
 

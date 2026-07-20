@@ -523,3 +523,14 @@ repo/
 - Release gate runs Tach as a blocking check and writes `work/release-gate/tach-report.txt`; boundary findings fail the gate.
 - Tach's pytest plugin is disabled in `pyproject.toml`; pytest must keep running normal/full selections unless a task explicitly opts into Tach impacted-test behavior.
 - `pytest-subprocess` and codebase graph tools are not workflow dependencies; add them only for a concrete subprocess-heavy test need or one-off architecture exploration.
+
+## 40. ANIME RECAP CORE V1
+
+- Anime support is additive and keeps the stage JSON contracts unchanged: `film_map.json`, `review_script.json`, `beats_timing.json`, `shots.json`, and `edl.json` stay the same.
+- `SourceLanguage` includes `ja` and `TranslateMode` includes `ja-en`; ingest, WhisperX alignment, and OpenAI translation must pass the selected source language through.
+- Anime presets live in `config.anime.series.yaml` and `config.anime.movie.yaml`. Series uses `content_type=anime_series`, Japanese ingest, strict non-story exclusion, `shots.face_detection=off`, and `match.w_face=0.0`/`match.w_visual=0.0`. Movie uses `content_type=anime_movie` with the same Japanese ingest defaults and setup-style opening behavior.
+- Manual anime metadata is local only. `preflight.manual_ranges` and `preflight.anime_context` can be YAML or JSON and must merge into `video_profile.non_story_ranges`; `review.context_file` loads the same context for cache identity and prompt grounding.
+- Anime context must drive canonical Vietnamese names, aliases, special terms, pronunciation hints, continuity notes, and strict OP/ED/preview/recap guards. Do not hardcode OP/ED durations in presets.
+- `review/llm_flow.py` must keep anime prompts explicit about no verbatim dialogue, no theme-song lyrics, no OP/ED/preview-only beats, and series-vs-movie continuity. QA should flag glossary drift, unsupported spoilers, non-story source usage, and unclear episode continuity.
+- `review.non_story` may use the manual `non_story_ranges` from either `video_profile` or `anime_context`; G5 still keeps `exclude_non_story=true` by default and should not select anime opening/ending/preview footage when the preset says to exclude it.
+- `shots.face_detection` is not a strong signal for anime recap V1; chronology and semantic/story context matter more than Haar face counts.

@@ -42,6 +42,11 @@ DEFAULT_WHISPER_MODEL = "large-v3"
 DEFAULT_GAP_THRESHOLD = 4.0
 DEFAULT_MAX_VISION_FRAMES = 200
 DEFAULT_MAX_VISUAL_GAP_S = 20.0
+SOURCE_LANGUAGE_TRANSLATE_MODES = {
+    "ko": {"ko-en", "none"},
+    "vi": {"none"},
+    "ja": {"ja-en", "none"},
+}
 
 
 class IngestError(RuntimeError):
@@ -57,8 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-vision-frames", default=DEFAULT_MAX_VISION_FRAMES, type=int)
     parser.add_argument("--max-visual-gap-s", default=DEFAULT_MAX_VISUAL_GAP_S, type=float)
     parser.add_argument("--translate-model", default=DEFAULT_TRANSLATE_MODEL)
-    parser.add_argument("--source-language", default="ko", choices=["ko", "vi"], help="Source speech language in the input video")
-    parser.add_argument("--translate-mode", default="ko-en", choices=["ko-en", "none"], help="Translate transcript or keep source text as-is")
+    parser.add_argument("--source-language", default="ko", choices=["ko", "vi", "ja"], help="Source speech language in the input video")
+    parser.add_argument("--translate-mode", default="ko-en", choices=["ko-en", "ja-en", "none"], help="Translate transcript or keep source text as-is")
     parser.add_argument("--vision-model", default=DEFAULT_VISION_MODEL)
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
     parser.add_argument("--asr-provider", default="faster-whisper", choices=["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"])
@@ -157,7 +162,7 @@ def load_transcript(
         drop_non_korean_intro_s=args.drop_non_korean_intro_s,
     )
     cache.write_json("transcript_text.json", transcript)
-    warnings = quality.warnings + qc_warnings + detect_transcript_warnings(transcript)
+    warnings = quality.warnings + qc_warnings + detect_transcript_warnings(transcript, source_language=args.source_language)
     quality = quality.model_copy(update={"warnings": warnings})
     cache.write_json("transcript_aligned.json", transcript)
     cache.write_json("transcript_quality.json", quality)
@@ -211,6 +216,7 @@ def load_translations(
     client: OpenAIIngestClient | None,
     logger: logging.Logger,
     translate_mode: str = "ko-en",
+    source_language: str = "ko",
 ) -> tuple[list[TranslatedSegment], int]:
     if cache.has("translated.json"):
         logger.info("[3/6] Using cached translated.json")
@@ -225,8 +231,9 @@ def load_translations(
         return translated, 0
     if client is None:
         raise IngestError("OPENAI_API_KEY is required for translation")
-    logger.info("[3/6] Translating KO -> EN with stable segment ids")
-    translated, warnings_count = client.translate_segments(transcript, logger=logger)
+    source_name = {"ko": "KO", "ja": "JA", "vi": "VI"}.get(source_language, source_language.upper())
+    logger.info("[3/6] Translating %s -> EN with stable segment ids", source_name)
+    translated, warnings_count = client.translate_segments(transcript, logger=logger, source_language=source_language)
     cache.write_json("translated.json", translated)
     return translated, warnings_count
 
@@ -332,9 +339,19 @@ def run_ingest(args: argparse.Namespace) -> int:
         raise IngestError("--drop-non-korean-intro-s must be >= 0")
     if args.drop_visual_before_s < 0:
         raise IngestError("--drop-visual-before-s must be >= 0")
-    if args.source_language == "vi" and args.translate_mode != "none":
-        logger.warning("source_language=vi should use translate_mode=none; overriding translate_mode")
-        args.translate_mode = "none"
+    valid_translate_modes = SOURCE_LANGUAGE_TRANSLATE_MODES.get(args.source_language)
+    if valid_translate_modes is None:
+        raise IngestError(f"unsupported source language: {args.source_language}")
+    if args.translate_mode not in valid_translate_modes:
+        if args.source_language == "vi" and args.translate_mode != "none":
+            logger.warning("source_language=vi should use translate_mode=none; overriding translate_mode")
+            args.translate_mode = "none"
+        else:
+            expected = ", ".join(sorted(valid_translate_modes))
+            raise IngestError(
+                f"translate_mode={args.translate_mode} is not valid for source_language={args.source_language}; "
+                f"expected one of: {expected}"
+            )
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     needs_openai_asr = args.asr_provider in {"openai-gpt4o", "openai-gpt4o-hybrid"}
     needs_openai_translate = args.translate_mode != "none"
@@ -388,7 +405,14 @@ def run_ingest(args: argparse.Namespace) -> int:
     final_transcript_hash = stable_hash([item.model_dump(mode="json") for item in transcript])
     stage_translation_key = translation_cache_key(final_transcript_hash, args)
     translation_cached = cache.stage_current("translation", stage_translation_key, ("translated.json",))
-    translated, translation_warnings = load_translations(cache, transcript, client, logger, translate_mode=args.translate_mode)
+    translated, translation_warnings = load_translations(
+        cache,
+        transcript,
+        client,
+        logger,
+        translate_mode=args.translate_mode,
+        source_language=args.source_language,
+    )
     if not translation_cached:
         cache.commit_stage("translation", stage_translation_key)
     warnings_count += translation_warnings

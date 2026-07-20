@@ -15,6 +15,8 @@ def preflight_config_hash(
     sample_every_s: float,
     confidence_threshold: float,
     uncertain_threshold: float,
+    manual_ranges_hash: str | None = None,
+    anime_context_hash: str | None = None,
 ) -> str:
     return stable_hash(
         {
@@ -23,6 +25,8 @@ def preflight_config_hash(
             "sample_every_s": sample_every_s,
             "confidence_threshold": confidence_threshold,
             "uncertain_threshold": uncertain_threshold,
+            "manual_ranges_hash": manual_ranges_hash,
+            "anime_context_hash": anime_context_hash,
             "preprocessing_version": PREFLIGHT_PREPROCESSING_VERSION,
         }
     )
@@ -36,6 +40,8 @@ def preflight_identity(
     sample_every_s: float,
     confidence_threshold: float,
     uncertain_threshold: float,
+    manual_ranges_hash: str | None = None,
+    anime_context_hash: str | None = None,
 ) -> tuple[str, str]:
     return (
         media_identity_hash(film),
@@ -45,5 +51,7 @@ def preflight_identity(
             sample_every_s=sample_every_s,
             confidence_threshold=confidence_threshold,
             uncertain_threshold=uncertain_threshold,
+            manual_ranges_hash=manual_ranges_hash,
+            anime_context_hash=anime_context_hash,
         ),
     )

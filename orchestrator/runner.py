@@ -157,6 +157,8 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
                 sample_every_s=float(section.get("sample_every_s", 5.0)),
                 confidence_threshold=float(section.get("confidence_threshold", 0.75)),
                 uncertain_threshold=float(section.get("uncertain_threshold", 0.55)),
+                manual_ranges_hash=file_hash(Path(str(section["manual_ranges"]))) if section.get("manual_ranges") else None,
+                anime_context_hash=file_hash(Path(str(section["anime_context"]))) if section.get("anime_context") else None,
             )
             profile = VideoProfile.model_validate(load_json(paths.video_profile))
             if profile.cache_version != PREFLIGHT_CACHE_VERSION or profile.input_hash != expected_input or profile.config_hash != expected_config:
@@ -198,12 +200,15 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
             profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file() else None
             style_setting = section.get("style_sample")
             style_path = Path(str(style_setting)).expanduser().resolve() if style_setting else DEFAULT_STYLE_SAMPLE
+            context_setting = section.get("context_file")
+            context_path = Path(str(context_setting)).expanduser().resolve() if context_setting else None
             identity = build_review_identity(
                 film_map_path=paths.film_map,
                 settings=section,
                 style_sample_path=style_path,
                 story_map_path=story_path,
                 video_profile_path=profile_path,
+                context_file_path=context_path,
             )
             meta = ReviewMeta.model_validate(load_json(paths.review_meta))
             if (
@@ -212,6 +217,7 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
                 or meta.film_map_meta_hash != identity.film_map_meta_hash
                 or meta.story_map_hash != identity.story_map_hash
                 or meta.video_profile_hash != identity.video_profile_hash
+                or meta.context_file_hash != identity.context_file_hash
                 or meta.config_hash != identity.config_hash
             ):
                 return False
@@ -256,7 +262,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--input", str(film), "--output", str(paths.video_profile)]
         section = config.get("preflight", {})
         if section.get("enabled", True):
-            for key in ("max_intro_s", "sample_every_s", "classifier", "confidence_threshold", "uncertain_threshold", "log_level"):
+            for key in ("max_intro_s", "sample_every_s", "classifier", "confidence_threshold", "uncertain_threshold", "manual_ranges", "anime_context", "log_level"):
                 add_option(command, key, section.get(key))
         else:
             command += ["--classifier", "heuristic"]
@@ -285,12 +291,12 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
-        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "playwright_max_attempts", "playwright_recovery_timeout_s", "openai_fallback_model", "log_level"):
+        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "context_file", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "playwright_max_attempts", "playwright_recovery_timeout_s", "openai_fallback_model", "log_level"):
             add_option(command, key, section.get(key))
         if config.get("orchestrator", {}).get("api_budget_guard") == "block":
             command.append("--block-openai-fallback")
         command.append("--style-qa" if section.get("style_qa", True) else "--no-style-qa")
-        command.append("--opening-coherence-qa" if section.get("opening_coherence_qa", section.get("content_type") == "movie") else "--no-opening-coherence-qa")
+        command.append("--opening-coherence-qa" if section.get("opening_coherence_qa", section.get("content_type") in {"movie", "anime_movie"}) else "--no-opening-coherence-qa")
         command.append("--micro-beats" if section.get("micro_beats", False) else "--no-micro-beats")
         command.append("--drop-non-story-beats" if section.get("drop_non_story_beats", True) else "--no-drop-non-story-beats")
         if section.get("headless"):

@@ -7,6 +7,7 @@ from common.schema import FilmMapSegment, NonStoryRange, StorySection, VideoProf
 
 SECTION_ORDER = ["setup", "inciting_incident", "conflict", "investigation", "reveal", "climax", "ending"]
 CHARACTER_RE = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
+MOVIE_CONTENT_TYPES = {"movie", "anime_movie"}
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ def build_story_sections(
     target_story_sections: int = 7,
 ) -> tuple[list[StorySection], StoryMapReport]:
     warnings: list[str] = []
-    if content_type != "movie":
+    if content_type not in MOVIE_CONTENT_TYPES:
         warnings.append("storymap v1 is optimized for movie; episode uses coarse sections")
     non_story_ranges = video_profile.non_story_ranges if video_profile else []
     story_segments = [segment for segment in film_map if not overlaps_non_story(segment.tc_start, segment.tc_end, non_story_ranges)]

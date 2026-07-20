@@ -24,6 +24,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "classifier": "heuristic",
         "confidence_threshold": 0.75,
         "uncertain_threshold": 0.55,
+        "manual_ranges": None,
+        "anime_context": None,
         "log_level": "INFO",
     },
     "ingest": {
@@ -70,6 +72,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "target_beat_audio_s": 12.0,
         "max_beat_audio_s": 18.0,
         "story_map": "auto",
+        "context_file": None,
         "review_intent_output": None,
         "tts_cps": 15,
         "min_coverage": 0.85,
@@ -264,7 +267,7 @@ def apply_content_type_match_defaults(config: dict[str, Any], raw_overrides: dic
     review = config.get("review", {})
     match = config.get("match", {})
     raw_match = raw_overrides.get("match", {}) if isinstance(raw_overrides.get("match", {}), dict) else {}
-    if review.get("content_type") != "episode":
+    if review.get("content_type") not in {"episode", "anime_series"}:
         return
     if "match_strategy" not in raw_match:
         match["match_strategy"] = "hybrid"

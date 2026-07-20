@@ -86,6 +86,18 @@ python run.py --input path\to\video-vi.mp4 --run-dir runs\movie-vi01 --config co
 - Không dùng cutoff intro cố định; GĐ0 `preflight` detect non-story/intro theo từng video.
 - Với nguồn tiếng Việt, `config.vi.stable.yaml` dùng `source_language=vi`, `translate_mode=none` và `aligner=whisperx`; GĐ1 giữ transcript Việt trực tiếp trong `film_map.json` và forced-align bằng WhisperX khi runtime có sẵn.
 
+Anime recap V1 có hai preset local:
+
+```powershell
+python run.py --input path\to\anime.mp4 --run-dir runs\anime-series01 --config config.anime.series.yaml
+python run.py --input path\to\anime-movie.mp4 --run-dir runs\anime-movie01 --config config.anime.movie.yaml
+```
+
+- `config.anime.series.yaml`: `content_type=anime_series`, `source_language=ja`, `translate_mode=ja-en`, `shots.face_detection=off`, `match.w_face=0.0`, `match.w_visual=0.0`, `exclude_non_story=true`.
+- `config.anime.movie.yaml`: `content_type=anime_movie`, cùng ingest defaults tiếng Nhật, `hook_mode=setup`, và cùng posture strict OP/ED/preview guard.
+- `preflight.manual_ranges` và `preflight.anime_context` nhận YAML/JSON local, rồi merge vào `video_profile.non_story_ranges`; `review.context_file` nạp cùng anime context để giữ glossary, continuity và spoiler guard nhất quán.
+- Anime context là metadata local only, không dùng AniList/API. OP/ED/theme/preview/recap zones phải đi qua manual ranges hoặc detector tin cậy, không hardcode duration.
+
 Tùy chọn resume/debug:
 
 ```powershell

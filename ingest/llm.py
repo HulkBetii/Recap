@@ -42,13 +42,14 @@ class OpenAIIngestClient:
         *,
         batch_size: int = 20,
         logger: logging.Logger | None = None,
+        source_language: str = "ko",
     ) -> tuple[list[TranslatedSegment], int]:
         translated: list[TranslatedSegment] = []
         warnings_count = 0
         for offset in range(0, len(segments), batch_size):
             batch = segments[offset : offset + batch_size]
             try:
-                mapping = retry_call(lambda: self._translate_batch(batch))
+                mapping = retry_call(lambda: self._translate_batch(batch, source_language=source_language))
             except Exception as exc:  # noqa: BLE001
                 warnings_count += len(batch)
                 if logger:
@@ -73,15 +74,16 @@ class OpenAIIngestClient:
     def describe_frame(self, frame_path: Path) -> str:
         return retry_call(lambda: self._describe_frame(frame_path))
 
-    def _translate_batch(self, batch: list[TranscriptSegment]) -> dict[str, str]:
+    def _translate_batch(self, batch: list[TranscriptSegment], *, source_language: str = "ko") -> dict[str, str]:
         payload = [{"id": item.id, "ko": item.ko} for item in batch]
+        source_name = {"ko": "Korean", "ja": "Japanese", "vi": "Vietnamese"}.get(source_language, source_language)
         response = self.client.chat.completions.create(
             model=self.translate_model,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "Translate Korean drama transcript segments to natural English. "
+                        f"Translate {source_name} transcript segments to natural English. "
                         "Return only a JSON object mapping each id to translated text. "
                         "Do not merge, split, omit, or renumber segments."
                     ),

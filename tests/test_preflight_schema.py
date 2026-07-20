@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +42,100 @@ def test_preflight_identity_changes_with_film_or_config(tmp_path: Path) -> None:
 
     assert first[1] != changed_config[1]
     assert first[0] != changed_film[0]
+
+def test_preflight_identity_changes_with_manual_anime_inputs(tmp_path: Path) -> None:
+    film = tmp_path / "film.mp4"
+    film.write_bytes(b"film")
+
+    first = preflight_identity(
+        film,
+        classifier="heuristic",
+        max_intro_s=240,
+        sample_every_s=5,
+        confidence_threshold=0.75,
+        uncertain_threshold=0.55,
+        manual_ranges_hash="manual-a",
+        anime_context_hash="context-a",
+    )
+    second = preflight_identity(
+        film,
+        classifier="heuristic",
+        max_intro_s=240,
+        sample_every_s=5,
+        confidence_threshold=0.75,
+        uncertain_threshold=0.55,
+        manual_ranges_hash="manual-b",
+        anime_context_hash="context-a",
+    )
+    third = preflight_identity(
+        film,
+        classifier="heuristic",
+        max_intro_s=240,
+        sample_every_s=5,
+        confidence_threshold=0.75,
+        uncertain_threshold=0.55,
+        manual_ranges_hash="manual-a",
+        anime_context_hash="context-b",
+    )
+
+    assert first[1] != second[1]
+    assert first[1] != third[1]
+
+def test_preflight_merges_manual_and_anime_non_story_ranges(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    film = tmp_path / "anime.mp4"
+    film.write_bytes(b"film")
+    manual_ranges = tmp_path / "manual_ranges.json"
+    manual_ranges.write_text(
+        json.dumps({"non_story_ranges": [{"start_s": 0, "end_s": 8, "label": "studio_logo", "confidence": 1.0}]}),
+        encoding="utf-8",
+    )
+    anime_context = tmp_path / "anime_context.yaml"
+    anime_context.write_text(
+        """
+title: Example
+kind: anime_series
+episode_number: 1
+non_story_ranges:
+  - start_s: 72
+    end_s: 162
+    label: opening_theme
+    confidence: 1.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    def fake_build(input_path, current_work_dir, **kwargs):  # type: ignore[no-untyped-def]
+        return VideoProfile(
+            input_path=str(input_path),
+            duration_s=200,
+            intro=IntroDetection(detected=False, confidence=0, reasons=[]),
+            classifier=kwargs["classifier"],
+            created_at=datetime.now(timezone.utc),
+        )
+
+    monkeypatch.setattr("preflight.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("preflight.__main__.build_video_profile", fake_build)
+    output = tmp_path / "video_profile.json"
+
+    run_preflight(
+        argparse.Namespace(
+            input=film,
+            output=output,
+            max_intro_s=240.0,
+            sample_every_s=5.0,
+            classifier="heuristic",
+            confidence_threshold=0.75,
+            uncertain_threshold=0.55,
+            manual_ranges=manual_ranges,
+            anime_context=anime_context,
+            work_dir=tmp_path / "work",
+            force=False,
+        )
+    )
+
+    profile = VideoProfile.model_validate_json(output.read_text(encoding="utf-8"))
+    assert [item.label for item in profile.non_story_ranges] == ["studio_logo", "opening_theme"]
+    assert any("merged 2 manual non-story range" in warning for warning in profile.warnings)
 
 
 def test_preflight_work_cache_is_reused_only_for_matching_identity(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]

@@ -41,6 +41,23 @@ def test_apply_video_profile_marks_overlap_non_story() -> None:
     assert shots[1].exclude_reason is None
 
 
+def test_apply_video_profile_marks_anime_opening_theme() -> None:
+    profile = VideoProfile(
+        input_path="anime.mp4",
+        duration_s=200,
+        intro=IntroDetection(detected=False, confidence=0, reasons=[]),
+        non_story_ranges=[NonStoryRange(start_s=72, end_s=162, label="opening_theme", confidence=1.0)],
+        classifier="heuristic",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    shots, n_non_story = apply_video_profile_to_shots([make_shot(0, 80, 85)], profile)
+
+    assert n_non_story == 1
+    assert shots[0].is_story is False
+    assert shots[0].is_usable is False
+    assert shots[0].exclude_reason == "opening_theme"
+
 def test_apply_video_profile_without_profile_keeps_story() -> None:
     shots, n_non_story = apply_video_profile_to_shots([make_shot(0, 0, 5)], None)
     assert n_non_story == 0

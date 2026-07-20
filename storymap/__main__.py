@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video-profile", default=None, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--output-qa", default=None, type=Path)
-    parser.add_argument("--content-type", default="movie", choices=["movie", "episode"])
+    parser.add_argument("--content-type", default="movie", choices=["movie", "episode", "anime_series", "anime_movie"])
     parser.add_argument("--target-story-sections", default=7, type=int)
     parser.add_argument("--work-dir", default=Path("work/storymap"), type=Path)
     parser.add_argument("--force", action="store_true")

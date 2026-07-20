@@ -1,5 +1,14 @@
 # PROJECT_LOG.md
 
+## 2026-07-20 - Anime recap core V1
+
+- Added additive anime support without changing required stage JSON contracts: `film_map.json`, `review_script.json`, `beats_timing.json`, `shots.json`, and `edl.json` remain unchanged.
+- Added Japanese ingest configuration with `source_language=ja`, `translate_mode=ja-en`, and WhisperX language pass-through.
+- Added `config.anime.series.yaml`, `config.anime.movie.yaml`, and `examples/anime/anime_context.example.yaml` for local-only anime metadata, canonical Vietnamese names, terms, pronunciation hints, continuity notes, and manual non-story ranges.
+- GĐ0 can merge manual/anime context OP/ED/preview ranges into `video_profile.non_story_ranges`; GĐ1 drops only visual gaps that overlap those ranges, while speech remains preserved.
+- GĐ2 accepts `review.context_file`, includes it in review cache identity, merges anime glossary entries, and prompts/QA against OP/ED/theme lyrics, preview/recap-only beats, unsupported spoilers, and name drift.
+- Anime presets reduce Haar-face reliance (`shots.face_detection=off`, `match.w_face=0.0`) and keep chronology/non-story exclusion strict for GĐ5.
+
 ## 2026-07-20 - Quality tooling wave 1
 
 - Added `ruff` and `tach` to the development toolchain for check-only linting and blocking architecture boundary checks.

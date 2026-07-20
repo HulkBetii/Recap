@@ -38,6 +38,7 @@ class ReviewIdentity:
     film_map_meta_hash: str | None
     story_map_hash: str | None
     video_profile_hash: str | None
+    context_file_hash: str | None
     config_hash: str
     core_input_hash: str
     cache_key: str
@@ -56,12 +57,14 @@ def build_review_identity(
     style_sample_path: Path | None,
     story_map_path: Path | None,
     video_profile_path: Path | None,
+    context_file_path: Path | None = None,
 ) -> ReviewIdentity:
     film_map_path = film_map_path.expanduser().resolve()
     for label, path in (
         ("style sample", style_sample_path),
         ("story map", story_map_path),
         ("video profile", video_profile_path),
+        ("context file", context_file_path),
     ):
         if path is not None and not path.expanduser().resolve().is_file():
             raise FileNotFoundError(f"{label} does not exist: {path.expanduser().resolve()}")
@@ -72,6 +75,7 @@ def build_review_identity(
     film_map_meta_digest = file_hash(film_map_meta_path)
     story_map_digest = file_hash(story_map_path) if story_map_path else None
     video_profile_digest = file_hash(video_profile_path) if video_profile_path else None
+    context_file_digest = file_hash(context_file_path) if context_file_path else None
     config_payload = {name: _value(settings, name) for name in REVIEW_CONFIG_FIELDS}
     config_payload["target_ratio"] = str(config_payload.get("target_ratio"))
     for name in ("tts_cps", "min_coverage", "target_beat_audio_s", "max_beat_audio_s", "non_story_tail_s"):
@@ -83,6 +87,7 @@ def build_review_identity(
     config_payload.update(
         {
             "style_sample_hash": file_hash(style_sample_path) if style_sample_path else None,
+            "context_file_hash": context_file_digest,
             "prompt_version": REVIEW_PROMPT_VERSION,
         }
     )
@@ -93,6 +98,7 @@ def build_review_identity(
             "film_map_meta_hash": film_map_meta_digest,
             "story_map_hash": story_map_digest,
             "video_profile_hash": video_profile_digest,
+            "context_file_hash": context_file_digest,
         }
     )
     return ReviewIdentity(
@@ -100,6 +106,7 @@ def build_review_identity(
         film_map_meta_hash=film_map_meta_digest,
         story_map_hash=story_map_digest,
         video_profile_hash=video_profile_digest,
+        context_file_hash=context_file_digest,
         config_hash=config_digest,
         core_input_hash=core_input_hash,
         cache_key=stable_hash({"core_input_hash": core_input_hash, "config_hash": config_digest, "cache_version": REVIEW_CACHE_VERSION}),

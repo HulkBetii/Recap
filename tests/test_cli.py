@@ -14,7 +14,7 @@ class FakeClient:
         self.translate_model = translate_model
         self.vision_model = vision_model
 
-    def translate_segments(self, transcript, logger=None):  # type: ignore[no-untyped-def]
+    def translate_segments(self, transcript, logger=None, source_language="ko"):  # type: ignore[no-untyped-def]
         return [
             TranslatedSegment(
                 id=item.id,

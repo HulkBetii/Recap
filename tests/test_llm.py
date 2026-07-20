@@ -8,7 +8,7 @@ class FakeClient(OpenAIIngestClient):
     def __init__(self) -> None:
         pass
 
-    def _translate_batch(self, batch):  # type: ignore[no-untyped-def]
+    def _translate_batch(self, batch, source_language="ko"):  # type: ignore[no-untyped-def]
         return {str(item.id): f"en-{item.id}" for item in batch}
 
 
