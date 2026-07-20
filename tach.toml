@@ -1,0 +1,61 @@
+source_roots = ["."]
+exclude = [
+    "build/**",
+    "data/**",
+    "dist/**",
+    "out/**",
+    "runs/**",
+    "scripts/**",
+    "tests/**",
+    "work/**",
+    "*.egg-info/**",
+    "__pycache__/**",
+]
+exact = false
+ignore_type_checking_imports = true
+forbid_circular_dependencies = false
+root_module = "ignore"
+
+[[modules]]
+path = "common"
+depends_on = []
+
+[[modules]]
+path = "preflight"
+depends_on = ["common"]
+
+[[modules]]
+path = "ingest"
+depends_on = ["common"]
+
+[[modules]]
+path = "storymap"
+depends_on = ["common"]
+
+[[modules]]
+path = "review"
+depends_on = ["common"]
+
+[[modules]]
+path = "tts"
+depends_on = ["common"]
+
+[[modules]]
+path = "shots"
+depends_on = ["common"]
+
+[[modules]]
+path = "visual_index"
+depends_on = ["common"]
+
+[[modules]]
+path = "match"
+depends_on = ["common", "visual_index"]
+
+[[modules]]
+path = "render"
+depends_on = ["common"]
+
+[[modules]]
+path = "orchestrator"
+depends_on = ["common", "ingest", "match", "preflight", "review", "storymap", "tts", "visual_index"]

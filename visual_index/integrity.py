@@ -6,15 +6,11 @@ from pathlib import Path
 
 import numpy as np
 
+from common.integrity import file_hash, media_identity_hash, stable_hash
 from common.schema import Shot, ShotVisualIndexFile, validate_shot_visual_index
-from match.cache import file_hash, stable_hash
 
 PREPROCESSING_VERSION = "siglip2-fixed64-v1"
 
-
-def media_identity_hash(path: Path) -> str:
-    stat = path.stat()
-    return stable_hash({"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
 
 
 def visual_index_config_hash(

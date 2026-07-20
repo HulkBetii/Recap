@@ -126,6 +126,19 @@ def test_release_workflow_is_windows_offline_and_uses_full_history() -> None:
     assert "playwright install" not in workflow.lower()
 
 
+def test_release_gate_runs_quality_tooling() -> None:
+    script = (ROOT / "scripts" / "release_check.ps1").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text(encoding="utf-8")
+
+    assert '"ruff_check"' in script
+    assert '"tach_check"' in script
+    assert "tach-report.txt" in script
+    assert "tach-audit.txt" not in script
+    assert "audit-only" not in script
+    assert 'throw "Tach boundary issues found' in script
+    assert "work/release-gate/tach-report.txt" in workflow
+
+
 def test_project_version_matches_v1_0_2_release() -> None:
     with (ROOT / "pyproject.toml").open("rb") as handle:
         project = tomllib.load(handle)["project"]

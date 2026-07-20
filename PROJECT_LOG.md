@@ -1,5 +1,13 @@
 # PROJECT_LOG.md
 
+## 2026-07-20 - Quality tooling wave 1
+
+- Added `ruff` and `tach` to the development toolchain for check-only linting and blocking architecture boundary checks.
+- Configured `ruff` with critical syntax/name rules first to avoid a repo-wide formatting or lint-cleanup diff.
+- Added `tach.toml` desired boundaries for runtime packages, moved shared `shots.json` loading/hash helpers under `common`, and wired release gate to fail on Tach boundary findings.
+- Disabled Tach's pytest plugin by default so the existing test suite behavior stays unchanged.
+- Deferred `pytest-subprocess` and codebase graph tooling until a concrete subprocess-heavy or one-off architecture exploration need appears.
+
 ## 2026-07-11 - GĐ5 opening intra-beat alignment
 
 - Added opt-in `opening_intra_beat_align` for `config.movie.visual.yaml`; stable and Vietnamese presets remain disabled.

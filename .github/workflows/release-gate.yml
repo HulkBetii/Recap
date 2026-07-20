@@ -39,6 +39,7 @@ jobs:
           name: release-gate-${{ github.sha }}
           path: |
             work/release-gate/report.json
+            work/release-gate/tach-report.txt
             work/release-gate/secret-report.json
             work/release-gate/package-report.json
             work/release-gate/wheel/*.whl

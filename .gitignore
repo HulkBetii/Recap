@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .env
+.ruff_cache/
+.tach/
 runs/
 data/
 build/

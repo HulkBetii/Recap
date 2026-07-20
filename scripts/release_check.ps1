@@ -34,6 +34,7 @@ $reportPath = Join-Path $resolvedWorkDir "report.json"
 $secretReportPath = Join-Path $resolvedWorkDir "secret-report.json"
 $packageReportPath = Join-Path $resolvedWorkDir "package-report.json"
 $mediaReportPath = Join-Path $resolvedWorkDir "media-smoke-report.json"
+$tachReportPath = Join-Path $resolvedWorkDir "tach-report.txt"
 
 function Invoke-NativeCommand {
     param([string]$FilePath, [string[]]$Arguments)
@@ -93,6 +94,32 @@ try {
     }
     Invoke-GateStep "git_diff_check" {
         Invoke-NativeCommand "git" @("diff", "--check", "HEAD", "--")
+    }
+    Invoke-GateStep "ruff_check" {
+        Invoke-NativeCommand "python" @("-m", "ruff", "check", ".")
+    }
+    Invoke-GateStep "tach_check" {
+        $hasNativePreference = Test-Path Variable:\PSNativeCommandUseErrorActionPreference
+        $previousNativePreference = $null
+        if ($hasNativePreference) {
+            $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        try {
+            & cmd.exe /c "python -m tach check --dependencies --output text > `"$tachReportPath`" 2>&1"
+            $tachExitCode = $LASTEXITCODE
+        } finally {
+            if ($hasNativePreference) {
+                $PSNativeCommandUseErrorActionPreference = $previousNativePreference
+            }
+        }
+        $output = if (Test-Path -LiteralPath $tachReportPath) { Get-Content -LiteralPath $tachReportPath } else { @() }
+        if ($output) {
+            $output | Write-Host
+        }
+        if ($tachExitCode -ne 0) {
+            throw "Tach boundary issues found. See $tachReportPath."
+        }
     }
     Invoke-GateStep "pytest" {
         Invoke-NativeCommand "python" @("-m", "pytest", "-q")

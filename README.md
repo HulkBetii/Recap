@@ -143,6 +143,18 @@ python -m pytest -q
 ```
 
 Test hiện tại dùng mock/unit, chưa yêu cầu clip thật. Khi có clip ngắn, chạy lệnh GĐ1 ở trên để smoke test real pipeline.
+
+## Quality tooling
+
+Development installs include `ruff` and `tach`:
+
+```powershell
+python -m pip install -e ".[dev]"
+python -m ruff check .
+python -m tach check --dependencies
+```
+
+`ruff` is check-only and starts with critical syntax/name rules so it can run on the existing codebase without a repo-wide formatting diff. Tach records the desired runtime package boundaries in `tach.toml`; release gate runs Tach as a blocking check and writes `work/release-gate/tach-report.txt`. Tach's pytest plugin is disabled by default so `python -m pytest -q` keeps running the full test selection.
 ## Chạy GĐ2
 
 GĐ2 nhận `film_map.json` và tạo `review_script.json` + `review_script.meta.json`.

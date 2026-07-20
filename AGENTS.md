@@ -514,3 +514,12 @@ repo/
 - Cache smoke phải chứng minh unchanged reuse, profile-only vision invalidation, glossary giữ aligned transcript, và film identity rebuild toàn bộ artifacts GĐ1.
 - `work/release-gate/report.json` là audit artifact gitignored. Không ghi key/token; secret findings luôn redact.
 - Release hiện tại là `1.0.2`, tag `v1.0.2`; các tag `v1.0.0` và `v1.0.1` phải giữ nguyên. Chỉ tạo release/tag tiếp theo khi CI xanh, local media gate xanh không `-AllowDirty`, report pass, secret scan sạch và main đồng bộ remote.
+
+## 39. CODE QUALITY TOOLING WAVE 1
+
+- Dev extra now includes `ruff` and `tach`; install with `python -m pip install -e ".[dev]"`.
+- `ruff` runs as check-only quality gate via `python -m ruff check .`; Wave 1 selects only critical syntax/undefined-name class rules to avoid an unrelated repo-wide cleanup diff.
+- `tach.toml` records desired runtime boundaries: `common` is shared, each stage is isolated, `match` may depend on `visual_index`, and `orchestrator` may import stage validation/cache helpers.
+- Release gate runs Tach as a blocking check and writes `work/release-gate/tach-report.txt`; boundary findings fail the gate.
+- Tach's pytest plugin is disabled in `pyproject.toml`; pytest must keep running normal/full selections unless a task explicitly opts into Tach impacted-test behavior.
+- `pytest-subprocess` and codebase graph tools are not workflow dependencies; add them only for a concrete subprocess-heavy test need or one-off architecture exploration.
