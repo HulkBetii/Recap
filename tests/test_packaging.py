@@ -7,12 +7,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_PACKAGES = {
     "common*",
+    "episode_planner*",
     "ingest*",
     "match*",
     "orchestrator*",
     "preflight*",
     "render*",
     "review*",
+    "series_composer*",
+    "series_match*",
+    "series_recap*",
     "shots*",
     "storymap*",
     "tts*",
@@ -85,4 +89,7 @@ def test_tach_tracks_runtime_boundaries() -> None:
     assert set(modules) == {item.removesuffix("*") for item in RUNTIME_PACKAGES}
     assert modules["common"] == set()
     assert modules["match"] == {"common", "visual_index"}
+    assert modules["series_composer"] == {"common", "review"}
+    assert modules["series_match"] == {"common"}
+    assert modules["series_recap"] == {"common", "orchestrator"}
     assert {"ingest", "match", "review", "tts"} <= modules["orchestrator"]

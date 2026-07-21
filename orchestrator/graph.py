@@ -3,12 +3,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-STAGES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "visual_index", "match", "render")
+STAGES = (
+    "preflight",
+    "ingest",
+    "storymap",
+    "episode_planner",
+    "review",
+    "tts",
+    "shots",
+    "visual_index",
+    "match",
+    "render",
+)
 DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "preflight": (),
     "ingest": ("preflight",),
     "storymap": ("ingest",),
-    "review": ("storymap",),
+    "episode_planner": ("storymap",),
+    "review": ("episode_planner",),
     "tts": ("review",),
     "shots": ("preflight",),
     "visual_index": ("shots",),
@@ -16,9 +28,10 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "render": ("match", "tts"),
 }
 DOWNSTREAM: dict[str, tuple[str, ...]] = {
-    "preflight": ("ingest", "storymap", "review", "tts", "shots", "visual_index", "match", "render"),
-    "ingest": ("storymap", "review", "tts", "match", "render"),
-    "storymap": ("review", "tts", "match", "render"),
+    "preflight": ("ingest", "storymap", "episode_planner", "review", "tts", "shots", "visual_index", "match", "render"),
+    "ingest": ("storymap", "episode_planner", "review", "tts", "match", "render"),
+    "storymap": ("episode_planner", "review", "tts", "match", "render"),
+    "episode_planner": ("review", "tts", "match", "render"),
     "review": ("tts", "match", "render"),
     "tts": ("match", "render"),
     "shots": ("visual_index", "match", "render"),
@@ -36,6 +49,8 @@ class RunPaths:
     story_map: Path
     story_map_meta: Path
     story_map_qa: Path
+    episode_meta: Path
+    episode_memory: Path
     review_script: Path
     review_meta: Path
     review_meta_alias: Path
@@ -76,6 +91,8 @@ def build_paths(run_dir: Path) -> RunPaths:
         story_map=run_dir / "story_map.json",
         story_map_meta=run_dir / "story_map.meta.json",
         story_map_qa=run_dir / "story_map.qa.json",
+        episode_meta=run_dir / "episode_meta.json",
+        episode_memory=run_dir / "episode_memory.json",
         review_script=run_dir / "review_script.json",
         review_meta=run_dir / "review_script.meta.json",
         review_meta_alias=run_dir / "review_meta.json",

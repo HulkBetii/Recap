@@ -16,6 +16,8 @@ SourceLanguage = Literal["ko", "vi", "ja"]
 TranslateMode = Literal["ko-en", "ja-en", "none"]
 AnimeContentType = Literal["anime_series", "anime_movie"]
 ContentType = Literal["episode", "movie", "anime_series", "anime_movie"]
+RequestedRecapMode = Literal["off", "auto", "full", "quick", "merge", "skip"]
+ResolvedRecapMode = Literal["full", "quick", "merge", "skip"]
 AnimeNonStoryLabel = Literal[
     "opening_theme",
     "ending_theme",
@@ -465,6 +467,341 @@ class AnimeContext(BaseModel):
             raise ValueError("anime_series context requires episode_number")
         return self
 
+class SeriesManifestEpisode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    episode_key: str | None = None
+    episode_number: int | str | None = None
+    title: str | None = None
+    source_path: str | None = None
+    arc: str | None = None
+    spoiler_limit_episode: int | str | None = None
+
+    @field_validator("episode_key", "title", "source_path", "arc")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+class SeriesManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str
+    series_title: str | None = None
+    season: int | str | None = None
+    episode_key: str | None = None
+    episode_number: int | str | None = None
+    title: str | None = None
+    source_path: str | None = None
+    arc: str | None = None
+    spoiler_limit_episode: int | str | None = None
+    episodes: list[SeriesManifestEpisode] = Field(default_factory=list)
+
+    @field_validator("series_id", "series_title", "episode_key", "title", "source_path", "arc")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_manifest(self) -> "SeriesManifest":
+        if not self.series_id:
+            raise ValueError("series_id cannot be empty")
+        if not self.episodes and not any((self.episode_key, self.episode_number, self.source_path)):
+            raise ValueError("series_manifest requires episodes or current episode fields")
+        return self
+
+class EpisodeScoreSignals(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reveal: float = Field(ge=0, le=1)
+    state_change: float = Field(ge=0, le=1)
+    fight_action: float = Field(ge=0, le=1)
+    new_entity: float = Field(ge=0, le=1)
+    continuity_dependency: float = Field(ge=0, le=1)
+    story_density: float = Field(ge=0, le=1)
+    non_story_ratio: float = Field(ge=0, le=1)
+    non_story_penalty: float = Field(ge=0, le=1)
+
+class EpisodeTimecodeHook(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_s: float = Field(ge=0)
+    end_s: float = Field(gt=0)
+    label: str
+    summary: str
+
+    @field_validator("label", "summary")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("episode timecode hook text cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_hook(self) -> "EpisodeTimecodeHook":
+        if self.end_s <= self.start_s:
+            raise ValueError("end_s must be greater than start_s")
+        return self
+
+class EpisodeMemoryEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str
+    episode_key: str
+    episode_number: int | str | None = None
+    title: str | None = None
+    source_path: str | None = None
+    arc: str | None = None
+    recap_mode: ResolvedRecapMode
+    importance_score: float = Field(ge=0, le=1)
+    summary: str
+    entity_hooks: list[str] = Field(default_factory=list)
+    arc_hooks: list[str] = Field(default_factory=list)
+    important_timecodes: list[EpisodeTimecodeHook] = Field(default_factory=list)
+    created_at: datetime
+
+    @field_validator("series_id", "episode_key", "title", "source_path", "arc", "summary")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized and value is not None:
+            raise ValueError("episode memory text field cannot be empty")
+        return normalized
+
+    @field_validator("entity_hooks", "arc_hooks")
+    @classmethod
+    def normalize_lists(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
+
+class EpisodeMemory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["episode_memory"] = "episode_memory"
+    anime_context: AnimeContext | None = None
+    current: EpisodeMemoryEntry
+    previous: list[EpisodeMemoryEntry] = Field(default_factory=list)
+    spoiler_limit_episode: int | str | None = None
+    review_guidance: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+    @field_validator("review_guidance", "warnings")
+    @classmethod
+    def normalize_text_list(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
+
+class EpisodeMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str
+    episode_key: str
+    episode_number: int | str | None = None
+    title: str | None = None
+    source_path: str
+    arc: str | None = None
+    spoiler_limit_episode: int | str | None = None
+    requested_recap_mode: RequestedRecapMode
+    recap_mode: ResolvedRecapMode
+    importance_score: float = Field(ge=0, le=1)
+    score_signals: EpisodeScoreSignals
+    score_reasons: list[str] = Field(default_factory=list)
+    short_circuit: bool
+    target_ratio_override: float | None = Field(default=None, ge=0)
+    quick_target_ratio: float | None = Field(default=None, ge=0)
+    thresholds: dict[str, float] = Field(default_factory=dict)
+    previous_memory_count: int = Field(ge=0)
+    memory_index_path: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime
+    film_map_hash: str | None = None
+    story_map_hash: str | None = None
+    video_profile_hash: str | None = None
+    anime_context_hash: str | None = None
+    series_manifest_hash: str | None = None
+    source_hash: str | None = None
+    config_hash: str | None = None
+    cache_version: str | None = None
+
+    @field_validator("series_id", "episode_key", "title", "source_path", "arc", "memory_index_path")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized and value is not None:
+            raise ValueError("episode meta text field cannot be empty")
+        return normalized
+
+    @field_validator("score_reasons", "warnings")
+    @classmethod
+    def normalize_text_list(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
+
+
+class SeriesSourceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    episode_key: str
+    src: str
+    source_path: str
+    from_seg_id: int = Field(ge=0)
+    to_seg_id: int = Field(ge=0)
+    src_tc_start: float = Field(ge=0)
+    src_tc_end: float = Field(gt=0)
+
+    @field_validator("event_id", "episode_key", "src", "source_path")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        normalized = value.strip().replace("\\", "/")
+        if not normalized:
+            raise ValueError("series source ref text field cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_ref(self) -> "SeriesSourceRef":
+        if self.to_seg_id < self.from_seg_id:
+            raise ValueError("series source ref to_seg_id must be >= from_seg_id")
+        if self.src_tc_end <= self.src_tc_start:
+            raise ValueError("series source ref src_tc_end must be greater than src_tc_start")
+        return self
+
+
+class SeriesEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    series_id: str
+    episode_key: str
+    episode_number: int | str | None = None
+    title: str | None = None
+    source_path: str
+    recap_mode: ResolvedRecapMode
+    summary: str
+    event_type: str = "story_section"
+    from_seg_id: int = Field(ge=0)
+    to_seg_id: int = Field(ge=0)
+    tc_start: float = Field(ge=0)
+    tc_end: float = Field(gt=0)
+    importance: float = Field(default=0.5, ge=0, le=1)
+    is_hook_candidate: bool = False
+    entity_hooks: list[str] = Field(default_factory=list)
+    arc_hooks: list[str] = Field(default_factory=list)
+
+    @field_validator("event_id", "series_id", "episode_key", "title", "source_path", "summary", "event_type")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("series event text field cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_event(self) -> "SeriesEvent":
+        if self.to_seg_id < self.from_seg_id:
+            raise ValueError("series event to_seg_id must be >= from_seg_id")
+        if self.tc_end <= self.tc_start:
+            raise ValueError("series event tc_end must be greater than tc_start")
+        return self
+
+    @field_validator("entity_hooks", "arc_hooks")
+    @classmethod
+    def normalize_text_list(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
+
+
+class SeriesEventBank(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str
+    series_title: str | None = None
+    episode_keys: list[str] = Field(default_factory=list)
+    target_video_s: float = Field(gt=0)
+    char_budget: int = Field(gt=0)
+    events: list[SeriesEvent] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+    @field_validator("series_id", "series_title")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("series event bank text field cannot be empty")
+        return normalized
+
+
+class SeriesReviewBeat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: int = Field(ge=0)
+    narration: str
+    source_refs: list[SeriesSourceRef] = Field(default_factory=list)
+    is_hook: bool = False
+
+    @field_validator("narration")
+    @classmethod
+    def validate_narration(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("series narration cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_beat(self) -> "SeriesReviewBeat":
+        if not self.source_refs:
+            raise ValueError("series review beat requires at least one source_ref")
+        return self
+
+
+class SeriesReviewMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str
+    target_video_s: float = Field(gt=0)
+    char_budget: int = Field(gt=0)
+    est_total_chars: int = Field(ge=0)
+    n_events: int = Field(ge=0)
+    selected_event_ids: list[str] = Field(default_factory=list)
+    qa_report: list[dict[str, Any]] = Field(default_factory=list)
+    model_versions: dict[str, str] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class EdlSourceMap(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 1
+    sources: dict[str, str]
+    created_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_sources(self) -> "EdlSourceMap":
+        if not self.sources:
+            raise ValueError("edl source map requires at least one source")
+        for key, value in self.sources.items():
+            if not key.strip() or not value.strip():
+                raise ValueError("edl source map keys and paths cannot be empty")
+        return self
+
+
 class IntroDetection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -874,6 +1211,8 @@ class RenderMeta(BaseModel):
     duration_match: bool
     n_placements: int = Field(ge=0)
     n_temp_clips: int = Field(ge=0)
+    source_count: int | None = Field(default=None, ge=0)
+    source_names: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
     cache_hits: list[str] = Field(default_factory=list)
@@ -1004,6 +1343,16 @@ def validate_edl(placements: list[EdlPlacement], total_duration: float | None = 
         previous_end = placement.tl_end
     if total_duration is not None and ordered and abs(ordered[-1].tl_end - total_duration) > 0.05:
         raise ValueError("EDL final tl_end does not match total duration")
+    return ordered
+
+
+def validate_series_review_script(beats: list[SeriesReviewBeat]) -> list[SeriesReviewBeat]:
+    ordered = sorted(beats, key=lambda item: item.beat_id)
+    for expected_id, beat in enumerate(ordered):
+        if beat.beat_id != expected_id:
+            raise ValueError(f"series beat_id must be continuous: expected {expected_id}, got {beat.beat_id}")
+    if ordered and not ordered[0].is_hook:
+        raise ValueError("first series beat must be a hook")
     return ordered
 def write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

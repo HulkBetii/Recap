@@ -12,7 +12,7 @@ from typing import Callable
 from orchestrator.config import ConfigError, load_config
 from orchestrator.cost_policy import build_cost_summary, resolve_cost_policy
 from orchestrator.graph import DOWNSTREAM, STAGES, build_paths, forced_stages, stage_range
-from orchestrator.runner import OrchestratorError, outputs_valid, preflight, run_stage
+from orchestrator.runner import OrchestratorError, episode_planner_enabled, output_paths, outputs_valid, preflight, read_episode_meta, run_stage
 from orchestrator.summary import StageSummary, write_summary
 
 SEVERE_TIMECODE_WARNING_MARKERS = (
@@ -197,6 +197,8 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
         selected.discard("preflight")
     if not config.get("visual_index", {}).get("enabled", False):
         selected.discard("visual_index")
+    if not episode_planner_enabled(config) and args.only != "episode_planner":
+        selected.discard("episode_planner")
     forced = forced_stages(selected, args.force, args.force_stage)
     python_exe = config.get("orchestrator", {}).get("python")
     invalid = {stage for stage in selected if not outputs_valid(paths, stage, film=film, config=config)}
@@ -261,7 +263,56 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     if "preflight" in selected:
         summaries.append(execute("preflight"))
 
-    if "shots" in selected:
+    short_circuited = False
+
+    def append_short_circuit_summaries(mode: str) -> None:
+        for stage in ("review", "tts", "shots", "visual_index", "match", "render"):
+            if stage in selected:
+                summaries.append(
+                    StageSummary(
+                        stage=stage,
+                        status=f"short_circuited:{mode}",
+                        duration_s=0.0,
+                        command=[],
+                        outputs=[str(path) for path in output_paths(paths, stage)],
+                    )
+                )
+
+    if "episode_planner" in selected:
+        for stage in ("ingest", "storymap", "episode_planner"):
+            if stage in selected:
+                summaries.append(execute(stage))
+                if stage == "ingest":
+                    fallback_triggered = maybe_run_ingest_fallback(
+                        paths=paths,
+                        film=film,
+                        config=config,
+                        selected=selected,
+                        summaries=summaries,
+                        forced=forced,
+                        python_exe=python_exe,
+                        executor=executor,
+                    )
+        planner_meta = read_episode_meta(paths)
+        if planner_meta is not None and planner_meta.short_circuit:
+            short_circuited = True
+            append_short_circuit_summaries(planner_meta.recap_mode)
+        elif "shots" in selected:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                shots_future = pool.submit(execute, "shots")
+                for stage in ("review", "tts"):
+                    if stage in selected:
+                        summaries.append(execute(stage))
+                summaries.append(shots_future.result())
+                if "visual_index" in selected:
+                    summaries.append(execute("visual_index"))
+        else:
+            for stage in ("review", "tts"):
+                if stage in selected:
+                    summaries.append(execute(stage))
+            if "visual_index" in selected:
+                summaries.append(execute("visual_index"))
+    elif "shots" in selected:
         with ThreadPoolExecutor(max_workers=1) as pool:
             shots_future = pool.submit(execute, "shots")
             for stage in ("ingest", "storymap", "review", "tts"):
@@ -300,14 +351,18 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
             summaries.append(execute("visual_index"))
 
     for stage in ("match", "render"):
-        if stage in selected:
+        if stage in selected and not short_circuited:
             summaries.append(execute(stage))
+
+    final_will_run = set(will_run)
+    if short_circuited:
+        final_will_run.difference_update({"review", "tts", "shots", "visual_index", "match", "render"})
 
     openai_fallback_possible, fallback_triggered, review_status = sync_review_fallback_reporting(
         paths=paths,
         cost_policy=cost_policy,
         selected=selected,
-        will_run=will_run,
+        will_run=final_will_run,
         openai_fallback_possible=openai_fallback_possible,
         fallback_triggered=fallback_triggered,
     )
@@ -315,7 +370,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     cost_summary = build_cost_summary(
         cost_policy,
         selected,
-        will_run,
+        final_will_run,
         openai_fallback_possible=openai_fallback_possible,
         openai_fallback_triggered=fallback_triggered,
         review_fallback=review_status,
@@ -329,6 +384,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
             "preflight": paths.video_profile,
             "ingest": paths.film_map_meta,
             "storymap": paths.story_map_meta,
+            "episode_planner": paths.episode_meta,
             "review": paths.review_meta,
             "tts": paths.tts_meta,
             "shots": paths.shots_meta,
@@ -365,14 +421,14 @@ def maybe_run_ingest_fallback(
         write_fallback_artifacts(paths, {"possible": True, "triggered": False, "blocked": True, "reasons": reasons, "error": "OPENAI_API_KEY missing"})
         raise OrchestratorError("OpenAI fallback required but OPENAI_API_KEY is not set: " + "; ".join(reasons))
     fallback_config = build_fallback_config(config)
-    forced.update(stage for stage in ("storymap", "review", "tts", "match", "render") if stage in selected)
+    forced.update(stage for stage in ("storymap", "episode_planner", "review", "tts", "match", "render") if stage in selected)
     plan = {
         "possible": True,
         "triggered": True,
         "reasons": reasons,
         "fallback_asr_provider": fallback_config["ingest"].get("asr_provider"),
         "fallback_max_vision_frames": fallback_config["ingest"].get("max_vision_frames"),
-        "rerun_stages": [stage for stage in ("ingest", "storymap", "review", "tts", "match", "render") if stage in selected],
+        "rerun_stages": [stage for stage in ("ingest", "storymap", "episode_planner", "review", "tts", "match", "render") if stage in selected],
     }
     write_fallback_artifacts(paths, plan)
     stage_summary = run_stage(

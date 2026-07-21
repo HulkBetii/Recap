@@ -125,7 +125,7 @@ try {
         Invoke-NativeCommand "python" @("-m", "pytest", "-q")
     }
     Invoke-GateStep "compileall" {
-        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "ingest", "match", "orchestrator", "preflight", "render", "review", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py")
+        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "episode_planner", "ingest", "match", "orchestrator", "preflight", "render", "review", "series_composer", "series_match", "series_recap", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py")
     }
     Invoke-GateStep "editable_install_dry_run" {
         Invoke-NativeCommand "python" @("-m", "pip", "install", "--dry-run", "--no-deps", "-e", ".")
@@ -153,7 +153,7 @@ try {
         New-Item -ItemType Directory -Path $smokeDir | Out-Null
         Push-Location $smokeDir
         try {
-            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, common, ingest, match, orchestrator, preflight, render, review, shots, storymap, tts, visual_index; modules=(run,common,ingest,match,orchestrator,preflight,render,review,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
+            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, common, episode_planner, ingest, match, orchestrator, preflight, render, review, series_composer, series_match, series_recap, shots, storymap, tts, visual_index; modules=(run,common,episode_planner,ingest,match,orchestrator,preflight,render,review,series_composer,series_match,series_recap,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
         } finally {
             Pop-Location
         }
@@ -162,7 +162,7 @@ try {
         $smokeDir = Join-Path $resolvedWorkDir "outside-repo"
         Push-Location $smokeDir
         try {
-            foreach ($module in @("ingest", "match", "visual_index")) {
+            foreach ($module in @("episode_planner", "ingest", "match", "series_composer", "series_match", "series_recap", "visual_index")) {
                 Invoke-NativeCommand $venvPython @("-m", $module, "--help")
             }
         } finally {

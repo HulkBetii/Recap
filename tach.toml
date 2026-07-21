@@ -33,6 +33,10 @@ path = "storymap"
 depends_on = ["common"]
 
 [[modules]]
+path = "episode_planner"
+depends_on = ["common"]
+
+[[modules]]
 path = "review"
 depends_on = ["common"]
 
@@ -57,5 +61,17 @@ path = "render"
 depends_on = ["common"]
 
 [[modules]]
+path = "series_composer"
+depends_on = ["common", "review"]
+
+[[modules]]
+path = "series_match"
+depends_on = ["common"]
+
+[[modules]]
+path = "series_recap"
+depends_on = ["common", "orchestrator"]
+
+[[modules]]
 path = "orchestrator"
-depends_on = ["common", "ingest", "match", "preflight", "review", "storymap", "tts", "visual_index"]
+depends_on = ["common", "episode_planner", "ingest", "match", "preflight", "review", "storymap", "tts", "visual_index"]

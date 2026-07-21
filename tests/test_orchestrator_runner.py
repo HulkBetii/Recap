@@ -11,6 +11,8 @@ import pytest
 
 from common.integrity import file_hash
 from common.schema import VideoProfile
+from episode_planner.__main__ import build_parser as build_episode_planner_parser
+from episode_planner.integrity import EPISODE_PLANNER_CACHE_VERSION, episode_planner_config_hash, episode_planner_input_hashes
 from ingest.__main__ import build_parser as build_ingest_parser
 from ingest.integrity import INGEST_CACHE_VERSION, ingest_config_hash
 from orchestrator.config import load_config
@@ -103,6 +105,85 @@ def write_stage_outputs(command: list[str]) -> None:
         config_hash = storymap_stable_hash({"film_map":storymap_stable_hash(json.loads(film_map_path.read_text(encoding="utf-8"))),"video_profile":storymap_stable_hash(profile_payload),"content_type":content_type,"target_story_sections":target_sections})
         output.with_name("story_map.meta.json").write_text(json.dumps({"film_map_path":str(film_map_path),"video_profile_path":str(profile_path) if profile_path else None,"content_type":content_type,"duration_s":2,"n_sections":1,"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[],"film_map_hash":file_hash(film_map_path),"video_profile_hash":file_hash(profile_path),"config_hash":config_hash,"cache_version":"storymap-v1"}), encoding="utf-8")
         flag(command, "--output-qa").write_text(json.dumps({"n_sections":1,"n_non_story":0,"warnings":[],"section_warnings":[]}), encoding="utf-8")
+    elif stage == "episode_planner":
+        args = stage_args(command, build_episode_planner_parser())
+        output_meta = flag(command, "--output-meta")
+        output_memory = flag(command, "--output-memory")
+        mode = args.recap_mode if args.recap_mode in {"full", "quick", "merge", "skip"} else "full"
+        episode_key = args.episode_key or "e01"
+        episode_number = args.episode_number or 1
+        memory_index = (args.series_memory_dir or (output_meta.parent / "series_memory")) / "series_memory_index.jsonl"
+        current = {
+            "series_id": "series",
+            "episode_key": episode_key,
+            "episode_number": episode_number,
+            "title": "Episode",
+            "source_path": str(args.source_path),
+            "arc": "arc",
+            "recap_mode": mode,
+            "importance_score": 0.8,
+            "summary": "setup",
+            "entity_hooks": [],
+            "arc_hooks": ["arc"],
+            "important_timecodes": [{"start_s":0,"end_s":2,"label":"setup","summary":"setup"}],
+            "created_at": NOW,
+        }
+        output_memory.write_text(
+            json.dumps(
+                {
+                    "kind": "episode_memory",
+                    "anime_context": None,
+                    "current": current,
+                    "previous": [],
+                    "spoiler_limit_episode": episode_number,
+                    "review_guidance": ["Quick recap mode" if mode == "quick" else "Full recap mode"],
+                    "warnings": [],
+                    "created_at": NOW,
+                }
+            ),
+            encoding="utf-8",
+        )
+        hashes = episode_planner_input_hashes(
+            film=args.source_path,
+            film_map_path=args.film_map,
+            story_map_path=args.story_map,
+            video_profile_path=args.video_profile,
+            anime_context_path=args.anime_context,
+            series_manifest_path=args.series_manifest,
+        )
+        output_meta.write_text(
+            json.dumps(
+                {
+                    "series_id": "series",
+                    "episode_key": episode_key,
+                    "episode_number": episode_number,
+                    "title": "Episode",
+                    "source_path": str(args.source_path),
+                    "arc": "arc",
+                    "spoiler_limit_episode": episode_number,
+                    "requested_recap_mode": args.recap_mode,
+                    "recap_mode": mode,
+                    "importance_score": 0.8,
+                    "score_signals": {"reveal":0.8,"state_change":0.6,"fight_action":0.2,"new_entity":0.1,"continuity_dependency":0.5,"story_density":1.0,"non_story_ratio":0.0,"non_story_penalty":0.0},
+                    "score_reasons": ["fixture"],
+                    "short_circuit": mode in {"merge", "skip"},
+                    "target_ratio_override": args.quick_target_ratio if mode == "quick" else None,
+                    "quick_target_ratio": args.quick_target_ratio,
+                    "thresholds": {"full":args.recap_full_threshold,"quick":args.recap_quick_threshold,"merge":args.recap_merge_threshold,"quick_min_coverage":args.quick_min_coverage},
+                    "previous_memory_count": 0,
+                    "memory_index_path": str(memory_index),
+                    "warnings": [],
+                    "created_at": NOW,
+                    **hashes,
+                    "config_hash": episode_planner_config_hash(args),
+                    "cache_version": EPISODE_PLANNER_CACHE_VERSION,
+                }
+            ),
+            encoding="utf-8",
+        )
+        memory_index.parent.mkdir(parents=True, exist_ok=True)
+        with memory_index.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(current) + "\n")
     elif stage == "review":
         output = flag(command, "--output")
         args = stage_args(command, build_review_parser())
@@ -616,6 +697,119 @@ def test_anime_series_preset_passes_japanese_and_strict_visual_options(tmp_path:
     assert match[match.index("--match-strategy") + 1] == "chronological"
     assert match[match.index("--w-face") + 1] == "0.0"
     assert match[match.index("--w-visual") + 1] == "0.0"
+
+def test_anime_series_preset_builds_episode_planner_command(tmp_path: Path) -> None:
+    config = load_config(Path("config.anime.series.yaml"))
+    paths = build_paths(tmp_path / "run")
+    film = tmp_path / "anime.mp4"
+
+    command = build_command("episode_planner", paths, film, config, force=False, python_exe="python")
+
+    assert command[command.index("--recap-mode") + 1] == "auto"
+    assert command[command.index("--quick-target-ratio") + 1] == "0.12"
+    assert command[command.index("--quick-min-coverage") + 1] == "0.45"
+    assert command[command.index("--output-meta") + 1] == str(paths.episode_meta)
+    assert command[command.index("--output-memory") + 1] == str(paths.episode_memory)
+
+def test_quick_episode_plan_overrides_review_ratio_and_context(tmp_path: Path) -> None:
+    config = load_config(Path("config.anime.series.yaml"))
+    paths = build_paths(tmp_path / "run")
+    paths.run_dir.mkdir(parents=True)
+    paths.episode_meta.write_text(
+        json.dumps(
+            {
+                "series_id": "series",
+                "episode_key": "e02",
+                "episode_number": 2,
+                "title": "Episode 2",
+                "source_path": "anime.mp4",
+                "arc": "arc",
+                "spoiler_limit_episode": 2,
+                "requested_recap_mode": "auto",
+                "recap_mode": "quick",
+                "importance_score": 0.5,
+                "score_signals": {"reveal":0.2,"state_change":0.2,"fight_action":0.2,"new_entity":0.2,"continuity_dependency":0.2,"story_density":0.8,"non_story_ratio":0.0,"non_story_penalty":0.0},
+                "score_reasons": [],
+                "short_circuit": False,
+                "target_ratio_override": 0.12,
+                "quick_target_ratio": 0.12,
+                "thresholds": {"full":0.7,"quick":0.35,"merge":0.15,"quick_min_coverage":0.45},
+                "previous_memory_count": 1,
+                "memory_index_path": "series_memory_index.jsonl",
+                "warnings": [],
+                "created_at": NOW,
+                "film_map_hash": "film",
+                "story_map_hash": None,
+                "video_profile_hash": None,
+                "anime_context_hash": None,
+                "series_manifest_hash": None,
+                "source_hash": "source",
+                "config_hash": "config",
+                "cache_version": EPISODE_PLANNER_CACHE_VERSION,
+            }
+        ),
+        encoding="utf-8",
+    )
+    paths.episode_memory.write_text(
+        json.dumps(
+            {
+                "kind": "episode_memory",
+                "anime_context": None,
+                "current": {
+                    "series_id": "series",
+                    "episode_key": "e02",
+                    "episode_number": 2,
+                    "title": "Episode 2",
+                    "source_path": "anime.mp4",
+                    "arc": "arc",
+                    "recap_mode": "quick",
+                    "importance_score": 0.5,
+                    "summary": "setup",
+                    "entity_hooks": [],
+                    "arc_hooks": [],
+                    "important_timecodes": [],
+                    "created_at": NOW,
+                },
+                "previous": [],
+                "spoiler_limit_episode": 2,
+                "review_guidance": ["Quick recap mode"],
+                "warnings": [],
+                "created_at": NOW,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    command = build_command("review", paths, tmp_path / "anime.mp4", config, force=False, python_exe="python")
+
+    assert command[command.index("--target-ratio") + 1] == "0.12"
+    assert command[command.index("--min-coverage") + 1] == "0.45"
+    assert command[command.index("--max-qa-iterations") + 1] == "1"
+    assert command[command.index("--max-qa-rewrites-per-iteration") + 1] == "2"
+    assert command[command.index("--context-file") + 1] == str(paths.episode_memory)
+
+def test_merge_episode_plan_short_circuits_review_to_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    config = json.loads(args.config.read_text(encoding="utf-8"))
+    config["orchestrator"] = {"recap_mode": "merge"}
+    args.config.write_text(json.dumps(config), encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        calls.append(stage_name(command))
+        write_stage_outputs(command)
+
+    assert run_pipeline(args, executor=fake_executor) == 0
+    assert calls == ["preflight", "ingest", "storymap", "episode_planner"]
+    summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
+    statuses = {stage["stage"]: stage["status"] for stage in summary["stages"]}
+    assert statuses["review"] == "short_circuited:merge"
+    assert statuses["tts"] == "short_circuited:merge"
+    assert statuses["match"] == "short_circuited:merge"
+    assert statuses["render"] == "short_circuited:merge"
 
 def test_anime_movie_preset_uses_movie_setup_opening(tmp_path: Path) -> None:
     config = load_config(Path("config.anime.movie.yaml"))

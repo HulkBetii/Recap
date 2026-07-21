@@ -8,12 +8,16 @@ from zipfile import ZipFile
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOTS = {
     "common",
+    "episode_planner",
     "ingest",
     "match",
     "orchestrator",
     "preflight",
     "render",
     "review",
+    "series_composer",
+    "series_match",
+    "series_recap",
     "shots",
     "storymap",
     "tts",

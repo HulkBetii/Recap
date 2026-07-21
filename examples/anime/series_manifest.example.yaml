@@ -1,0 +1,23 @@
+series_id: example-anime-s01
+series_title: Example Anime Title
+season: 1
+
+# Multi-episode run example:
+# python -m series_recap --manifest examples/anime/series_manifest.example.yaml --config config.anime.series.yaml --episodes 1-2
+# Output: runs/example-anime-s01/series_recap/series_recap.mp4
+#
+# V1 treats this manifest as the source of truth. Episode number from OCR/filename
+# is only a sanity hint; do not rely on link order for production runs.
+episodes:
+  - episode_key: s01e01
+    episode_number: 1
+    title: The First Door
+    source_path: C:\Media\ExampleAnime\S01E01.mp4
+    arc: Opening arc
+    spoiler_limit_episode: 1
+  - episode_key: s01e02
+    episode_number: 2
+    title: The Second Door
+    source_path: C:\Media\ExampleAnime\S01E02.mp4
+    arc: Opening arc
+    spoiler_limit_episode: 2

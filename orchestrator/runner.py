@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from importlib.util import find_spec
 from pathlib import Path
@@ -17,6 +18,8 @@ from common.schema import (
     BeatTiming,
     EdlMeta,
     EdlPlacement,
+    EpisodeMemory,
+    EpisodeMeta,
     FilmMapMeta,
     FilmMapSegment,
     RenderMeta,
@@ -43,6 +46,7 @@ from orchestrator.config import add_option
 from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
+from episode_planner.integrity import EPISODE_PLANNER_CACHE_VERSION, episode_planner_config_hash, episode_planner_input_hashes
 from tts.providers import TtsProviderError, resolve_provider_order
 from visual_index.integrity import metadata_is_current, validate_visual_index_artifacts, visual_index_config_hash
 from match.version import MATCH_ALGORITHM_VERSION
@@ -65,6 +69,7 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "preflight": StageSpec("preflight", ("video_profile",), "video_profile"),
     "ingest": StageSpec("ingest", ("film_map", "film_map_meta"), "film_map_meta"),
     "storymap": StageSpec("storymap", ("story_map", "story_map_meta", "story_map_qa"), "story_map_meta"),
+    "episode_planner": StageSpec("episode_planner", ("episode_meta", "episode_memory"), "episode_meta"),
     "review": StageSpec("review", ("review_script", "review_meta"), "review_meta"),
     "tts": StageSpec("tts", ("voiceover", "beats_timing", "tts_meta"), "tts_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
@@ -82,6 +87,39 @@ def output_paths(paths: RunPaths, stage: str) -> list[Path]:
     return [getattr(paths, name) for name in STAGE_SPECS[stage].outputs]
 
 
+def episode_planner_enabled(config: dict[str, Any]) -> bool:
+    section = config.get("orchestrator", {})
+    return str(section.get("recap_mode", "off")) != "off"
+
+
+def read_episode_meta(paths: RunPaths) -> EpisodeMeta | None:
+    if not paths.episode_meta.is_file():
+        return None
+    return EpisodeMeta.model_validate(load_json(paths.episode_meta))
+
+
+def effective_review_section(paths: RunPaths, config: dict[str, Any]) -> dict[str, Any]:
+    section = deepcopy(config.get("review", {}))
+    planner_meta = read_episode_meta(paths)
+    if planner_meta is None:
+        return section
+    orchestrator = config.get("orchestrator", {})
+    if not section.get("context_file") and paths.episode_memory.is_file():
+        section["context_file"] = str(paths.episode_memory)
+    if planner_meta.recap_mode == "quick":
+        quick_ratio = planner_meta.quick_target_ratio or float(orchestrator.get("quick_target_ratio", 0.12))
+        if section.get("target_ratio", "auto") == "auto":
+            section["target_ratio"] = quick_ratio
+        quick_min_coverage = float(orchestrator.get("quick_min_coverage", 0.45))
+        if float(section.get("min_coverage", 0.0)) > quick_min_coverage:
+            section["min_coverage"] = quick_min_coverage
+        if int(section.get("max_qa_iterations", 3)) > 1:
+            section["max_qa_iterations"] = 1
+        if int(section.get("max_qa_rewrites_per_iteration", 6)) > 2:
+            section["max_qa_rewrites_per_iteration"] = 2
+    return section
+
+
 def all_outputs_exist(paths: RunPaths, stage: str) -> bool:
     return all(path.is_file() for path in output_paths(paths, stage))
 
@@ -96,6 +134,11 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
         elif stage == "storymap":
             meta = StoryMapMeta.model_validate(load_json(paths.story_map_meta))
             validate_story_map([StorySection.model_validate(item) for item in load_json(paths.story_map)], duration=meta.duration_s)
+        elif stage == "episode_planner":
+            meta = EpisodeMeta.model_validate(load_json(paths.episode_meta))
+            memory = EpisodeMemory.model_validate(load_json(paths.episode_memory))
+            if meta.series_id != memory.current.series_id or meta.episode_key != memory.current.episode_key:
+                raise ValueError("episode_meta and episode_memory current identity do not match")
         elif stage == "review":
             film_map = [FilmMapSegment.model_validate(item) for item in load_json(paths.film_map)]
             beats = [ReviewBeat.model_validate(item) for item in load_json(paths.review_script)]
@@ -193,8 +236,39 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
                 or meta.config_hash != expected_config
             ):
                 return False
+        if stage == "episode_planner" and film is not None and config is not None:
+            section = config.get("orchestrator", {})
+            profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file() else None
+            anime_context_setting = config.get("preflight", {}).get("anime_context") or config.get("review", {}).get("context_file")
+            anime_context_path = Path(str(anime_context_setting)).expanduser().resolve() if anime_context_setting else None
+            series_manifest_setting = section.get("series_manifest")
+            series_manifest_path = Path(str(series_manifest_setting)).expanduser().resolve() if series_manifest_setting else None
+            expected_hashes = episode_planner_input_hashes(
+                film=film,
+                film_map_path=paths.film_map,
+                story_map_path=paths.story_map if paths.story_map.is_file() else None,
+                video_profile_path=profile_path,
+                anime_context_path=anime_context_path,
+                series_manifest_path=series_manifest_path,
+            )
+            expected_section = deepcopy(section)
+            if expected_section.get("recap_mode") == "off":
+                expected_section["recap_mode"] = "auto"
+            expected_config = episode_planner_config_hash(expected_section)
+            meta = EpisodeMeta.model_validate(load_json(paths.episode_meta))
+            if (
+                meta.cache_version != EPISODE_PLANNER_CACHE_VERSION
+                or meta.source_hash != expected_hashes["source_hash"]
+                or meta.film_map_hash != expected_hashes["film_map_hash"]
+                or meta.story_map_hash != expected_hashes["story_map_hash"]
+                or meta.video_profile_hash != expected_hashes["video_profile_hash"]
+                or meta.anime_context_hash != expected_hashes["anime_context_hash"]
+                or meta.series_manifest_hash != expected_hashes["series_manifest_hash"]
+                or meta.config_hash != expected_config
+            ):
+                return False
         if stage == "review" and config is not None:
-            section = config.get("review", {})
+            section = effective_review_section(paths, config)
             story_setting = section.get("story_map", "auto")
             story_path = paths.story_map if story_setting == "auto" and paths.story_map.is_file() else (Path(str(story_setting)) if story_setting not in {None, "auto"} else None)
             profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file() else None
@@ -280,7 +354,42 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--video-profile", str(paths.video_profile)]
         for key in ("content_type", "target_story_sections", "log_level"):
             add_option(command, key, section.get(key))
+    elif stage == "episode_planner":
+        section = config.get("orchestrator", {})
+        command += [
+            "--source-path",
+            str(film),
+            "--film-map",
+            str(paths.film_map),
+            "--output-meta",
+            str(paths.episode_meta),
+            "--output-memory",
+            str(paths.episode_memory),
+        ]
+        if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file():
+            command += ["--video-profile", str(paths.video_profile)]
+        if paths.story_map.is_file():
+            command += ["--story-map", str(paths.story_map)]
+        anime_context_setting = config.get("preflight", {}).get("anime_context") or config.get("review", {}).get("context_file")
+        if anime_context_setting:
+            command += ["--anime-context", str(anime_context_setting)]
+        for key in (
+            "series_manifest",
+            "series_memory_dir",
+            "episode_key",
+            "episode_number",
+            "recap_full_threshold",
+            "recap_quick_threshold",
+            "recap_merge_threshold",
+            "quick_target_ratio",
+            "quick_min_coverage",
+            "log_level",
+        ):
+            add_option(command, key, section.get(key))
+        if section.get("recap_mode") not in {None, "off"}:
+            add_option(command, "recap_mode", section.get("recap_mode"))
     elif stage == "review":
+        section = effective_review_section(paths, config)
         command += ["--film-map", str(paths.film_map), "--output", str(paths.review_script)]
         story_map_setting = section.get("story_map", "auto")
         if story_map_setting == "auto" and paths.story_map.is_file():
@@ -404,11 +513,13 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
     ingest_needs_openai = bool(ingest_policy.get("openai_uses")) if ingest_policy else True
     if "ingest" in will_run and ingest_needs_openai and not os.getenv("OPENAI_API_KEY") and not dry_run:
         raise OrchestratorError("OPENAI_API_KEY is required to run ingest")
-    if "review" in will_run and not dry_run:
+    recap_mode = str(config.get("orchestrator", {}).get("recap_mode", "off"))
+    defer_episode_downstream = "episode_planner" in selected and recap_mode in {"auto", "merge", "skip"}
+    if "review" in will_run and not dry_run and not defer_episode_downstream:
         profile = Path(str(config["review"].get("chatgpt_profile_dir"))).expanduser()
         if not profile.exists():
             raise OrchestratorError(f"ChatGPT profile dir does not exist for review: {profile}")
-    if "tts" in will_run and not dry_run:
+    if "tts" in will_run and not dry_run and not defer_episode_downstream:
         tts_config = config["tts"]
         if not tts_config.get("voice_id"):
             raise OrchestratorError("tts.voice_id must be set in config")

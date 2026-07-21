@@ -374,7 +374,7 @@ repo/
 ## 28. PHIM LẺ VS PHIM BỘ RUNTIME MODE
 
 - Phim lẻ dùng mode single-video: một input phim tạo một recap độc lập; GĐ2 phải kể arc trọn vẹn từ mở đầu, twist, cao trào đến kết.
-- Phim bộ nhiều tập cần series memory riêng ở bước sau: glossary/entity bible + episode summaries để mỗi tập vẫn ra một review riêng nhưng giữ tên nhân vật và mạch truyện xuyên suốt.
+- Phim bộ nhiều tập dùng mode episode-first: mỗi tập vẫn chạy theo contract JSON hiện có, nhưng có `episode_planner` + series memory riêng để giữ glossary/entity bible, episode summaries và mạch truyện xuyên suốt.
 - Config phim lẻ nên cân nhắc `target_ratio` khoảng `0.22–0.28` nếu muốn video gọn; test thực tế `DemThanhDoiSanQuy` đạt ratio khoảng `0.253`.
 
 ## 29. E2E LESSONS TỪ PHIM LẺ DÀI
@@ -481,7 +481,7 @@ repo/
 
 ## 35. LOCAL EDITABLE PACKAGING
 
-- Setuptools package discovery dùng allowlist cho các runtime package: `common`, `ingest`, `match`, `orchestrator`, `preflight`, `render`, `review`, `shots`, `storymap`, `tts`, `visual_index`; `run.py` được đóng gói như py-module.
+- Setuptools package discovery dùng allowlist cho các runtime package: `common`, `episode_planner`, `ingest`, `match`, `orchestrator`, `preflight`, `render`, `review`, `series_composer`, `series_match`, `series_recap`, `shots`, `storymap`, `tts`, `visual_index`; `run.py` được đóng gói như py-module.
 - Không package `tests`, `runs`, `work`, `data`, `broll`, `tts_align`, `build`, `dist`, egg-info hoặc cache directories. Runtime/build artifacts phải nằm trong các thư mục gitignored hiện có.
 - Extra `movie-visual` là bộ dependency local đầy đủ cho WhisperX + BGE-M3 + SigLIP2. OpenCLIP/video profile vẫn cài riêng bằng extra `video-profile`.
 - Packaging v1 chỉ hỗ trợ editable install và wheel/import smoke trong repo; không cung cấp global `recap` console command và không package config/style assets để chạy từ thư mục bất kỳ.
@@ -529,8 +529,33 @@ repo/
 - Anime support is additive and keeps the stage JSON contracts unchanged: `film_map.json`, `review_script.json`, `beats_timing.json`, `shots.json`, and `edl.json` stay the same.
 - `SourceLanguage` includes `ja` and `TranslateMode` includes `ja-en`; ingest, WhisperX alignment, and OpenAI translation must pass the selected source language through.
 - Anime presets live in `config.anime.series.yaml` and `config.anime.movie.yaml`. Series uses `content_type=anime_series`, Japanese ingest, strict non-story exclusion, `shots.face_detection=off`, and `match.w_face=0.0`/`match.w_visual=0.0`. Movie uses `content_type=anime_movie` with the same Japanese ingest defaults and setup-style opening behavior.
+- `config.anime.series.yaml` defaults Faster Whisper to `ingest.device=cuda` on this RTX 3060 runtime; CPU `large-v3` ASR is too slow for practical multi-episode smoke iteration. Use CPU only as an explicit fallback.
 - Manual anime metadata is local only. `preflight.manual_ranges` and `preflight.anime_context` can be YAML or JSON and must merge into `video_profile.non_story_ranges`; `review.context_file` loads the same context for cache identity and prompt grounding.
 - Anime context must drive canonical Vietnamese names, aliases, special terms, pronunciation hints, continuity notes, and strict OP/ED/preview/recap guards. Do not hardcode OP/ED durations in presets.
 - `review/llm_flow.py` must keep anime prompts explicit about no verbatim dialogue, no theme-song lyrics, no OP/ED/preview-only beats, and series-vs-movie continuity. QA should flag glossary drift, unsupported spoilers, non-story source usage, and unclear episode continuity.
 - `review.non_story` may use the manual `non_story_ranges` from either `video_profile` or `anime_context`; G5 still keeps `exclude_non_story=true` by default and should not select anime opening/ending/preview footage when the preset says to exclude it.
 - `shots.face_detection` is not a strong signal for anime recap V1; chronology and semantic/story context matter more than Haar face counts.
+
+## 41. ANIME SERIES EPISODE V1
+
+- Anime series stays episode-first for analysis in V1, but season-level output is now supported by `python -m series_recap`. Single-episode `run.py` remains compatible and keeps the existing stage JSON contracts unchanged.
+- `series_manifest.yaml` is the source of truth for `series_id`, `episode_key`, `episode_number`, `title`, `source_path`, `arc`, and `spoiler_limit_episode`. Filename/OCR episode hints are sanity checks only, not authoritative identity.
+- The internal `episode_planner` stage runs after GĐ1/GĐ1.5 when `orchestrator.recap_mode` is enabled. It writes `episode_meta.json`, `episode_memory.json`, and appends `series_memory_index.jsonl` under `orchestrator.series_memory_dir`.
+- Recap mode thresholds are locked by config defaults: `importance_score >= 0.70` => `full`, `0.35-0.69` => `quick`, `0.15-0.34` => `merge`, `<0.15` => `skip`. Inputs include reveal, state change, fight/action, new entity, continuity dependency, and OP/ED/recap ratio signals.
+- `quick` is the default useful path for low-event episodes: the orchestrator lowers review `target_ratio` toward `quick_target_ratio`, caps coverage/QA work, and prompts GĐ2 to focus on what viewers must remember for the next episode.
+- In single-episode `run.py`, `merge` and `skip` still ingest/build storymap/write memory, then short-circuit review, TTS, shots, visual index, match, and render. In `series_recap`, every selected episode is still brought to `episode_planner` plus `shots` so the final season EDL can use story-safe bridge footage when needed.
+- GĐ2 may load `episode_memory.json` through `review.context_file`. Memory retrieval must respect `spoiler_limit_episode`, include only prior eligible entries, and keep continuity/name guidance without leaking future spoilers.
+
+## 42. MULTI-EPISODE / SEASON RECAP V1
+
+- New season-level CLI: `python -m series_recap --manifest series_manifest.yaml --config config.anime.series.yaml --episodes 1-3`. If `--run-dir` is omitted, output defaults to `runs/<series_id>/series_recap/`.
+- Do not concatenate raw episode videos before analysis. The pipeline remains episode-first for understanding and copyright guards: each selected episode runs `run.py --to episode_planner`, then `run.py --only shots`.
+- Final stages are season-level: `series_composer -> tts -> series_match -> render`. The final video is `series_recap.mp4`; per-episode standalone recap render is not required.
+- New season artifacts are additive: `series_event_bank.json`, `series_review_script.json`, `series_review_script.meta.json`, `series_tts_script.json`, and `edl.source_map.json`. Existing stage contracts remain unchanged; `series_tts_script.json` is compatible with GĐ3 TTS.
+- `series_composer` builds events from `episode_memory.json`, `story_map.json`, `film_map.json`, and `episode_meta.json`. ChatGPT Playwright may only select `event_id` values and write transformed Vietnamese narration; code derives `source_refs` and timecodes.
+- `series_composer` has deterministic QA plus one configurable Playwright revision pass (`series_recap.qa_max_revisions`, default `1`) for under-target length, repeated events, missing hook, or non-monotonic post-hook story order. The final script remains JSON-only and still never accepts model-written timecodes.
+- `series_match` reads `series_review_script.json`, `beats_timing.json`, and per-episode `shots.json`; it writes standard `edl.json` where placement `src` may point to different episode source keys. It hard-excludes `is_story=false`, unusable shots, and end-credit shots.
+- GĐ6 `render` remains legacy-compatible with `--film` for one source. For season output, pass `--source-map edl.source_map.json`; render cuts each EDL placement from the real source path mapped by `placement.src`.
+- `config.anime.series.yaml` owns `series_recap` defaults: end-to-end scope, mode contribution ratios (`full` > `quick` > `merge`, `skip=0`), Playwright composer runtime, and final matching clip limits.
+- If `preflight.manual_ranges` is unset, `series_recap` auto-discovers per-episode sidecars beside the manifest using `manual_ranges.<episode_key>.yaml|yml|json` or `<episode_key>.manual_ranges.yaml|yml|json`.
+- `series_manifest.yaml` is still the source of truth for episode identity. OCR/title-card/filename hints are sanity checks only; link-series import or AniList metadata is out of scope for V1.

@@ -7,7 +7,7 @@ from typing import Any, Mapping
 from common.integrity import file_hash, stable_hash
 
 REVIEW_CACHE_VERSION = "review-v1"
-REVIEW_PROMPT_VERSION = "review-prompts-v1"
+REVIEW_PROMPT_VERSION = "review-prompts-v2"
 
 REVIEW_CONFIG_FIELDS = (
     "target_ratio",

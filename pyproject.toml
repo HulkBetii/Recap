@@ -61,12 +61,16 @@ py-modules = ["run"]
 where = ["."]
 include = [
     "common*",
+    "episode_planner*",
     "ingest*",
     "match*",
     "orchestrator*",
     "preflight*",
     "render*",
     "review*",
+    "series_composer*",
+    "series_match*",
+    "series_recap*",
     "shots*",
     "storymap*",
     "tts*",

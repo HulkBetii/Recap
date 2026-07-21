@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
-from common.schema import AnimeContext, ReviewBeat
+from common.schema import AnimeContext, EpisodeMemory, ReviewBeat
 from review.budget import estimate_total_chars
 from review.json_utils import extract_json
 from review.models import NarrationBeat, OutlineBeat, OutlineResult, QaResult
@@ -37,6 +37,32 @@ ANIME RULES:
 {continuity_rule}
 """.strip()
 
+def build_episode_memory_block(episode_memory: EpisodeMemory | None, *, content_type: str) -> str:
+    if episode_memory is None:
+        return ""
+    payload = episode_memory.model_dump(mode="json", exclude_none=True)
+    guidance = "\n".join(f"- {line}" for line in episode_memory.review_guidance) if episode_memory.review_guidance else ""
+    current_mode = episode_memory.current.recap_mode
+    mode_rule = (
+        "- Quick recap mode: focus on continuity-critical changes and the next-episode setup; do not pad to full coverage."
+        if current_mode == "quick"
+        else "- Full recap mode: cover the episode broadly while still avoiding spoilers beyond the allowed memory window."
+    )
+    return f"""
+EPISODE MEMORY:
+{json.dumps(payload, ensure_ascii=False)}
+
+EPISODE MEMORY RULES:
+- Trust episode_memory.current as the current episode identity; do not infer episode number from filename or OCR.
+- Respect spoiler_limit_episode when reusing prior memories; do not mention future episodes beyond that ceiling.
+- Use previous episode memory only for continuity, recurring character names, and unresolved state.
+- Keep memory references transformed into commentary; do not quote old dialogue or theme-song lyrics verbatim.
+- OCR/title-card/filename hints are sanity checks only.
+- content_type={content_type}
+{mode_rule}
+{guidance}
+""".strip()
+
 def build_outline_prompt(
     *,
     film_map_view: str,
@@ -48,9 +74,11 @@ def build_outline_prompt(
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
     anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
     anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
+    memory_block = f"\n{build_episode_memory_block(episode_memory, content_type=content_type)}\n" if episode_memory else ""
     content_label = "anime recap script" if content_type in {"anime_series", "anime_movie"} else "movie recap script"
     if content_type in MOVIE_CONTENT_TYPES and hook_mode == "setup":
         hook_rule = f"- hook: use the first story/setup beat at or after story_start_s={story_start_s:.1f}s; do NOT use excluded intro/opening footage or jump to a later twist/ending."
@@ -78,6 +106,7 @@ Rules:
 - Target recap length: about {target_video_s:.1f}s, char budget about {char_budget} Vietnamese characters.
 {style_block}
 {anime_block}
+{memory_block}
 FILM_MAP:
 {film_map_view}
 """.strip()
@@ -92,9 +121,11 @@ def build_narration_prompt(
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
     anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
     anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
+    memory_block = f"\n{build_episode_memory_block(episode_memory, content_type=content_type)}\n" if episode_memory else ""
     movie_rule = (
         "- Movie mode: write cleaner, more explanatory Vietnamese; reduce jokes/clickbait; make cause/effect and character relations easy to follow."
         if content_type in MOVIE_CONTENT_TYPES
@@ -125,6 +156,7 @@ Rules:
 - Stay within ±20% of each char_target where possible.
 {style_block}
 {anime_block}
+{memory_block}
 GLOSSARY:
 {json.dumps(glossary, ensure_ascii=False)}
 
@@ -143,6 +175,7 @@ def build_qa_prompt(
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
     anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
 ) -> str:
     payload = [beat.model_dump() for beat in beats]
     opening_rule = (
@@ -151,6 +184,7 @@ def build_qa_prompt(
         else "- Opening should be engaging and accurate."
     )
     anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
+    memory_block = f"\n{build_episode_memory_block(episode_memory, content_type=content_type)}\n" if episode_memory else ""
     return f"""
 Review this Vietnamese recap script against the film map.
 Return ONLY valid JSON: {{"pass": boolean, "issues": [{{"beat_id": number, "type": string, "suggestion": string}}], "notes": string}}.
@@ -164,6 +198,7 @@ Check:
 - Anime QA when context is present: reject OP/ED/theme-song/preview/recap-only beats, glossary drift, unsupported future spoilers, non-story source range usage, and unclear episode continuity.
 {opening_rule}
 {anime_block}
+{memory_block}
 
 GLOSSARY:
 {json.dumps(glossary, ensure_ascii=False)}
@@ -183,10 +218,12 @@ def build_regenerate_prompt(
     char_target: int,
     style_sample: str = "",
     anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
     content_type: str = "episode",
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
     anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
+    memory_block = f"\n{build_episode_memory_block(episode_memory, content_type=content_type)}\n" if episode_memory else ""
     return f"""
 Regenerate only this one Vietnamese recap beat.
 Return ONLY JSON: {{"beat_id": {beat.beat_id}, "narration": string}}.
@@ -200,6 +237,7 @@ Rules:
 - Keep narration TTS-friendly with natural punctuation and no long run-on sentence.
 {style_block}
 {anime_block}
+{memory_block}
 CURRENT_BEAT:
 {json.dumps(beat.model_dump(), ensure_ascii=False)}
 
@@ -219,6 +257,7 @@ async def request_outline(
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
     anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
 ) -> OutlineResult:
     response = await client.ask(
         build_outline_prompt(
@@ -231,6 +270,7 @@ async def request_outline(
             hook_mode=hook_mode,
             story_start_s=story_start_s,
             anime_context=anime_context,
+            episode_memory=episode_memory,
         )
     )
     return normalize_outline(OutlineResult.model_validate(normalize_outline_payload(extract_json(response))))
@@ -245,6 +285,7 @@ async def request_narration(
     content_type: str = "episode",
     hook_mode: str = "cold_open",
     anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
 ) -> list[NarrationBeat]:
     response = await client.ask(
         build_narration_prompt(
@@ -255,6 +296,7 @@ async def request_narration(
             content_type=content_type,
             hook_mode=hook_mode,
             anime_context=anime_context,
+            episode_memory=episode_memory,
         )
     )
     data = extract_json(response)
@@ -272,6 +314,7 @@ async def request_qa(
     hook_mode: str = "cold_open",
     story_start_s: float = 0.0,
     anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
 ) -> QaResult:
     response = await client.ask(
         build_qa_prompt(
@@ -284,6 +327,7 @@ async def request_qa(
             hook_mode=hook_mode,
             story_start_s=story_start_s,
             anime_context=anime_context,
+            episode_memory=episode_memory,
         )
     )
     data = extract_json(response)
@@ -307,6 +351,7 @@ async def regenerate_beat(
     char_target: int,
     style_sample: str = "",
     anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
     content_type: str = "episode",
 ) -> NarrationBeat:
     response = await client.ask(
@@ -317,6 +362,7 @@ async def regenerate_beat(
             char_target=char_target,
             style_sample=style_sample,
             anime_context=anime_context,
+            episode_memory=episode_memory,
             content_type=content_type,
         )
     )

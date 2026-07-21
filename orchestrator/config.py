@@ -13,10 +13,31 @@ except ImportError:  # pragma: no cover - exercised only without optional dep
     yaml = None  # type: ignore[assignment]
 
 STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "visual_index", "match", "render")
-TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator"}
+TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator", "series_recap"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "orchestrator": {"python": None, "log_level": "INFO", "quality_mode": "balanced", "text_llm_backend": "chatgpt_playwright", "api_budget_guard": "warn", "auto_fallback": False, "fallback_on_timecode_warn": True, "fallback_ingest_asr_provider": "openai-gpt4o-hybrid", "fallback_max_vision_frames": 0, "runtime_preflight": False},
+    "orchestrator": {
+        "python": None,
+        "log_level": "INFO",
+        "quality_mode": "balanced",
+        "text_llm_backend": "chatgpt_playwright",
+        "api_budget_guard": "warn",
+        "auto_fallback": False,
+        "fallback_on_timecode_warn": True,
+        "fallback_ingest_asr_provider": "openai-gpt4o-hybrid",
+        "fallback_max_vision_frames": 0,
+        "runtime_preflight": False,
+        "series_manifest": None,
+        "episode_key": None,
+        "episode_number": None,
+        "series_memory_dir": None,
+        "recap_mode": "off",
+        "recap_full_threshold": 0.70,
+        "recap_quick_threshold": 0.35,
+        "recap_merge_threshold": 0.15,
+        "quick_target_ratio": 0.12,
+        "quick_min_coverage": 0.45,
+    },
     "preflight": {
         "enabled": True,
         "max_intro_s": 240.0,
@@ -218,6 +239,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "audio_delay_s": 0.0,
         "log_level": "INFO",
     },
+    "series_recap": {
+        "scope": "end_to_end",
+        "tts_cps": 15.0,
+        "mode_target_ratios": {
+            "full": 0.12,
+            "quick": 0.06,
+            "merge": 0.015,
+            "skip": 0.0,
+        },
+        "chatgpt_profile_dir": str(CHATGPT_PLAYWRIGHT_PROFILE_DIR),
+        "reply_timeout_s": 600,
+        "playwright_max_attempts": 2,
+        "playwright_recovery_timeout_s": 60,
+        "qa_max_revisions": 1,
+        "headless": False,
+        "min_clip": 3.0,
+        "max_clip": 5.0,
+        "min_visual_clip": 0.6,
+        "log_level": "INFO",
+    },
 }
 
 class ConfigError(ValueError):
@@ -260,8 +301,32 @@ def load_config(path: Path | None) -> dict[str, Any]:
     if unknown:
         raise ConfigError(f"unknown config section(s): {', '.join(sorted(unknown))}")
     merged = deep_merge(DEFAULT_CONFIG, data)
+    normalize_yaml_enum_literals(merged)
     apply_content_type_match_defaults(merged, data)
     return merged
+
+def normalize_yaml_enum_literals(config: dict[str, Any]) -> None:
+    normalize_bool_enum(config, "orchestrator", "recap_mode", false_value="off")
+    normalize_bool_enum(config, "ingest", "transcript_correction", false_value="off")
+    normalize_bool_enum(config, "match", "visual_mode", false_value="off")
+    normalize_bool_enum(config, "shots", "face_detection", false_value="off", true_value="on")
+
+def normalize_bool_enum(
+    config: dict[str, Any],
+    section_name: str,
+    key: str,
+    *,
+    false_value: str,
+    true_value: str | None = None,
+) -> None:
+    section = config.get(section_name, {})
+    if not isinstance(section, dict):
+        return
+    value = section.get(key)
+    if value is False:
+        section[key] = false_value
+    elif value is True and true_value is not None:
+        section[key] = true_value
 
 def apply_content_type_match_defaults(config: dict[str, Any], raw_overrides: dict[str, Any]) -> None:
     review = config.get("review", {})

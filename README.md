@@ -93,10 +93,23 @@ python run.py --input path\to\anime.mp4 --run-dir runs\anime-series01 --config c
 python run.py --input path\to\anime-movie.mp4 --run-dir runs\anime-movie01 --config config.anime.movie.yaml
 ```
 
-- `config.anime.series.yaml`: `content_type=anime_series`, `source_language=ja`, `translate_mode=ja-en`, `shots.face_detection=off`, `match.w_face=0.0`, `match.w_visual=0.0`, `exclude_non_story=true`.
+- `config.anime.series.yaml`: `content_type=anime_series`, `source_language=ja`, `translate_mode=ja-en`, `shots.face_detection=off`, `match.w_face=0.0`, `match.w_visual=0.0`, `exclude_non_story=true`, `orchestrator.recap_mode=auto`.
 - `config.anime.movie.yaml`: `content_type=anime_movie`, cùng ingest defaults tiếng Nhật, `hook_mode=setup`, và cùng posture strict OP/ED/preview guard.
 - `preflight.manual_ranges` và `preflight.anime_context` nhận YAML/JSON local, rồi merge vào `video_profile.non_story_ranges`; `review.context_file` nạp cùng anime context để giữ glossary, continuity và spoiler guard nhất quán.
 - Anime context là metadata local only, không dùng AniList/API. OP/ED/theme/preview/recap zones phải đi qua manual ranges hoặc detector tin cậy, không hardcode duration.
+
+- Anime dai tap dung `series_manifest.yaml` local lam source of truth cho `series_id`, `episode_key`, `episode_number`, `title`, `source_path`, `arc`, `spoiler_limit_episode`; xem `examples/anime/series_manifest.example.yaml`.
+- Khi `orchestrator.recap_mode=auto`, `episode_planner` ghi `episode_meta.json`, `episode_memory.json` va append `series_memory_index.jsonl`. Mode: `>=0.70 full`, `0.35-0.69 quick`, `0.15-0.34 merge`, `<0.15 skip`.
+- `quick` tu ha review `target_ratio` ve `0.12` va tap trung "dieu can nho cho tap sau"; `merge/skip` van ingest/storymap/memory nhung short-circuit review/TTS/match/render.
+- Season recap V1 dung CLI rieng de ra mot video chung cho nhieu tap:
+
+```powershell
+python -m series_recap --manifest examples\anime\series_manifest.example.yaml --config config.anime.series.yaml --episodes 1-3
+```
+
+- `series_recap` khong noi raw video truoc. Moi tap duoc chay episode-first toi `episode_planner` + `shots`, sau do `series_composer -> tts -> series_match -> render` tao `runs\<series_id>\series_recap\series_recap.mp4`.
+- Artifact moi gom `series_event_bank.json`, `series_review_script.json`, `series_tts_script.json`, va `edl.source_map.json`. `edl.json` van dung contract cu, nhung `src` co the tro toi nhieu tap; GĐ6 render voi `--source-map` de cat dung file nguon.
+- Neu `preflight.manual_ranges` khong duoc set trong config, `series_recap` tu tim sidecar canh manifest theo convention `manual_ranges.<episode_key>.yaml|yml|json` de giu OP/ED/preview guard rieng tung tap.
 
 Tùy chọn resume/debug:
 
@@ -551,7 +564,7 @@ Long local ASR now overlaps chunks and atomically caches validated per-chunk tra
 - GĐ2 defaults to two Playwright attempts with a 60-second same-response recovery window. Only classified browser timeout/disconnect failures may reach the opt-in OpenAI fallback; login, profile, config, parse, validation, and programming errors fail directly.
 - `api_budget_guard=block` still allows Playwright but blocks OpenAI fallback in every quality mode. ASR/vision/TTS remain local or dedicated-provider workflows because Playwright cannot reliably produce timestamped transcript, frame-analysis, or audio contracts.
 - Local runtime artifacts are ignored: `.env`, `data/`, `runs/`, `work/`, and `out/` must not be committed.
-- Movie mode is independent per video. Series mode should later add shared glossary/entity bible and episode summaries rather than relying on one giant chat history.
+- Movie mode is independent per video. Anime series Episode V1 stays episode-first and uses `episode_memory.json` plus `series_memory_index.jsonl` instead of relying on one giant chat history.
 
 
 ## GĐ0 Video Profile / Intro Detection

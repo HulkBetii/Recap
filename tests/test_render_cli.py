@@ -30,6 +30,7 @@ def make_args(tmp_path: Path, force: bool = False) -> argparse.Namespace:
         edl=edl,
         voiceover=voice,
         film=film,
+        source_map=None,
         output=tmp_path / "recap.mp4",
         width=1920,
         height=1080,
@@ -278,3 +279,69 @@ def test_render_cli_duration_warning(tmp_path: Path, monkeypatch: pytest.MonkeyP
     meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
     assert meta["duration_match"] is False
     assert meta["warnings"]
+
+def test_render_cli_source_map_uses_matching_episode_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    args = make_args(tmp_path)
+    source_one = tmp_path / "Grand_Blue.S03E01.mp4"
+    source_two = tmp_path / "Grand_Blue.S03E02.mp4"
+    source_one.write_bytes(b"one")
+    source_two.write_bytes(b"two")
+    edl = [
+        {
+            "tl_start": 0,
+            "tl_end": 1,
+            "src": "s03e01/Grand_Blue.S03E01.mp4",
+            "src_in": 0,
+            "src_out": 1,
+            "beat_id": 0,
+            "shot_index": 0,
+            "reused": False,
+            "speed": 1.0,
+        },
+        {
+            "tl_start": 1,
+            "tl_end": 2,
+            "src": "s03e02/Grand_Blue.S03E02.mp4",
+            "src_in": 2,
+            "src_out": 3,
+            "beat_id": 1,
+            "shot_index": 1,
+            "reused": False,
+            "speed": 1.0,
+        },
+    ]
+    args.edl.write_text(json.dumps(edl), encoding="utf-8")
+    args.film = None
+    args.source_map = tmp_path / "edl.source_map.json"
+    args.concurrency = 1
+    args.source_map.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "sources": {
+                    "s03e01/Grand_Blue.S03E01.mp4": str(source_one),
+                    "s03e02/Grand_Blue.S03E02.mp4": str(source_two),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("render.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("render.__main__.probe_video_stream", lambda path: {"width":1920,"height":1080,"codec":"h264","fps":30.0,"duration":10.0})
+    monkeypatch.setattr("render.__main__.probe_duration", lambda path: 2.0)
+    monkeypatch.setattr("render.__main__.has_audio_stream", lambda path: True)
+    film_paths = []
+
+    def fake_cut(**kwargs):  # type: ignore[no-untyped-def]
+        film_paths.append(kwargs["film_path"])
+        kwargs["output_path"].write_bytes(b"temp")
+
+    monkeypatch.setattr("render.__main__.cut_temp_clip", fake_cut)
+    monkeypatch.setattr("render.__main__.concat_video", lambda temp_paths, output_path, work_dir: output_path.write_bytes(b"video"))
+    monkeypatch.setattr("render.__main__.mux_voiceover", lambda video_path, voiceover_path, output_path, audio_delay_s=0.0: output_path.write_bytes(b"recap"))
+
+    assert run_render(args) == 0
+    assert film_paths == [source_one.resolve(), source_two.resolve()]
+    meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
+    assert meta["source_count"] == 2
+    assert meta["source_names"] == ["s03e01/Grand_Blue.S03E01.mp4", "s03e02/Grand_Blue.S03E02.mp4"]

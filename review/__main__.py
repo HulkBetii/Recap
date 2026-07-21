@@ -7,8 +7,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.inputs import load_anime_context
-from common.schema import AnimeContext, ReviewBeat, ReviewMeta, StorySection, VideoProfile, validate_review_intents, validate_review_script, validate_story_map, write_json
+from common.inputs import load_review_context
+from common.schema import AnimeContext, EpisodeMemory, ReviewBeat, ReviewMeta, StorySection, VideoProfile, validate_review_intents, validate_review_script, validate_story_map, write_json
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from review.budget import allocate_char_targets, compute_budget, estimate_total_chars
 from review.cache import ReviewCache
@@ -239,7 +239,9 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
     duration_s, warnings = load_duration(film_map_path, film_map)
     video_profile = load_video_profile(args.video_profile)
     context_file_path = resolve_optional_file(args.context_file, label="context file")
-    anime_context = load_anime_context(context_file_path) if context_file_path else None
+    review_context = load_review_context(context_file_path) if context_file_path else None
+    anime_context = review_context.anime_context if review_context else None
+    episode_memory = review_context.episode_memory if review_context else None
     story_sections = load_story_map(args.story_map, duration_s=duration_s)
     story_start_s = story_start_from_profile(video_profile)
     film_map_view = build_film_map_view(film_map)
@@ -288,6 +290,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             hook_mode=args.hook_mode,
             story_start_s=story_start_s,
             anime_context=anime_context,
+            episode_memory=episode_memory,
         )
         outline_result = apply_hook_mode(outline_result, content_type=args.content_type, hook_mode=args.hook_mode, film_map=film_map, story_start_s=story_start_s)
         cache.write_json("outline.json", outline_result)
@@ -314,6 +317,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             content_type=args.content_type,
             hook_mode=args.hook_mode,
             anime_context=anime_context,
+            episode_memory=episode_memory,
         )
         cache.write_json("narration.json", narration)
 
@@ -338,6 +342,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             logger=logger,
             max_iterations=args.max_qa_iterations,
             anime_context=anime_context,
+            episode_memory=episode_memory,
             content_type=args.content_type,
         )
         warnings.extend(readability_warnings)
@@ -362,6 +367,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                 hook_mode=args.hook_mode,
                 story_start_s=story_start_s,
                 anime_context=anime_context,
+                episode_memory=episode_memory,
             )
             if iteration == 0:
                 cache.write_json("qa.json", qa)
@@ -378,16 +384,23 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         for issue in limited_issues:
             if issue.beat_id >= len(beats):
                 continue
-            revised = await regenerate_beat(
-                client,
-                beat=beats[issue.beat_id],
-                issue=f"{issue.type}: {issue.suggestion}",
-                glossary=outline_result.glossary,
-                char_target=char_targets[min(issue.beat_id, len(char_targets) - 1)],
-                style_sample=style_guide,
-                anime_context=anime_context,
-                content_type=args.content_type,
-            )
+            try:
+                revised = await regenerate_beat(
+                    client,
+                    beat=beats[issue.beat_id],
+                    issue=f"{issue.type}: {issue.suggestion}",
+                    glossary=outline_result.glossary,
+                    char_target=char_targets[min(issue.beat_id, len(char_targets) - 1)],
+                    style_sample=style_guide,
+                    anime_context=anime_context,
+                    episode_memory=episode_memory,
+                    content_type=args.content_type,
+                )
+            except (PlaywrightChatError, OpenAIChatError) as exc:
+                warning = f"qa rewrite skipped for beat {issue.beat_id} after LLM transport failure: {exc}"
+                logger.warning(warning)
+                warnings.append(warning)
+                continue
             narration_by_id[revised.beat_id] = revised
         narration = [narration_by_id[index] for index in sorted(narration_by_id)]
         narration, revision_consistency_warnings = apply_narration_consistency(narration, outline_result.glossary)
@@ -402,22 +415,29 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         opening_check = check_opening_coherence(beats, content_type=args.content_type, hook_mode=args.hook_mode, story_start_s=story_start_s)
         opening_coherence_report = {"passed": opening_check.passed, "issues": opening_check.issues, "warnings": opening_check.warnings}
         if not opening_check.passed and beats and args.max_qa_iterations > 0:
-            revised = await regenerate_beat(
-                client,
-                beat=beats[0],
-                issue=opening_rewrite_issue(opening_check),
-                glossary=outline_result.glossary,
-                char_target=char_targets[0] if char_targets else 400,
-                style_sample=style_guide,
-                anime_context=anime_context,
-                content_type=args.content_type,
-            )
-            narration = replace_narration(narration, revised)
-            cache.write_json("opening_coherence_revision.json", revised)
-            beats = derive_review_beats(outline=outline_result.outline, narration=narration, film_map=film_map)
-            n_opening_rewrites = 1
-            opening_check = check_opening_coherence(beats, content_type=args.content_type, hook_mode=args.hook_mode, story_start_s=story_start_s)
-            opening_coherence_report = {"passed": opening_check.passed, "issues": opening_check.issues, "warnings": opening_check.warnings}
+            try:
+                revised = await regenerate_beat(
+                    client,
+                    beat=beats[0],
+                    issue=opening_rewrite_issue(opening_check),
+                    glossary=outline_result.glossary,
+                    char_target=char_targets[0] if char_targets else 400,
+                    style_sample=style_guide,
+                    anime_context=anime_context,
+                    episode_memory=episode_memory,
+                    content_type=args.content_type,
+                )
+            except (PlaywrightChatError, OpenAIChatError) as exc:
+                warning = f"opening coherence rewrite skipped after LLM transport failure: {exc}"
+                logger.warning(warning)
+                warnings.append(warning)
+            else:
+                narration = replace_narration(narration, revised)
+                cache.write_json("opening_coherence_revision.json", revised)
+                beats = derive_review_beats(outline=outline_result.outline, narration=narration, film_map=film_map)
+                n_opening_rewrites = 1
+                opening_check = check_opening_coherence(beats, content_type=args.content_type, hook_mode=args.hook_mode, story_start_s=story_start_s)
+                opening_coherence_report = {"passed": opening_check.passed, "issues": opening_check.issues, "warnings": opening_check.warnings}
         opening_warnings = opening_coherence_report["warnings"]
         warnings.extend(opening_warnings)
         cache.write_json("opening_coherence.json", opening_coherence_report)
@@ -576,6 +596,7 @@ async def ensure_style_readability(
     logger: logging.Logger,
     max_iterations: int,
     anime_context: AnimeContext | None,
+    episode_memory: EpisodeMemory | None,
     content_type: str,
 ) -> tuple[list[NarrationBeat], list[ReviewBeat], list[dict], int, list[str]]:
     if cache.has("narration_style_checked.json") and cache.has("style_qa.json"):
@@ -609,16 +630,23 @@ async def ensure_style_readability(
         for issue in qa.issues:
             if issue.beat_id in rewritten_this_round or issue.beat_id >= len(beats):
                 continue
-            revised = await regenerate_beat(
-                client,
-                beat=beats[issue.beat_id],
-                issue=issue_to_prompt(issue),
-                glossary=glossary,
-                char_target=char_targets[min(issue.beat_id, len(char_targets) - 1)],
-                style_sample=style_guide,
-                anime_context=anime_context,
-                content_type=content_type,
-            )
+            try:
+                revised = await regenerate_beat(
+                    client,
+                    beat=beats[issue.beat_id],
+                    issue=issue_to_prompt(issue),
+                    glossary=glossary,
+                    char_target=char_targets[min(issue.beat_id, len(char_targets) - 1)],
+                    style_sample=style_guide,
+                    anime_context=anime_context,
+                    episode_memory=episode_memory,
+                    content_type=content_type,
+                )
+            except (PlaywrightChatError, OpenAIChatError) as exc:
+                warning = f"style readability rewrite skipped for beat {issue.beat_id} after LLM transport failure: {exc}"
+                logger.warning(warning)
+                consistency_warnings.append(warning)
+                continue
             narration_by_id[revised.beat_id] = revised
             rewritten.add(revised.beat_id)
             rewritten_this_round.add(revised.beat_id)

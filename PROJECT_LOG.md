@@ -1,5 +1,23 @@
 # PROJECT_LOG.md
 
+## 2026-07-21 - Multi-episode anime season recap V1
+
+- Added season-level orchestration with `python -m series_recap`: selected episodes run episode-first to `episode_planner` plus `shots`, then final `series_composer -> tts -> series_match -> render` produces one `series_recap.mp4`.
+- Added additive season artifacts: `series_event_bank.json`, `series_review_script.json`, `series_review_script.meta.json`, `series_tts_script.json`, and `edl.source_map.json`.
+- Added `series_composer` so ChatGPT Playwright selects only `event_id` values from the event bank; code derives `source_refs`, timecodes, and the TTS-compatible script.
+- Hardened `series_composer` after Grand Blue S03 smoke: prompts now budget narration per beat and deterministic QA can trigger one Playwright rewrite when a draft is too short, repeats events, misses the hook, or breaks post-hook chronology.
+- Added `series_match` to create standard EDL placements across multiple episode sources while excluding non-story, unusable, and end-credit shots.
+- Extended GĐ6 render with optional `--source-map`; legacy `--film` single-source rendering remains compatible.
+- Updated `config.anime.series.yaml`, packaging allowlists, Tach boundaries, README, and AGENTS source-of-truth for season-level output.
+- Set the anime series preset to run Faster Whisper on CUDA by default after the Grand Blue S03 smoke exposed that CPU `large-v3` ASR is too slow for practical multi-episode iteration.
+
+## 2026-07-20 - Anime series Episode V1
+
+- Added the local/offline `episode_planner` stage for anime series runs, placed after GĐ1/GĐ1.5 while keeping required per-stage JSON contracts unchanged.
+- Added `series_manifest.yaml` example input plus `episode_meta.json`, `episode_memory.json`, and append-only `series_memory_index.jsonl` runtime artifacts.
+- `orchestrator.recap_mode=auto` now classifies each episode as `full`, `quick`, `merge`, or `skip`; quick mode lowers review ratio/coverage, while merge/skip only ingest/storymap/write memory and short-circuit downstream video stages.
+- Review context loading can consume episode memory with spoiler-limit filtering so later episodes retain continuity without leaking future events.
+
 ## 2026-07-20 - Anime recap core V1
 
 - Added additive anime support without changing required stage JSON contracts: `film_map.json`, `review_script.json`, `beats_timing.json`, `shots.json`, and `edl.json` remain unchanged.

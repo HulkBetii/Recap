@@ -38,6 +38,20 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
     api_budget_guard = orchestrator.get("api_budget_guard", "warn")
     if api_budget_guard not in {"off", "warn", "block"}:
         raise ValueError("orchestrator.api_budget_guard must be off|warn|block")
+    recap_mode = orchestrator.get("recap_mode", "off")
+    if recap_mode not in {"off", "auto", "full", "quick", "merge", "skip"}:
+        raise ValueError("orchestrator.recap_mode must be off|auto|full|quick|merge|skip")
+    merge_threshold = float(orchestrator.get("recap_merge_threshold", 0.15))
+    quick_threshold = float(orchestrator.get("recap_quick_threshold", 0.35))
+    full_threshold = float(orchestrator.get("recap_full_threshold", 0.70))
+    if not 0 <= merge_threshold <= quick_threshold <= full_threshold <= 1:
+        raise ValueError("orchestrator recap thresholds must satisfy 0 <= merge <= quick <= full <= 1")
+    quick_target_ratio = float(orchestrator.get("quick_target_ratio", 0.12))
+    if not 0.08 <= quick_target_ratio <= 0.15:
+        raise ValueError("orchestrator.quick_target_ratio must be between 0.08 and 0.15")
+    quick_min_coverage = float(orchestrator.get("quick_min_coverage", 0.45))
+    if not 0 <= quick_min_coverage <= 1:
+        raise ValueError("orchestrator.quick_min_coverage must be between 0 and 1")
 
     warnings: list[str] = []
     ingest = resolved.setdefault("ingest", {})
@@ -88,6 +102,7 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
         },
         "tts": describe_tts(tts),
         "preflight": {"backend": resolved.get("preflight", {}).get("classifier", "heuristic"), "cost": "local"},
+        "episode_planner": {"backend": "deterministic", "cost": "local"},
         "visual_index": {"backend": resolved.get("visual_index", {}).get("embedding_mode", "off"), "cost": "local"},
         "match": {"backend": resolved.get("match", {}).get("semantic_mode", "off"), "cost": "local"},
         "render": {"backend": "ffmpeg", "cost": "local"},

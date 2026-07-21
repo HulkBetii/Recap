@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
-from common.schema import AnimeContext, AnimeNonStoryRange, NonStoryRange, Shot, validate_shots
+from common.schema import AnimeContext, AnimeNonStoryRange, EpisodeMemory, NonStoryRange, SeriesManifest, Shot, validate_shots
 
 try:
     import yaml
@@ -28,9 +29,30 @@ def load_structured_file(path: Path) -> object:
         return yaml.safe_load(text) or {}
     raise ValueError("input file must be .json, .yaml or .yml")
 
+@dataclass(frozen=True)
+class ReviewContextBundle:
+    anime_context: AnimeContext | None
+    episode_memory: EpisodeMemory | None
+
 def load_anime_context(path: Path) -> AnimeContext:
     data = load_structured_file(path)
+    if isinstance(data, dict) and (data.get("kind") == "episode_memory" or "current" in data):
+        memory = EpisodeMemory.model_validate(data)
+        if memory.anime_context is None:
+            raise ValueError("episode memory context does not contain anime_context")
+        return memory.anime_context
     return AnimeContext.model_validate(data)
+
+def load_review_context(path: Path) -> ReviewContextBundle:
+    data = load_structured_file(path)
+    if isinstance(data, dict) and (data.get("kind") == "episode_memory" or "current" in data):
+        memory = EpisodeMemory.model_validate(data)
+        return ReviewContextBundle(anime_context=memory.anime_context, episode_memory=memory)
+    return ReviewContextBundle(anime_context=AnimeContext.model_validate(data), episode_memory=None)
+
+def load_series_manifest(path: Path) -> SeriesManifest:
+    data = load_structured_file(path)
+    return SeriesManifest.model_validate(data)
 
 def load_manual_non_story_ranges(path: Path) -> list[NonStoryRange]:
     data = load_structured_file(path)
