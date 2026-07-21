@@ -18,6 +18,7 @@ from common.schema import (
     EdlPlacement,
     EdlSourceMap,
     RenderMeta,
+    SeriesChapter,
     SeriesManifest,
     SeriesManifestEpisode,
     SeriesReviewBeat,
@@ -57,6 +58,8 @@ class SeriesPaths:
     series_review_script: Path
     series_review_meta: Path
     series_tts_script: Path
+    series_chapters: Path
+    youtube_chapters: Path
     voiceover: Path
     beats_timing: Path
     tts_meta: Path
@@ -251,6 +254,8 @@ def build_paths(root_dir: Path) -> SeriesPaths:
         series_review_script=final_dir / "series_review_script.json",
         series_review_meta=final_dir / "series_review_script.meta.json",
         series_tts_script=final_dir / "series_tts_script.json",
+        series_chapters=final_dir / "series_chapters.json",
+        youtube_chapters=final_dir / "youtube_chapters.txt",
         voiceover=final_dir / "voiceover.mp3",
         beats_timing=final_dir / "beats_timing.json",
         tts_meta=final_dir / "tts_meta.json",
@@ -375,12 +380,15 @@ def composer_command(
             str(paths.series_review_script),
             "--output-tts-script",
             str(paths.series_tts_script),
+            "--output-chapters",
+            str(paths.series_chapters),
             "--output-meta",
             str(paths.series_review_meta),
             "--work-dir",
             str(paths.work_dir / "series_composer"),
         ]
     )
+    add_option(command, "format", section.get("format"))
     for key in (
         "tts_cps",
         "chatgpt_profile_dir",
@@ -524,10 +532,19 @@ def episode_stage_valid(stage_name: str, run_dir: Path, film: Path, config: dict
     return all(episode_outputs_valid(run_paths, stage, film=film, config=config) for stage in stages)
 
 def composer_outputs_valid(paths: SeriesPaths) -> bool:
-    if not files_exist([paths.event_bank, paths.series_review_script, paths.series_tts_script, paths.series_review_meta]):
+    if not files_exist(
+        [
+            paths.event_bank,
+            paths.series_review_script,
+            paths.series_tts_script,
+            paths.series_chapters,
+            paths.series_review_meta,
+        ]
+    ):
         return False
     beats = [SeriesReviewBeat.model_validate(item) for item in load_json(paths.series_review_script)]
     validate_series_review_script(beats)
+    [SeriesChapter.model_validate(item) for item in load_json(paths.series_chapters)]
     return True
 
 def tts_outputs_valid(paths: SeriesPaths) -> bool:
@@ -537,6 +554,75 @@ def tts_outputs_valid(paths: SeriesPaths) -> bool:
     timings = [BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)]
     validate_beats_timing(timings, pause_s=meta.inter_beat_pause_s)
     return True
+
+def youtube_timestamp(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+def write_youtube_chapters(*, chapters_path: Path, beats_timing_path: Path, output_path: Path) -> Path:
+    chapters = [SeriesChapter.model_validate(item) for item in load_json(chapters_path)]
+    timings = [BeatTiming.model_validate(item) for item in load_json(beats_timing_path)]
+    timings_by_beat = {timing.beat_id: timing for timing in timings}
+    lines: list[str] = []
+    seen_beat_ids: set[int] = set()
+    for chapter in sorted(chapters, key=lambda item: item.start_beat_id):
+        if chapter.start_beat_id in seen_beat_ids:
+            continue
+        timing = timings_by_beat.get(chapter.start_beat_id)
+        if timing is None:
+            raise SeriesRecapError(f"chapter references missing beat timing: {chapter.start_beat_id}")
+        lines.append(f"{youtube_timestamp(timing.tl_start)} {chapter.title}")
+        seen_beat_ids.add(chapter.start_beat_id)
+    if lines and not lines[0].startswith("00:00 "):
+        lines.insert(0, "00:00 Mo dau")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    return output_path
+
+def youtube_chapters_outputs_valid(paths: SeriesPaths) -> bool:
+    if not files_exist([paths.series_chapters, paths.beats_timing, paths.youtube_chapters]):
+        return False
+    return bool(paths.youtube_chapters.read_text(encoding="utf-8").strip())
+
+def run_youtube_chapters_step(
+    *,
+    paths: SeriesPaths,
+    force: bool,
+    dry_run: bool,
+) -> StepSummary:
+    command = ["internal", "youtube_chapters"]
+    outputs = [str(paths.youtube_chapters)]
+    if not force:
+        try:
+            if youtube_chapters_outputs_valid(paths):
+                return StepSummary(
+                    stage="youtube_chapters",
+                    status="skipped",
+                    duration_s=0.0,
+                    command=command,
+                    outputs=outputs,
+                )
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    if dry_run:
+        return StepSummary(stage="youtube_chapters", status="planned", duration_s=0.0, command=command, outputs=outputs)
+    started = time.perf_counter()
+    write_youtube_chapters(
+        chapters_path=paths.series_chapters,
+        beats_timing_path=paths.beats_timing,
+        output_path=paths.youtube_chapters,
+    )
+    return StepSummary(
+        stage="youtube_chapters",
+        status="ran",
+        duration_s=round(time.perf_counter() - started, 3),
+        command=command,
+        outputs=outputs,
+    )
 
 def series_match_outputs_valid(paths: SeriesPaths) -> bool:
     if not files_exist([paths.edl, paths.source_map, paths.edl_meta, paths.edl_qa]):
@@ -699,7 +785,13 @@ def run_series_recap(
             config=config,
             force=force_final,
         ),
-        outputs=[paths.event_bank, paths.series_review_script, paths.series_review_meta, paths.series_tts_script],
+        outputs=[
+            paths.event_bank,
+            paths.series_review_script,
+            paths.series_review_meta,
+            paths.series_tts_script,
+            paths.series_chapters,
+        ],
         valid=lambda: composer_outputs_valid(paths),
         log_path=paths.log_path,
         force=force_final,
@@ -721,6 +813,13 @@ def run_series_recap(
     )
     summaries.append(tts)
     downstream_force = downstream_force or tts.status == "ran"
+
+    youtube_chapters = run_youtube_chapters_step(
+        paths=paths,
+        force=downstream_force,
+        dry_run=args.dry_run,
+    )
+    summaries.append(youtube_chapters)
 
     match = run_step(
         stage="series_match",
@@ -753,6 +852,7 @@ def run_series_recap(
         "series_title": manifest.series_title,
         "episode_keys": [spec.episode_key for spec in specs],
         "output": str(paths.output_video),
+        "youtube_chapters": str(paths.youtube_chapters),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "stages": [item.to_json() for item in summaries],
     }

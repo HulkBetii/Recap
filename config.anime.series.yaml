@@ -222,11 +222,12 @@ render:
 
 series_recap:
   scope: end_to_end
-  tts_cps: 15.0
+  format: episode_chaptered
+  tts_cps: 24.0
   mode_target_ratios:
-    full: 0.12
-    quick: 0.06
-    merge: 0.015
+    full: 0.22
+    quick: 0.14
+    merge: 0.05
     skip: 0.0
   chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
   reply_timeout_s: 600

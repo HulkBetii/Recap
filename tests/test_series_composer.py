@@ -7,7 +7,14 @@ from pathlib import Path
 import pytest
 
 from common.schema import SeriesReviewBeat
-from series_composer.builder import build_event_bank, composer_qa_report, compose_with_client, source_ref_from_event, to_tts_review_script
+from series_composer.builder import (
+    build_event_bank,
+    build_series_chapters,
+    composer_qa_report,
+    compose_with_client,
+    source_ref_from_event,
+    to_tts_review_script,
+)
 
 CREATED_AT = "2026-07-21T00:00:00Z"
 
@@ -41,6 +48,29 @@ def write_manifest(path: Path, source_one: Path, source_two: Path) -> None:
         encoding="utf-8",
     )
 
+def write_manifest_three(path: Path, sources: list[Path]) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "series_id": "grand-blue-s03",
+                "series_title": "Grand Blue Season 3",
+                "season": 3,
+                "episodes": [
+                    {
+                        "episode_key": f"s03e0{index}",
+                        "episode_number": index,
+                        "title": f"Episode {index}",
+                        "source_path": str(source),
+                        "arc": "summer",
+                        "spoiler_limit_episode": index,
+                    }
+                    for index, source in enumerate(sources, start=1)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
 def score_signals() -> dict[str, float]:
     return {
         "reveal": 0.7,
@@ -62,8 +92,12 @@ def write_episode_artifacts(
     importance_score: float,
     section_type: str,
     section_summary: str,
+    duration_s: float = 10.0,
+    extra_sections: list[tuple[str, str]] | None = None,
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
+    section_defs = [(section_type, section_summary), *(extra_sections or [])]
+    section_len = duration_s / len(section_defs)
     run_dir.joinpath("episode_meta.json").write_text(
         json.dumps(
             {
@@ -122,23 +156,15 @@ def write_episode_artifacts(
         json.dumps(
             [
                 {
-                    "id": 0,
+                    "id": index,
                     "type": "speech",
-                    "tc_start": 0.0,
-                    "tc_end": 5.0,
+                    "tc_start": round(index * section_len, 3),
+                    "tc_end": round((index + 1) * section_len, 3),
                     "ko": "dialogue",
-                    "en": "dialogue",
+                    "en": summary,
                     "scene_desc": None,
-                },
-                {
-                    "id": 1,
-                    "type": "speech",
-                    "tc_start": 5.0,
-                    "tc_end": 10.0,
-                    "ko": "reveal",
-                    "en": "reveal",
-                    "scene_desc": None,
-                },
+                }
+                for index, (_kind, summary) in enumerate(section_defs)
             ]
         ),
         encoding="utf-8",
@@ -147,14 +173,14 @@ def write_episode_artifacts(
         json.dumps(
             {
                 "input_path": str(source_path),
-                "duration": 10.0,
+                "duration": duration_s,
                 "created_at": CREATED_AT,
                 "whisper_model": "large-v3",
                 "translate_model": "gpt-4.1-mini",
                 "vision_model": "gpt-4.1-mini",
                 "gap_threshold": 4.0,
                 "max_vision_frames": 0,
-                "speech_count": 2,
+                "speech_count": len(section_defs),
                 "visual_count": 0,
                 "cache_hits": [],
                 "warnings_count": 0,
@@ -166,18 +192,19 @@ def write_episode_artifacts(
         json.dumps(
             [
                 {
-                    "section_id": 0,
-                    "type": section_type,
-                    "tc_start": 0.0,
-                    "tc_end": 10.0,
-                    "segment_ids": [0, 1],
-                    "summary": section_summary,
+                    "section_id": index,
+                    "type": kind,
+                    "tc_start": round(index * section_len, 3),
+                    "tc_end": round((index + 1) * section_len, 3),
+                    "segment_ids": [index],
+                    "summary": summary,
                     "characters": ["Iori"],
                     "locations": [],
-                    "events": [section_summary],
+                    "events": [summary],
                     "confidence": 0.9,
                     "warnings": [],
                 }
+                for index, (kind, summary) in enumerate(section_defs)
             ]
         ),
         encoding="utf-8",
@@ -391,3 +418,122 @@ def test_composer_qa_allows_cold_open_before_chronological_story(tmp_path: Path)
     report = composer_qa_report(beats, bank)
 
     assert not report
+
+def test_episode_chaptered_event_bank_builds_per_episode_targets(tmp_path: Path) -> None:
+    sources = [tmp_path / f"Grand_Blue.S03E0{index}.mp4" for index in range(1, 4)]
+    manifest = tmp_path / "series_manifest.json"
+    write_manifest_three(manifest, sources)
+    extra_sections = [
+        ("setup", "The club finds a new setup."),
+        ("conflict", "The joke escalates into a conflict."),
+        ("investigation", "The group tries to understand the mess."),
+        ("reveal", "A reveal reframes the chaos."),
+        ("ending", "The episode leaves a useful memory hook."),
+    ]
+    for index, source in enumerate(sources, start=1):
+        write_episode_artifacts(
+            tmp_path / f"s03e0{index}",
+            episode_key=f"s03e0{index}",
+            source_path=source,
+            recap_mode="quick",
+            importance_score=0.5,
+            section_type="inciting_incident",
+            section_summary="The episode starts a new comic problem.",
+            duration_s=1440.0,
+            extra_sections=extra_sections,
+        )
+
+    bank = build_event_bank(
+        manifest_path=manifest,
+        episode_run_dirs={f"s03e0{index}": tmp_path / f"s03e0{index}" for index in range(1, 4)},
+        tts_cps=15.0,
+        mode_target_ratios={"quick": 0.14},
+        recap_format="episode_chaptered",
+    )
+
+    assert bank.recap_format == "episode_chaptered"
+    assert bank.target_video_s == pytest.approx(604.8)
+    assert bank.char_budget == 9072
+    assert [target.target_video_s for target in bank.episode_targets] == [201.6, 201.6, 201.6]
+    assert [target.char_budget for target in bank.episode_targets] == [3024, 3024, 3024]
+    assert all(target.target_beats >= 5 for target in bank.episode_targets)
+
+def test_episode_chaptered_composer_revises_missing_episode_chapter(tmp_path: Path) -> None:
+    sources = [tmp_path / f"Grand_Blue.S03E0{index}.mp4" for index in range(1, 4)]
+    manifest = tmp_path / "series_manifest.json"
+    write_manifest_three(manifest, sources)
+    for index, source in enumerate(sources, start=1):
+        write_episode_artifacts(
+            tmp_path / f"s03e0{index}",
+            episode_key=f"s03e0{index}",
+            source_path=source,
+            recap_mode="quick",
+            importance_score=0.5,
+            section_type="setup",
+            section_summary=f"Episode {index} setup matters.",
+            extra_sections=[("reveal", f"Episode {index} reveal pays off.")],
+        )
+    bank = build_event_bank(
+        manifest_path=manifest,
+        episode_run_dirs={f"s03e0{index}": tmp_path / f"s03e0{index}" for index in range(1, 4)},
+        tts_cps=10.0,
+        mode_target_ratios={"quick": 0.14},
+        recap_format="episode_chaptered",
+    )
+    client = SequenceChatClient(
+        [
+            {
+                "beats": [
+                    {
+                        "event_ids": ["s03e03:section:1"],
+                        "narration": "Hook chung dat van de lon cho ca cum tap.",
+                        "is_hook": True,
+                    },
+                    {
+                        "event_ids": ["s03e01:section:0"],
+                        "narration": "Tap mot thiet lap tinh huong va de lai chi tiet can nho.",
+                        "is_hook": False,
+                    },
+                    {
+                        "event_ids": ["s03e03:section:0"],
+                        "narration": "Tap ba tiep tuc bang he qua lon hon.",
+                        "is_hook": False,
+                    },
+                ]
+            },
+            {
+                "beats": [
+                    {
+                        "event_ids": ["s03e03:section:1"],
+                        "narration": "Hook chung dat van de lon cho ca cum tap.",
+                        "is_hook": True,
+                    },
+                    {
+                        "event_ids": ["s03e01:section:0"],
+                        "narration": "Tap mot thiet lap tinh huong va de lai chi tiet can nho.",
+                        "is_hook": False,
+                    },
+                    {
+                        "event_ids": ["s03e02:section:0"],
+                        "narration": "Tap hai noi tiep nguyen nhan, bien chuyen do thanh mot loi hua moi.",
+                        "is_hook": False,
+                    },
+                    {
+                        "event_ids": ["s03e03:section:0"],
+                        "narration": "Tap ba dua tat ca he qua ve cung mot diem chot cho phan sau.",
+                        "is_hook": False,
+                    },
+                ]
+            },
+        ]
+    )
+
+    beats, meta = asyncio.run(compose_with_client(client, bank, qa_max_revisions=1))
+    chapters = build_series_chapters(beats, bank)
+
+    assert len(client.prompts) == 2
+    assert "EPISODE_TARGET_PLAN" in client.prompts[0]
+    assert "missing_episode_chapter" in client.prompts[1]
+    assert meta.qa_report == []
+    assert meta.model_versions["qa_revisions"] == "1"
+    assert [chapter.episode_key for chapter in chapters] == [None, "s03e01", "s03e02", "s03e03"]

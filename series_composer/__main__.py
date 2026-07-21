@@ -7,9 +7,16 @@ import logging
 from pathlib import Path
 
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
-from common.schema import SeriesEventBank, SeriesReviewBeat, SeriesReviewMeta, validate_series_review_script, write_json
+from common.schema import (
+    SeriesChapter,
+    SeriesEventBank,
+    SeriesReviewBeat,
+    SeriesReviewMeta,
+    validate_series_review_script,
+    write_json,
+)
 from review.playwright_chat import PlaywrightChatClient, PlaywrightChatError
-from series_composer.builder import build_event_bank, compose_with_client, to_tts_review_script
+from series_composer.builder import build_event_bank, build_series_chapters, compose_with_client, to_tts_review_script
 
 
 class SeriesComposerError(RuntimeError):
@@ -23,7 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-event-bank", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path, help="series_review_script.json")
     parser.add_argument("--output-tts-script", required=True, type=Path)
+    parser.add_argument("--output-chapters", default=None, type=Path)
     parser.add_argument("--output-meta", default=None, type=Path)
+    parser.add_argument("--format", choices=["compact", "episode_chaptered"], default="compact")
     parser.add_argument("--tts-cps", default=15.0, type=float)
     parser.add_argument(
         "--mode-target-ratio",
@@ -92,6 +101,7 @@ def outputs_current(args: argparse.Namespace) -> bool:
         args.output_event_bank,
         args.output,
         args.output_tts_script,
+        args.output_chapters or args.output.with_name("series_chapters.json"),
         args.output_meta or args.output.with_name("series_review_script.meta.json"),
     ]
     if not all(path.is_file() for path in paths):
@@ -99,6 +109,7 @@ def outputs_current(args: argparse.Namespace) -> bool:
     SeriesEventBank.model_validate_json(args.output_event_bank.read_text(encoding="utf-8"))
     beats = [SeriesReviewBeat.model_validate(item) for item in json.loads(args.output.read_text(encoding="utf-8"))]
     validate_series_review_script(beats)
+    [SeriesChapter.model_validate(item) for item in json.loads(paths[-2].read_text(encoding="utf-8"))]
     SeriesReviewMeta.model_validate_json(paths[-1].read_text(encoding="utf-8"))
     return True
 
@@ -111,6 +122,7 @@ async def run_composer_async(args: argparse.Namespace) -> int:
     args.output = args.output.expanduser().resolve()
     args.output_event_bank = args.output_event_bank.expanduser().resolve()
     args.output_tts_script = args.output_tts_script.expanduser().resolve()
+    args.output_chapters = (args.output_chapters or args.output.with_name("series_chapters.json")).expanduser().resolve()
     args.output_meta = (args.output_meta or args.output.with_name("series_review_script.meta.json")).expanduser().resolve()
     if not args.force and outputs_current(args):
         logging.info("Using existing series composer outputs")
@@ -122,6 +134,7 @@ async def run_composer_async(args: argparse.Namespace) -> int:
         episode_run_dirs=episode_run_dirs,
         tts_cps=args.tts_cps,
         mode_target_ratios=parse_mode_target_ratios(args.mode_target_ratio),
+        recap_format=args.format,
     )
     async with PlaywrightChatClient(
         profile_dir(args.chatgpt_profile_dir),
@@ -134,6 +147,7 @@ async def run_composer_async(args: argparse.Namespace) -> int:
     write_json(args.output_event_bank, bank)
     write_json(args.output, beats)
     write_json(args.output_tts_script, to_tts_review_script(beats))
+    write_json(args.output_chapters, build_series_chapters(beats, bank))
     write_json(args.output_meta, meta)
     return 0
 

@@ -107,8 +107,10 @@ python run.py --input path\to\anime-movie.mp4 --run-dir runs\anime-movie01 --con
 python -m series_recap --manifest examples\anime\series_manifest.example.yaml --config config.anime.series.yaml --episodes 1-3
 ```
 
+- Mac dinh anime series dung `series_recap.format=episode_chaptered`: mot script/voiceover/EDL tong, nhung sau hook se ke lan luot tung tap nhu cac chapter noi mach. `compact` van co san neu can season summary ngan.
+- Anime series preset dat target ratio `quick=0.14`, `full=0.22`, `merge=0.05`, `skip=0.0` va `series_recap.tts_cps=24.0` de hop toc do voice VBee hien tai cung xu huong composer viet hut budget; voi tap 24 phut, quick dong gop khoang 3-4 phut truoc khi TTS thuc te co gian.
 - `series_recap` khong noi raw video truoc. Moi tap duoc chay episode-first toi `episode_planner` + `shots`, sau do `series_composer -> tts -> series_match -> render` tao `runs\<series_id>\series_recap\series_recap.mp4`.
-- Artifact moi gom `series_event_bank.json`, `series_review_script.json`, `series_tts_script.json`, va `edl.source_map.json`. `edl.json` van dung contract cu, nhung `src` co the tro toi nhieu tap; GĐ6 render voi `--source-map` de cat dung file nguon.
+- Artifact moi gom `series_event_bank.json`, `series_review_script.json`, `series_tts_script.json`, `series_chapters.json`, `youtube_chapters.txt`, va `edl.source_map.json`. `edl.json` van dung contract cu, nhung `src` co the tro toi nhieu tap; GĐ6 render voi `--source-map` de cat dung file nguon.
 - Neu `preflight.manual_ranges` khong duoc set trong config, `series_recap` tu tim sidecar canh manifest theo convention `manual_ranges.<episode_key>.yaml|yml|json` de giu OP/ED/preview guard rieng tung tap.
 
 Tùy chọn resume/debug:

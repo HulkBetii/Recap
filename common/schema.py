@@ -18,6 +18,7 @@ AnimeContentType = Literal["anime_series", "anime_movie"]
 ContentType = Literal["episode", "movie", "anime_series", "anime_movie"]
 RequestedRecapMode = Literal["off", "auto", "full", "quick", "merge", "skip"]
 ResolvedRecapMode = Literal["full", "quick", "merge", "skip"]
+SeriesRecapFormat = Literal["compact", "episode_chaptered"]
 AnimeNonStoryLabel = Literal[
     "opening_theme",
     "ending_theme",
@@ -724,14 +725,40 @@ class SeriesEvent(BaseModel):
         return list(dict.fromkeys(normalized))
 
 
+class EpisodeTargetPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    episode_key: str
+    episode_number: int | str | None = None
+    title: str | None = None
+    recap_mode: ResolvedRecapMode
+    source_duration_s: float = Field(ge=0)
+    story_duration_s: float = Field(ge=0)
+    target_video_s: float = Field(ge=0)
+    char_budget: int = Field(ge=0)
+    min_chars: int = Field(ge=0)
+    target_beats: int = Field(ge=0)
+
+    @field_validator("episode_key", "title")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("episode target text field cannot be empty")
+        return normalized
+
 class SeriesEventBank(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     series_id: str
     series_title: str | None = None
+    recap_format: SeriesRecapFormat = "compact"
     episode_keys: list[str] = Field(default_factory=list)
     target_video_s: float = Field(gt=0)
     char_budget: int = Field(gt=0)
+    episode_targets: list[EpisodeTargetPlan] = Field(default_factory=list)
     events: list[SeriesEvent] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
@@ -784,6 +811,23 @@ class SeriesReviewMeta(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
 
+
+class SeriesChapter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    start_beat_id: int = Field(ge=0)
+    episode_key: str | None = None
+
+    @field_validator("title", "episode_key")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("series chapter text field cannot be empty")
+        return normalized
 
 class EdlSourceMap(BaseModel):
     model_config = ConfigDict(extra="forbid")

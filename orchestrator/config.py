@@ -241,6 +241,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "series_recap": {
         "scope": "end_to_end",
+        "format": "compact",
         "tts_cps": 15.0,
         "mode_target_ratios": {
             "full": 0.12,

@@ -8,14 +8,17 @@ from typing import Protocol
 
 from common.inputs import load_series_manifest
 from common.schema import (
+    EpisodeTargetPlan,
     EpisodeMemory,
     EpisodeMeta,
     FilmMapMeta,
     FilmMapSegment,
     ReviewBeat,
+    SeriesChapter,
     SeriesEvent,
     SeriesEventBank,
     SeriesManifest,
+    SeriesRecapFormat,
     SeriesReviewBeat,
     SeriesReviewMeta,
     SeriesSourceRef,
@@ -36,6 +39,9 @@ REVISION_QA_CODES = {
     "missing_hook",
     "repeated_events",
     "under_target_length",
+    "missing_episode_chapter",
+    "episode_under_char_budget",
+    "non_monotonic_episode_order",
     "non_monotonic_story_order",
 }
 
@@ -84,6 +90,26 @@ def story_duration(duration_s: float, profile: VideoProfile | None) -> float:
     for item in profile.non_story_ranges:
         non_story += max(0.0, min(duration_s, item.end_s) - max(0.0, item.start_s))
     return max(0.0, duration_s - non_story)
+
+def target_base_duration(duration_s: float, profile: VideoProfile | None, recap_format: SeriesRecapFormat) -> float:
+    if recap_format == "episode_chaptered":
+        return duration_s
+    return story_duration(duration_s, profile)
+
+def episode_target_beats(
+    *,
+    char_budget: int,
+    event_count: int,
+    recap_format: SeriesRecapFormat,
+) -> int:
+    if char_budget <= 0 or event_count <= 0:
+        return 0
+    if recap_format == "episode_chaptered":
+        return min(event_count, max(2, round(char_budget / 520) or 1))
+    return min(event_count, max(1, round(char_budget / 360) or 1))
+
+def chaptered_episode_targets(bank: SeriesEventBank) -> list[EpisodeTargetPlan]:
+    return [target for target in bank.episode_targets if target.char_budget > 0 and target.target_beats > 0]
 
 
 def section_segment_span(section: StorySection, film_map: list[FilmMapSegment]) -> tuple[int, int]:
@@ -144,10 +170,12 @@ def build_event_bank(
     episode_run_dirs: dict[str, Path],
     tts_cps: float = 15.0,
     mode_target_ratios: dict[str, float] | None = None,
+    recap_format: SeriesRecapFormat = "compact",
 ) -> SeriesEventBank:
     manifest = load_series_manifest(manifest_path)
     ratios = {**MODE_TARGET_RATIOS, **(mode_target_ratios or {})}
     events: list[SeriesEvent] = []
+    episode_targets: list[EpisodeTargetPlan] = []
     warnings: list[str] = []
     target_video_s = 0.0
     episode_keys: list[str] = []
@@ -175,7 +203,10 @@ def build_event_bank(
         sections = [StorySection.model_validate(item) for item in load_json(artifacts.story_map)]
         profile = VideoProfile.model_validate(load_json(artifacts.video_profile)) if artifacts.video_profile else None
         episode_keys.append(meta.episode_key)
-        target_video_s += story_duration(film_meta.duration, profile) * ratios[meta.recap_mode]
+        episode_story_duration = story_duration(film_meta.duration, profile)
+        episode_target_video_s = target_base_duration(film_meta.duration, profile, recap_format) * ratios[meta.recap_mode]
+        episode_char_budget = max(0, int(round(episode_target_video_s * tts_cps)))
+        episode_event_count = 0
         for section in sections:
             if section.type == "non_story" or overlaps_non_story(section.tc_start, section.tc_end, profile):
                 continue
@@ -202,6 +233,26 @@ def build_event_bank(
                     arc_hooks=memory.current.arc_hooks,
                 )
             )
+            episode_event_count += 1
+        target_video_s += episode_target_video_s
+        episode_targets.append(
+            EpisodeTargetPlan(
+                episode_key=meta.episode_key,
+                episode_number=meta.episode_number,
+                title=meta.title,
+                recap_mode=meta.recap_mode,
+                source_duration_s=round(film_meta.duration, 3),
+                story_duration_s=round(episode_story_duration, 3),
+                target_video_s=round(episode_target_video_s, 3),
+                char_budget=episode_char_budget,
+                min_chars=max(0, int(round(episode_char_budget * 0.75))),
+                target_beats=episode_target_beats(
+                    char_budget=episode_char_budget,
+                    event_count=episode_event_count,
+                    recap_format=recap_format,
+                ),
+            )
+        )
         warnings.extend(f"episode {episode_key}: {warning}" for warning in meta.warnings)
 
     if not events:
@@ -211,9 +262,11 @@ def build_event_bank(
     return SeriesEventBank(
         series_id=manifest.series_id,
         series_title=manifest.series_title,
+        recap_format=recap_format,
         episode_keys=episode_keys,
         target_video_s=round(target_video_s, 3),
         char_budget=max(1, int(round(target_video_s * tts_cps))),
+        episode_targets=episode_targets,
         events=events,
         warnings=warnings,
         created_at=datetime.now(timezone.utc),
@@ -223,20 +276,27 @@ def build_event_bank(
 def composer_length_plan(bank: SeriesEventBank) -> ComposerLengthPlan:
     event_count = max(1, len(bank.events))
     episode_count = max(1, len(bank.episode_keys))
-    if episode_count >= 3:
-        base_min, base_max = 9, 11
-    elif episode_count == 2:
-        base_min, base_max = 6, 8
+    if bank.recap_format == "episode_chaptered":
+        targets = chaptered_episode_targets(bank)
+        min_beats = min(event_count, max(1, len(targets) + 1))
+        desired_beats = 1 + sum(target.target_beats for target in targets)
+        max_beats = min(event_count, max(min_beats, desired_beats))
+        target_beats = max(min_beats, min(max_beats, round(bank.char_budget / 480) or min_beats))
     else:
-        base_min, base_max = 4, 7
-    min_beats = min(event_count, base_min)
-    max_beats = min(event_count, base_max)
-    if min_beats > max_beats:
-        min_beats = max_beats
-    if bank.char_budget < 700:
-        min_beats = max(1, min(event_count, round(bank.char_budget / 180) or 1))
-        max_beats = max(min_beats, min(event_count, min_beats + 1))
-    target_beats = max(min_beats, min(max_beats, round(bank.char_budget / 360) or min_beats))
+        if episode_count >= 3:
+            base_min, base_max = 9, 11
+        elif episode_count == 2:
+            base_min, base_max = 6, 8
+        else:
+            base_min, base_max = 4, 7
+        min_beats = min(event_count, base_min)
+        max_beats = min(event_count, base_max)
+        if min_beats > max_beats:
+            min_beats = max_beats
+        if bank.char_budget < 700:
+            min_beats = max(1, min(event_count, round(bank.char_budget / 180) or 1))
+            max_beats = max(min_beats, min(event_count, min_beats + 1))
+        target_beats = max(min_beats, min(max_beats, round(bank.char_budget / 360) or min_beats))
     per_beat_target = max(1, int(round(bank.char_budget / max(1, target_beats))))
     return ComposerLengthPlan(
         min_total_chars=int(bank.char_budget * 0.85),
@@ -265,6 +325,46 @@ def build_composer_prompt(bank: SeriesEventBank) -> str:
         }
         for event in bank.events
     ]
+    if bank.recap_format == "episode_chaptered":
+        target_payload = [
+            {
+                "episode_key": target.episode_key,
+                "episode_number": target.episode_number,
+                "title": target.title,
+                "recap_mode": target.recap_mode,
+                "target_video_s": target.target_video_s,
+                "char_budget": target.char_budget,
+                "min_chars": target.min_chars,
+                "target_beats": target.target_beats,
+            }
+            for target in bank.episode_targets
+            if target.char_budget > 0
+        ]
+        return f"""
+You are composing one Vietnamese recap video for a multi-episode anime season.
+Format: episode_chaptered. Return ONLY JSON with key "beats": [{{"event_ids": [string], "narration": string, "is_hook": boolean}}].
+
+Rules:
+- Choose event_ids only from EVENT_BANK; do not invent timecodes, source paths, or episode ids.
+- Beat 0 is one shared cold-open hook for the whole video. It may use a strong event from any selected episode.
+- After beat 0, recap the episodes as connected chapters in episode order: episode 1, then episode 2, then episode 3, and so on.
+- Every episode in EPISODE_TARGET_PLAN with target_beats > 0 must have at least one non-hook beat after the hook.
+- Treat quick episodes as real chapter recaps, not tiny bridges. Use merge episodes as short continuity chapters. Skip episodes with a zero budget.
+- Chapter transitions should connect cause and effect between episodes; do not restart each episode like a separate video.
+- Use every selected event_id at most once. Do not reuse the hook event later.
+- No OP/ED/theme-song/preview/recap-only content.
+- No verbatim dialogue or lyrics; transform into Vietnamese commentary.
+- Target total narration around {bank.char_budget} Vietnamese characters and {bank.target_video_s:.1f}s; stay between {length.min_total_chars} and {length.max_total_chars} characters unless the event bank is too small.
+- Return {length.min_beats}-{length.max_beats} beats. Most beats should be {length.per_beat_min_chars}-{length.per_beat_max_chars} characters, around {length.per_beat_target_chars} characters each.
+- For each episode, try to stay near its char_budget and target_beats from EPISODE_TARGET_PLAN. Never go below min_chars unless the episode has too few usable events.
+- Use 2-3 Vietnamese sentences per beat; do not collapse an episode chapter into one generic sentence.
+
+EPISODE_TARGET_PLAN:
+{json.dumps(target_payload, ensure_ascii=False)}
+
+EVENT_BANK:
+{json.dumps(payload, ensure_ascii=False)}
+""".strip()
     return f"""
 You are composing one Vietnamese recap video for a multi-episode anime arc.
 Return ONLY JSON with key "beats": [{{"event_ids": [string], "narration": string, "is_hook": boolean}}].
@@ -362,7 +462,7 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
         )
 
     total_chars = sum(len(beat.narration) for beat in beats)
-    if total_chars < bank.char_budget * 0.75:
+    if total_chars < bank.char_budget * 0.85:
         report.append(
             {
                 "level": "warning",
@@ -373,6 +473,7 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
             }
         )
 
+    events_by_id = {event.event_id: event for event in bank.events}
     event_order = {event.event_id: index for index, event in enumerate(bank.events)}
     chronological_beats = beats[1:] if beats and beats[0].is_hook else beats
     previous = -1
@@ -392,22 +493,86 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
             break
         previous = current
 
-    bridge_events = {
-        event.event_id
-        for event in bank.events
-        if event.recap_mode in {"quick", "merge", "skip"}
-    }
-    non_bridge_events = {event.event_id for event in bank.events} - bridge_events
-    bridge_count = sum(1 for event_id in selected if event_id in bridge_events)
-    if selected and non_bridge_events and bridge_count > max(2, len(selected) // 2):
-        report.append(
-            {
-                "level": "warning",
-                "code": "too_many_bridge_events",
-                "message": "Quick/merge/skip episodes dominate the final recap",
-                "bridge_event_count": bridge_count,
-            }
-        )
+    if bank.recap_format == "episode_chaptered":
+        targets = chaptered_episode_targets(bank)
+        episode_order = {episode_key: index for index, episode_key in enumerate(bank.episode_keys)}
+        non_hook_episode_chars: dict[str, int] = {target.episode_key: 0 for target in targets}
+        non_hook_episode_beats: dict[str, int] = {target.episode_key: 0 for target in targets}
+        previous_episode_order = -1
+        for beat in chronological_beats:
+            first_ref = beat.source_refs[0]
+            episode_key = first_ref.episode_key
+            current_episode_order = episode_order.get(episode_key, previous_episode_order)
+            if current_episode_order < previous_episode_order:
+                report.append(
+                    {
+                        "level": "warning",
+                        "code": "non_monotonic_episode_order",
+                        "message": "Composer moved to an earlier episode after a later chapter",
+                        "beat_id": beat.beat_id,
+                        "episode_key": episode_key,
+                    }
+                )
+                break
+            previous_episode_order = current_episode_order
+            if episode_key in non_hook_episode_chars:
+                non_hook_episode_chars[episode_key] += len(beat.narration)
+                non_hook_episode_beats[episode_key] += 1
+        for target in targets:
+            if non_hook_episode_beats.get(target.episode_key, 0) <= 0:
+                report.append(
+                    {
+                        "level": "error",
+                        "code": "missing_episode_chapter",
+                        "message": "Composer omitted a non-hook chapter for an episode",
+                        "episode_key": target.episode_key,
+                    }
+                )
+                continue
+            chars = non_hook_episode_chars.get(target.episode_key, 0)
+            if chars < target.min_chars:
+                report.append(
+                    {
+                        "level": "warning",
+                        "code": "episode_under_char_budget",
+                        "message": "Episode chapter narration is below its minimum character budget",
+                        "episode_key": target.episode_key,
+                        "chars": chars,
+                        "min_chars": target.min_chars,
+                        "char_budget": target.char_budget,
+                    }
+                )
+        non_story_events = [
+            event_id
+            for event_id in selected
+            if events_by_id.get(event_id) is not None and events_by_id[event_id].event_type == "non_story"
+        ]
+        if non_story_events:
+            report.append(
+                {
+                    "level": "error",
+                    "code": "non_story_event_selected",
+                    "message": "Composer selected non-story events",
+                    "event_ids": non_story_events,
+                }
+            )
+    else:
+        bridge_events = {
+            event.event_id
+            for event in bank.events
+            if event.recap_mode in {"quick", "merge", "skip"}
+        }
+        non_bridge_events = {event.event_id for event in bank.events} - bridge_events
+        bridge_count = sum(1 for event_id in selected if event_id in bridge_events)
+        if selected and non_bridge_events and bridge_count > max(2, len(selected) // 2):
+            report.append(
+                {
+                    "level": "warning",
+                    "code": "too_many_bridge_events",
+                    "message": "Quick/merge/skip episodes dominate the final recap",
+                    "bridge_event_count": bridge_count,
+                }
+            )
     return report
 
 def needs_revision(qa_report: list[dict[str, object]]) -> bool:
@@ -431,6 +596,8 @@ Hard revision requirements:
 - Total narration must be {length.min_total_chars}-{length.max_total_chars} Vietnamese characters.
 - Keep {length.min_beats}-{length.max_beats} beats and make most beats {length.per_beat_min_chars}-{length.per_beat_max_chars} characters.
 - Keep beat 0 as the cold-open hook; after beat 0, continue chronological episode/story order.
+- If format is episode_chaptered, every episode in EPISODE_TARGET_PLAN with target_beats > 0 must have a non-hook chapter after the hook.
+- If QA_REPORT contains under_target_length or episode_under_char_budget, expand the episode chapters with concrete cause/effect details. Being concise is a failure for episode_chaptered mode.
 - Do not reuse any event_id, including the hook event.
 - Return ONLY JSON with the same schema.
 
@@ -456,7 +623,21 @@ async def compose_with_client(
     qa_report: list[dict[str, object]] = []
     for attempt in range(qa_max_revisions + 1):
         response = await client.ask(prompt)
-        beats = parse_composer_response(extract_json(response), bank)
+        try:
+            beats = parse_composer_response(extract_json(response), bank)
+        except (ValueError, json.JSONDecodeError) as exc:
+            if not beats:
+                raise
+            qa_report = [
+                *qa_report,
+                {
+                    "level": "warning",
+                    "code": "invalid_revision_json",
+                    "message": "Composer revision returned invalid JSON; kept previous valid draft",
+                    "error": str(exc),
+                },
+            ]
+            break
         qa_report = composer_qa_report(beats, bank)
         if not needs_revision(qa_report) or attempt >= qa_max_revisions:
             break
@@ -476,12 +657,38 @@ async def compose_with_client(
         n_events=len(bank.events),
         selected_event_ids=selected_event_ids,
         qa_report=qa_report,
-        model_versions={"llm": "chatgpt_playwright", "qa_revisions": str(revision_count)},
+        model_versions={
+            "llm": "chatgpt_playwright",
+            "qa_revisions": str(revision_count),
+            "format": bank.recap_format,
+        },
         warnings=bank.warnings + [str(item["message"]) for item in qa_report if item.get("level") == "warning"],
         created_at=datetime.now(timezone.utc),
     )
     return beats, meta
 
+
+def chapter_title(target: EpisodeTargetPlan) -> str:
+    label = f"Tap {target.episode_number}" if target.episode_number is not None else target.episode_key
+    if target.title and target.title.lower() not in {target.episode_key.lower(), str(target.episode_number).lower()}:
+        return f"{label} - {target.title}"
+    return label
+
+def build_series_chapters(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> list[SeriesChapter]:
+    if not beats:
+        return []
+    chapters = [SeriesChapter(title="Mo dau", start_beat_id=beats[0].beat_id, episode_key=None)]
+    targets_by_episode = {target.episode_key: target for target in bank.episode_targets}
+    seen: set[str] = set()
+    for beat in beats[1:]:
+        episode_key = beat.source_refs[0].episode_key
+        if episode_key in seen:
+            continue
+        target = targets_by_episode.get(episode_key)
+        title = chapter_title(target) if target is not None else episode_key
+        chapters.append(SeriesChapter(title=title, start_beat_id=beat.beat_id, episode_key=episode_key))
+        seen.add(episode_key)
+    return chapters
 
 def to_tts_review_script(beats: list[SeriesReviewBeat]) -> list[ReviewBeat]:
     output: list[ReviewBeat] = []

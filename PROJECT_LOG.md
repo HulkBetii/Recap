@@ -1,5 +1,13 @@
 # PROJECT_LOG.md
 
+## 2026-07-21 - Episode-chapter season recap default
+
+- Changed anime season recap default from compact season summary to `series_recap.format=episode_chaptered`.
+- `config.anime.series.yaml` now targets `full=0.22`, `quick=0.14`, `merge=0.05`, `skip=0.0` and calibrates `series_recap.tts_cps=24.0` for the current VBee voice speed plus composer underfill; a 24-minute quick episode should contribute roughly 3-4 minutes before real TTS timing variance.
+- `series_event_bank.json` now includes an episode target plan with per-episode target duration, character budget, minimum characters, and beat budget so the composer cannot silently compress all selected episodes into a short bridge.
+- `series_composer` prompt/QA now requires a shared hook followed by ordered episode chapters, checks missing chapters, per-episode under-budget narration, repeated events, and post-hook episode order.
+- Added deterministic season helper artifacts `series_chapters.json` and `youtube_chapters.txt`; the final video still uses one script, one voiceover, one multi-source EDL, and no raw MP4 concatenation.
+
 ## 2026-07-21 - Multi-episode anime season recap V1
 
 - Added season-level orchestration with `python -m series_recap`: selected episodes run episode-first to `episode_planner` plus `shots`, then final `series_composer -> tts -> series_match -> render` produces one `series_recap.mp4`.
