@@ -1,5 +1,13 @@
 # PROJECT_LOG.md
 
+## 2026-07-21 - Detailed 12-episode anime season recap
+
+- Added `series_recap.format=episode_arc_chaptered` with `detail_level=detailed` for 12+ episode anime seasons.
+- `config.anime.series.yaml` now targets 12 standard 24-minute episodes at 35-45 minutes with a 50-minute hard cap, using per-episode targets of 90/180/300 seconds and `arc_size=3`.
+- `series_composer` now builds a `season_target_plan` inside `series_event_bank.json`, writes `series_arc_plan.json`, drafts each arc separately, and then runs a final stitch pass to produce one `series_review_script.json`.
+- Added `series_composer.qa.json` with deterministic QA diagnostics for missing episode chapters, episode/arc/season under-budget narration, post-hook ordering, hard-cap estimates, prompt count, and invalid revision JSON fallback.
+- Existing `compact`, `episode_chaptered`, single-episode `run.py`, and stage JSON contracts remain backward-compatible.
+
 ## 2026-07-21 - Episode-chapter season recap default
 
 - Changed anime season recap default from compact season summary to `series_recap.format=episode_chaptered`.

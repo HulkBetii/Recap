@@ -54,7 +54,15 @@ def write_config(path: Path) -> None:
                     "provider_mode": "ai33",
                 },
                 "series_recap": {
-                    "format": "episode_chaptered",
+                    "format": "episode_arc_chaptered",
+                    "detail_level": "detailed",
+                    "target_total_min_s": 2100,
+                    "target_total_max_s": 2700,
+                    "target_total_hard_cap_s": 3000,
+                    "episode_min_s": 90,
+                    "episode_normal_s": 180,
+                    "episode_high_s": 300,
+                    "arc_size": 3,
                     "mode_target_ratios": {
                         "full": 0.22,
                         "quick": 0.14,
@@ -76,10 +84,15 @@ def test_manifest_selection_supports_episode_range(tmp_path: Path) -> None:
 
     assert [spec.episode_key for spec in selected] == ["s03e01", "s03e02"]
 
-def test_anime_series_preset_defaults_to_episode_chaptered_ratio() -> None:
+def test_anime_series_preset_defaults_to_detailed_episode_arc_chaptered() -> None:
     config = load_config(Path("config.anime.series.yaml"))
 
-    assert config["series_recap"]["format"] == "episode_chaptered"
+    assert config["series_recap"]["format"] == "episode_arc_chaptered"
+    assert config["series_recap"]["detail_level"] == "detailed"
+    assert config["series_recap"]["target_total_min_s"] == 2100
+    assert config["series_recap"]["target_total_max_s"] == 2700
+    assert config["series_recap"]["target_total_hard_cap_s"] == 3000
+    assert config["series_recap"]["arc_size"] == 3
     assert config["series_recap"]["mode_target_ratios"]["quick"] == 0.14
     assert config["series_recap"]["tts_cps"] == 24.0
     assert config["series_recap"]["qa_max_revisions"] == 1
@@ -136,9 +149,16 @@ def test_series_recap_dry_run_shows_episode_and_final_stages_without_writing(tmp
     assert "[planned] s03e01:episode_planner" in output
     assert "python run.py" in output
     assert "python -m series_composer" in output
-    assert "--format episode_chaptered" in output
+    assert "--format episode_arc_chaptered" in output
+    assert "--detail-level detailed" in output
+    assert "--target-total-min-s 2100" in output
+    assert "--target-total-max-s 2700" in output
+    assert "--target-total-hard-cap-s 3000" in output
+    assert "--arc-size 3" in output
     assert "--mode-target-ratio quick=0.14" in output
     assert "series_chapters.json" in output
+    assert "series_arc_plan.json" in output
+    assert "series_composer.qa.json" in output
     assert "[planned] youtube_chapters" in output
     assert "youtube_chapters.txt" in output
     assert "python -m series_match" in output

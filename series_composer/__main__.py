@@ -8,7 +8,9 @@ from pathlib import Path
 
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from common.schema import (
+    SeasonTargetPlan,
     SeriesChapter,
+    SeriesComposerQa,
     SeriesEventBank,
     SeriesReviewBeat,
     SeriesReviewMeta,
@@ -16,7 +18,14 @@ from common.schema import (
     write_json,
 )
 from review.playwright_chat import PlaywrightChatClient, PlaywrightChatError
-from series_composer.builder import build_event_bank, build_series_chapters, compose_with_client, to_tts_review_script
+from series_composer.builder import (
+    build_event_bank,
+    build_series_arc_plan,
+    build_series_chapters,
+    build_series_composer_qa,
+    compose_with_client,
+    to_tts_review_script,
+)
 
 
 class SeriesComposerError(RuntimeError):
@@ -31,9 +40,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, type=Path, help="series_review_script.json")
     parser.add_argument("--output-tts-script", required=True, type=Path)
     parser.add_argument("--output-chapters", default=None, type=Path)
+    parser.add_argument("--output-arc-plan", default=None, type=Path)
+    parser.add_argument("--output-qa", default=None, type=Path)
     parser.add_argument("--output-meta", default=None, type=Path)
-    parser.add_argument("--format", choices=["compact", "episode_chaptered"], default="compact")
+    parser.add_argument("--format", choices=["compact", "episode_chaptered", "episode_arc_chaptered"], default="compact")
+    parser.add_argument("--detail-level", choices=["standard", "detailed"], default="standard")
     parser.add_argument("--tts-cps", default=15.0, type=float)
+    parser.add_argument("--target-total-min-s", default=2100.0, type=float)
+    parser.add_argument("--target-total-max-s", default=2700.0, type=float)
+    parser.add_argument("--target-total-hard-cap-s", default=3000.0, type=float)
+    parser.add_argument("--episode-min-s", default=90.0, type=float)
+    parser.add_argument("--episode-normal-s", default=180.0, type=float)
+    parser.add_argument("--episode-high-s", default=300.0, type=float)
+    parser.add_argument("--arc-size", default=3, type=int)
     parser.add_argument(
         "--mode-target-ratio",
         action="append",
@@ -102,6 +121,8 @@ def outputs_current(args: argparse.Namespace) -> bool:
         args.output,
         args.output_tts_script,
         args.output_chapters or args.output.with_name("series_chapters.json"),
+        args.output_arc_plan or args.output.with_name("series_arc_plan.json"),
+        args.output_qa or args.output.with_name("series_composer.qa.json"),
         args.output_meta or args.output.with_name("series_review_script.meta.json"),
     ]
     if not all(path.is_file() for path in paths):
@@ -109,7 +130,9 @@ def outputs_current(args: argparse.Namespace) -> bool:
     SeriesEventBank.model_validate_json(args.output_event_bank.read_text(encoding="utf-8"))
     beats = [SeriesReviewBeat.model_validate(item) for item in json.loads(args.output.read_text(encoding="utf-8"))]
     validate_series_review_script(beats)
-    [SeriesChapter.model_validate(item) for item in json.loads(paths[-2].read_text(encoding="utf-8"))]
+    [SeriesChapter.model_validate(item) for item in json.loads(paths[3].read_text(encoding="utf-8"))]
+    SeasonTargetPlan.model_validate_json(paths[4].read_text(encoding="utf-8"))
+    SeriesComposerQa.model_validate_json(paths[5].read_text(encoding="utf-8"))
     SeriesReviewMeta.model_validate_json(paths[-1].read_text(encoding="utf-8"))
     return True
 
@@ -119,10 +142,14 @@ async def run_composer_async(args: argparse.Namespace) -> int:
         raise SeriesComposerError("--tts-cps must be > 0")
     if args.qa_max_revisions < 0:
         raise SeriesComposerError("--qa-max-revisions must be >= 0")
+    if args.arc_size <= 0:
+        raise SeriesComposerError("--arc-size must be > 0")
     args.output = args.output.expanduser().resolve()
     args.output_event_bank = args.output_event_bank.expanduser().resolve()
     args.output_tts_script = args.output_tts_script.expanduser().resolve()
     args.output_chapters = (args.output_chapters or args.output.with_name("series_chapters.json")).expanduser().resolve()
+    args.output_arc_plan = (args.output_arc_plan or args.output.with_name("series_arc_plan.json")).expanduser().resolve()
+    args.output_qa = (args.output_qa or args.output.with_name("series_composer.qa.json")).expanduser().resolve()
     args.output_meta = (args.output_meta or args.output.with_name("series_review_script.meta.json")).expanduser().resolve()
     if not args.force and outputs_current(args):
         logging.info("Using existing series composer outputs")
@@ -135,6 +162,14 @@ async def run_composer_async(args: argparse.Namespace) -> int:
         tts_cps=args.tts_cps,
         mode_target_ratios=parse_mode_target_ratios(args.mode_target_ratio),
         recap_format=args.format,
+        detail_level=args.detail_level,
+        target_total_min_s=args.target_total_min_s,
+        target_total_max_s=args.target_total_max_s,
+        target_total_hard_cap_s=args.target_total_hard_cap_s,
+        episode_min_s=args.episode_min_s,
+        episode_normal_s=args.episode_normal_s,
+        episode_high_s=args.episode_high_s,
+        arc_size=args.arc_size,
     )
     async with PlaywrightChatClient(
         profile_dir(args.chatgpt_profile_dir),
@@ -148,6 +183,8 @@ async def run_composer_async(args: argparse.Namespace) -> int:
     write_json(args.output, beats)
     write_json(args.output_tts_script, to_tts_review_script(beats))
     write_json(args.output_chapters, build_series_chapters(beats, bank))
+    write_json(args.output_arc_plan, build_series_arc_plan(bank))
+    write_json(args.output_qa, build_series_composer_qa(bank=bank, meta=meta, tts_cps=args.tts_cps))
     write_json(args.output_meta, meta)
     return 0
 

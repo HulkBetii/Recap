@@ -18,7 +18,8 @@ AnimeContentType = Literal["anime_series", "anime_movie"]
 ContentType = Literal["episode", "movie", "anime_series", "anime_movie"]
 RequestedRecapMode = Literal["off", "auto", "full", "quick", "merge", "skip"]
 ResolvedRecapMode = Literal["full", "quick", "merge", "skip"]
-SeriesRecapFormat = Literal["compact", "episode_chaptered"]
+SeriesRecapFormat = Literal["compact", "episode_chaptered", "episode_arc_chaptered"]
+SeriesRecapDetailLevel = Literal["standard", "detailed"]
 AnimeNonStoryLabel = Literal[
     "opening_theme",
     "ending_theme",
@@ -688,6 +689,7 @@ class SeriesEvent(BaseModel):
     episode_number: int | str | None = None
     title: str | None = None
     source_path: str
+    arc: str | None = None
     recap_mode: ResolvedRecapMode
     summary: str
     event_type: str = "story_section"
@@ -700,7 +702,7 @@ class SeriesEvent(BaseModel):
     entity_hooks: list[str] = Field(default_factory=list)
     arc_hooks: list[str] = Field(default_factory=list)
 
-    @field_validator("event_id", "series_id", "episode_key", "title", "source_path", "summary", "event_type")
+    @field_validator("event_id", "series_id", "episode_key", "title", "source_path", "arc", "summary", "event_type")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -731,15 +733,19 @@ class EpisodeTargetPlan(BaseModel):
     episode_key: str
     episode_number: int | str | None = None
     title: str | None = None
+    arc: str | None = None
     recap_mode: ResolvedRecapMode
     source_duration_s: float = Field(ge=0)
     story_duration_s: float = Field(ge=0)
+    importance_score: float = Field(default=0.0, ge=0, le=1)
+    continuity_dependency: float = Field(default=0.0, ge=0, le=1)
+    event_count: int = Field(default=0, ge=0)
     target_video_s: float = Field(ge=0)
     char_budget: int = Field(ge=0)
     min_chars: int = Field(ge=0)
     target_beats: int = Field(ge=0)
 
-    @field_validator("episode_key", "title")
+    @field_validator("episode_key", "title", "arc")
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -748,6 +754,63 @@ class EpisodeTargetPlan(BaseModel):
         if not normalized:
             raise ValueError("episode target text field cannot be empty")
         return normalized
+
+class SeriesArcPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    arc_id: str
+    title: str
+    episode_keys: list[str] = Field(default_factory=list)
+    target_video_s: float = Field(ge=0)
+    char_budget: int = Field(ge=0)
+    min_chars: int = Field(ge=0)
+    target_beats: int = Field(ge=0)
+    episodes: list[EpisodeTargetPlan] = Field(default_factory=list)
+
+    @field_validator("arc_id", "title")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("series arc plan text field cannot be empty")
+        return normalized
+
+    @field_validator("episode_keys")
+    @classmethod
+    def normalize_episode_keys(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))
+
+class SeasonTargetPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recap_format: SeriesRecapFormat
+    detail_level: SeriesRecapDetailLevel = "standard"
+    target_total_min_s: float = Field(ge=0)
+    target_total_max_s: float = Field(ge=0)
+    target_total_hard_cap_s: float = Field(ge=0)
+    episode_min_s: float = Field(ge=0)
+    episode_normal_s: float = Field(ge=0)
+    episode_high_s: float = Field(ge=0)
+    arc_size: int = Field(ge=1)
+    total_target_video_s: float = Field(ge=0)
+    total_char_budget: int = Field(ge=0)
+    min_total_chars: int = Field(ge=0)
+    max_total_chars: int = Field(ge=0)
+    episode_count: int = Field(ge=0)
+    arc_count: int = Field(ge=0)
+    arcs: list[SeriesArcPlan] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "SeasonTargetPlan":
+        if self.target_total_max_s and self.target_total_max_s < self.target_total_min_s:
+            raise ValueError("target_total_max_s must be >= target_total_min_s")
+        if self.target_total_hard_cap_s and self.target_total_max_s and self.target_total_hard_cap_s < self.target_total_max_s:
+            raise ValueError("target_total_hard_cap_s must be >= target_total_max_s")
+        if self.arc_count != len(self.arcs):
+            raise ValueError("arc_count must match arcs length")
+        return self
 
 class SeriesEventBank(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -759,6 +822,7 @@ class SeriesEventBank(BaseModel):
     target_video_s: float = Field(gt=0)
     char_budget: int = Field(gt=0)
     episode_targets: list[EpisodeTargetPlan] = Field(default_factory=list)
+    season_target_plan: SeasonTargetPlan | None = None
     events: list[SeriesEvent] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
@@ -811,6 +875,26 @@ class SeriesReviewMeta(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
 
+
+class SeriesComposerQa(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str
+    recap_format: SeriesRecapFormat
+    detail_level: SeriesRecapDetailLevel = "standard"
+    target_video_s: float = Field(ge=0)
+    target_total_hard_cap_s: float | None = Field(default=None, ge=0)
+    char_budget: int = Field(ge=0)
+    est_total_chars: int = Field(ge=0)
+    estimated_duration_s: float = Field(ge=0)
+    n_events: int = Field(ge=0)
+    selected_event_ids: list[str] = Field(default_factory=list)
+    qa_report: list[dict[str, Any]] = Field(default_factory=list)
+    revision_count: int = Field(ge=0)
+    prompt_count: int = Field(ge=0)
+    arc_count: int = Field(ge=0)
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime
 
 class SeriesChapter(BaseModel):
     model_config = ConfigDict(extra="forbid")

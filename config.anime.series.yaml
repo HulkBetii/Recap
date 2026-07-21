@@ -222,8 +222,16 @@ render:
 
 series_recap:
   scope: end_to_end
-  format: episode_chaptered
+  format: episode_arc_chaptered
+  detail_level: detailed
   tts_cps: 24.0
+  target_total_min_s: 2100
+  target_total_max_s: 2700
+  target_total_hard_cap_s: 3000
+  episode_min_s: 90
+  episode_normal_s: 180
+  episode_high_s: 300
+  arc_size: 3
   mode_target_ratios:
     full: 0.22
     quick: 0.14

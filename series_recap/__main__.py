@@ -18,7 +18,9 @@ from common.schema import (
     EdlPlacement,
     EdlSourceMap,
     RenderMeta,
+    SeasonTargetPlan,
     SeriesChapter,
+    SeriesComposerQa,
     SeriesManifest,
     SeriesManifestEpisode,
     SeriesReviewBeat,
@@ -55,6 +57,8 @@ class SeriesPaths:
     log_path: Path
     summary: Path
     event_bank: Path
+    series_arc_plan: Path
+    series_composer_qa: Path
     series_review_script: Path
     series_review_meta: Path
     series_tts_script: Path
@@ -251,6 +255,8 @@ def build_paths(root_dir: Path) -> SeriesPaths:
         log_path=final_dir / "series_recap.log",
         summary=final_dir / "summary.json",
         event_bank=final_dir / "series_event_bank.json",
+        series_arc_plan=final_dir / "series_arc_plan.json",
+        series_composer_qa=final_dir / "series_composer.qa.json",
         series_review_script=final_dir / "series_review_script.json",
         series_review_meta=final_dir / "series_review_script.meta.json",
         series_tts_script=final_dir / "series_tts_script.json",
@@ -382,6 +388,10 @@ def composer_command(
             str(paths.series_tts_script),
             "--output-chapters",
             str(paths.series_chapters),
+            "--output-arc-plan",
+            str(paths.series_arc_plan),
+            "--output-qa",
+            str(paths.series_composer_qa),
             "--output-meta",
             str(paths.series_review_meta),
             "--work-dir",
@@ -390,7 +400,15 @@ def composer_command(
     )
     add_option(command, "format", section.get("format"))
     for key in (
+        "detail_level",
         "tts_cps",
+        "target_total_min_s",
+        "target_total_max_s",
+        "target_total_hard_cap_s",
+        "episode_min_s",
+        "episode_normal_s",
+        "episode_high_s",
+        "arc_size",
         "chatgpt_profile_dir",
         "reply_timeout_s",
         "playwright_max_attempts",
@@ -535,6 +553,8 @@ def composer_outputs_valid(paths: SeriesPaths) -> bool:
     if not files_exist(
         [
             paths.event_bank,
+            paths.series_arc_plan,
+            paths.series_composer_qa,
             paths.series_review_script,
             paths.series_tts_script,
             paths.series_chapters,
@@ -545,6 +565,8 @@ def composer_outputs_valid(paths: SeriesPaths) -> bool:
     beats = [SeriesReviewBeat.model_validate(item) for item in load_json(paths.series_review_script)]
     validate_series_review_script(beats)
     [SeriesChapter.model_validate(item) for item in load_json(paths.series_chapters)]
+    SeasonTargetPlan.model_validate(load_json(paths.series_arc_plan))
+    SeriesComposerQa.model_validate(load_json(paths.series_composer_qa))
     return True
 
 def tts_outputs_valid(paths: SeriesPaths) -> bool:
@@ -787,6 +809,8 @@ def run_series_recap(
         ),
         outputs=[
             paths.event_bank,
+            paths.series_arc_plan,
+            paths.series_composer_qa,
             paths.series_review_script,
             paths.series_review_meta,
             paths.series_tts_script,
@@ -853,6 +877,8 @@ def run_series_recap(
         "episode_keys": [spec.episode_key for spec in specs],
         "output": str(paths.output_video),
         "youtube_chapters": str(paths.youtube_chapters),
+        "series_arc_plan": str(paths.series_arc_plan),
+        "series_composer_qa": str(paths.series_composer_qa),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "stages": [item.to_json() for item in summaries],
     }

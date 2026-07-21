@@ -9,6 +9,7 @@ import pytest
 from common.schema import SeriesReviewBeat
 from series_composer.builder import (
     build_event_bank,
+    build_series_arc_plan,
     build_series_chapters,
     composer_qa_report,
     compose_with_client,
@@ -71,6 +72,30 @@ def write_manifest_three(path: Path, sources: list[Path]) -> None:
         encoding="utf-8",
     )
 
+def write_manifest_many(path: Path, sources: list[Path], arcs: list[str | None] | None = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "series_id": "grand-blue-s03",
+                "series_title": "Grand Blue Season 3",
+                "season": 3,
+                "episodes": [
+                    {
+                        "episode_key": f"s03e{index:02d}",
+                        "episode_number": index,
+                        "title": f"Episode {index}",
+                        "source_path": str(source),
+                        "arc": (arcs[index - 1] if arcs else None),
+                        "spoiler_limit_episode": index,
+                    }
+                    for index, source in enumerate(sources, start=1)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
 def score_signals() -> dict[str, float]:
     return {
         "reveal": 0.7,
@@ -93,6 +118,7 @@ def write_episode_artifacts(
     section_type: str,
     section_summary: str,
     duration_s: float = 10.0,
+    arc: str | None = "summer",
     extra_sections: list[tuple[str, str]] | None = None,
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +132,7 @@ def write_episode_artifacts(
                 "episode_number": int(episode_key[-2:]),
                 "title": episode_key.upper(),
                 "source_path": str(source_path),
-                "arc": "summer",
+                "arc": arc,
                 "spoiler_limit_episode": int(episode_key[-2:]),
                 "requested_recap_mode": "auto",
                 "recap_mode": recap_mode,
@@ -134,7 +160,7 @@ def write_episode_artifacts(
                     "episode_number": int(episode_key[-2:]),
                     "title": episode_key.upper(),
                     "source_path": str(source_path),
-                    "arc": "summer",
+                    "arc": arc,
                     "recap_mode": recap_mode,
                     "importance_score": importance_score,
                     "summary": f"{episode_key} memory",
@@ -537,3 +563,189 @@ def test_episode_chaptered_composer_revises_missing_episode_chapter(tmp_path: Pa
     assert meta.qa_report == []
     assert meta.model_versions["qa_revisions"] == "1"
     assert [chapter.episode_key for chapter in chapters] == [None, "s03e01", "s03e02", "s03e03"]
+
+def write_detailed_episode_set(
+    tmp_path: Path,
+    *,
+    count: int,
+    arcs: list[str | None] | None = None,
+    tts_cps: float = 24.0,
+):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    sources = [tmp_path / f"Grand_Blue.S03E{index:02d}.mp4" for index in range(1, count + 1)]
+    manifest = tmp_path / "series_manifest_many.json"
+    write_manifest_many(manifest, sources, arcs)
+    extra_sections = [
+        ("setup", "The episode plants a small but important setup."),
+        ("conflict", "The cast turns the setup into a visible conflict."),
+        ("investigation", "The group tries to understand the new mess."),
+        ("reveal", "A reveal changes how the audience reads the joke."),
+        ("ending", "The ending leaves a useful continuity hook."),
+    ]
+    for index, source in enumerate(sources, start=1):
+        write_episode_artifacts(
+            tmp_path / f"s03e{index:02d}",
+            episode_key=f"s03e{index:02d}",
+            source_path=source,
+            recap_mode="quick",
+            importance_score=0.5,
+            section_type="inciting_incident",
+            section_summary=f"Episode {index} starts a comic problem.",
+            duration_s=1440.0,
+            arc=arcs[index - 1] if arcs else None,
+            extra_sections=extra_sections,
+        )
+    bank = build_event_bank(
+        manifest_path=manifest,
+        episode_run_dirs={f"s03e{index:02d}": tmp_path / f"s03e{index:02d}" for index in range(1, count + 1)},
+        tts_cps=tts_cps,
+        recap_format="episode_arc_chaptered",
+        detail_level="detailed",
+        arc_size=3,
+    )
+    return manifest, bank
+
+def test_episode_arc_chaptered_event_bank_builds_detailed_12_episode_plan(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=12)
+    plan = build_series_arc_plan(bank)
+
+    assert bank.recap_format == "episode_arc_chaptered"
+    assert plan.detail_level == "detailed"
+    assert plan.arc_count == 4
+    assert [arc.episode_keys for arc in plan.arcs] == [
+        ["s03e01", "s03e02", "s03e03"],
+        ["s03e04", "s03e05", "s03e06"],
+        ["s03e07", "s03e08", "s03e09"],
+        ["s03e10", "s03e11", "s03e12"],
+    ]
+    assert 2100 <= plan.total_target_video_s <= 2700
+    assert plan.total_target_video_s <= 3000
+    assert bank.target_video_s == plan.total_target_video_s
+    assert all(target.target_video_s >= 90 for target in bank.episode_targets)
+    assert all(target.target_beats > 0 for target in bank.episode_targets)
+
+def test_episode_arc_chaptered_groups_manual_arcs_and_non_multiple_counts(tmp_path: Path) -> None:
+    _manifest, manual_bank = write_detailed_episode_set(
+        tmp_path / "manual",
+        count=5,
+        arcs=["arrival", "arrival", "club-test", "club-test", "aftermath"],
+    )
+    manual_plan = build_series_arc_plan(manual_bank)
+
+    assert [arc.episode_keys for arc in manual_plan.arcs] == [
+        ["s03e01", "s03e02"],
+        ["s03e03", "s03e04"],
+        ["s03e05"],
+    ]
+
+    _manifest, chunked_bank = write_detailed_episode_set(tmp_path / "chunked", count=10)
+    chunked_plan = build_series_arc_plan(chunked_bank)
+
+    assert [len(arc.episode_keys) for arc in chunked_plan.arcs] == [3, 3, 3, 1]
+
+def long_narration(label: str) -> str:
+    return (
+        f"{label} duoc ke lai bang nhan qua ro rang, giu ten nhan vat va trang thai cau chuyen on dinh. "
+        f"{label} tiep tuc them chi tiet de nguoi xem nho vi sao tap nay quan trong cho mach sau. "
+    )
+
+def arc_response(
+    episode_numbers: list[int],
+    *,
+    include_hook: bool = False,
+    skip_episode: int | None = None,
+    hook_episode: int | None = None,
+) -> dict[str, object]:
+    beats: list[dict[str, object]] = []
+    if include_hook:
+        hook_episode_number = hook_episode or max(episode_numbers)
+        beats.append(
+            {
+                "event_ids": [f"s03e{hook_episode_number:02d}:section:1"],
+                "narration": long_narration("Hook mua phim"),
+                "is_hook": True,
+            }
+        )
+    for episode_number in episode_numbers:
+        if episode_number == skip_episode:
+            continue
+        beats.append(
+            {
+                "event_ids": [f"s03e{episode_number:02d}:section:0"],
+                "narration": long_narration(f"Tap {episode_number}"),
+                "is_hook": False,
+            }
+        )
+    return {"beats": beats}
+
+def test_episode_arc_chaptered_composer_uses_arc_prompts_and_final_stitch(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=12, tts_cps=1.0)
+    responses = [
+        arc_response([1, 2, 3], include_hook=True, hook_episode=12),
+        arc_response([4, 5, 6]),
+        arc_response([7, 8, 9]),
+        arc_response([10, 11, 12]),
+        {
+            "beats": [
+                *arc_response([1, 2, 3], include_hook=True, hook_episode=12)["beats"],
+                *arc_response([4, 5, 6])["beats"],
+                *arc_response([7, 8, 9])["beats"],
+                *arc_response([10, 11, 12])["beats"],
+            ]
+        },
+    ]
+    client = SequenceChatClient(responses)
+
+    beats, meta = asyncio.run(compose_with_client(client, bank, qa_max_revisions=0))
+
+    assert len(client.prompts) == 5
+    assert sum("You are drafting one arc" in prompt for prompt in client.prompts) == 4
+    assert "final stitch pass" in client.prompts[-1]
+    assert beats[0].is_hook
+    assert beats[0].source_refs[0].episode_key == "s03e12"
+    assert [beat.source_refs[0].episode_key for beat in beats[1:]] == [f"s03e{index:02d}" for index in range(1, 13)]
+    assert meta.model_versions["prompt_count"] == "5"
+    assert meta.model_versions["arc_count"] == "4"
+
+def test_episode_arc_chaptered_revision_fills_missing_episode_chapter(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=3, tts_cps=1.0)
+    client = SequenceChatClient(
+        [
+            arc_response([1, 2, 3], include_hook=True, skip_episode=2),
+            {
+                "beats": arc_response([1, 2, 3], include_hook=True, skip_episode=2)["beats"],
+            },
+            arc_response([1, 2, 3], include_hook=True),
+            {
+                "beats": arc_response([1, 2, 3], include_hook=True)["beats"],
+            },
+        ]
+    )
+
+    beats, meta = asyncio.run(compose_with_client(client, bank, qa_max_revisions=1))
+
+    assert len(client.prompts) == 4
+    assert "missing_episode_chapter" in client.prompts[2]
+    assert meta.qa_report == []
+    assert meta.model_versions["qa_revisions"] == "1"
+    assert [beat.source_refs[0].episode_key for beat in beats[1:]] == ["s03e01", "s03e02", "s03e03"]
+
+def test_episode_arc_chaptered_invalid_revision_keeps_prior_valid_draft(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=3, tts_cps=20.0)
+    client = SequenceChatClient(
+        [
+            arc_response([1, 2, 3], include_hook=True),
+            {
+                "beats": arc_response([1, 2, 3], include_hook=True)["beats"],
+            },
+            {"not_beats": []},
+            {
+                "beats": arc_response([1, 2, 3], include_hook=True)["beats"],
+            },
+        ]
+    )
+
+    beats, meta = asyncio.run(compose_with_client(client, bank, qa_max_revisions=1))
+
+    assert beats[0].is_hook
+    assert any(item["code"] == "invalid_revision_json" for item in meta.qa_report)

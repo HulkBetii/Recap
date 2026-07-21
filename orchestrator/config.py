@@ -242,7 +242,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "series_recap": {
         "scope": "end_to_end",
         "format": "compact",
+        "detail_level": "standard",
         "tts_cps": 15.0,
+        "target_total_min_s": 2100.0,
+        "target_total_max_s": 2700.0,
+        "target_total_hard_cap_s": 3000.0,
+        "episode_min_s": 90.0,
+        "episode_normal_s": 180.0,
+        "episode_high_s": 300.0,
+        "arc_size": 3,
         "mode_target_ratios": {
             "full": 0.12,
             "quick": 0.06,

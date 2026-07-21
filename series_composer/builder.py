@@ -14,10 +14,14 @@ from common.schema import (
     FilmMapMeta,
     FilmMapSegment,
     ReviewBeat,
+    SeasonTargetPlan,
+    SeriesArcPlan,
     SeriesChapter,
+    SeriesComposerQa,
     SeriesEvent,
     SeriesEventBank,
     SeriesManifest,
+    SeriesRecapDetailLevel,
     SeriesRecapFormat,
     SeriesReviewBeat,
     SeriesReviewMeta,
@@ -41,9 +45,49 @@ REVISION_QA_CODES = {
     "under_target_length",
     "missing_episode_chapter",
     "episode_under_char_budget",
+    "arc_under_char_budget",
+    "season_under_char_budget",
     "non_monotonic_episode_order",
     "non_monotonic_story_order",
 }
+NON_CANON_TITLE_HINTS = ("ova", "bonus", "special", "recap-only", "recap only")
+NON_STORY_EVENT_TYPES = {
+    "non_story",
+    "opening_theme",
+    "ending_theme",
+    "next_episode_preview",
+    "recap_previous_episode",
+    "sponsor_card",
+    "studio_logo",
+}
+
+@dataclass(frozen=True)
+class SeasonTargetSettings:
+    detail_level: SeriesRecapDetailLevel = "standard"
+    target_total_min_s: float = 2100.0
+    target_total_max_s: float = 2700.0
+    target_total_hard_cap_s: float = 3000.0
+    episode_min_s: float = 90.0
+    episode_normal_s: float = 180.0
+    episode_high_s: float = 300.0
+    arc_size: int = 3
+
+    def validate(self) -> "SeasonTargetSettings":
+        if self.target_total_min_s < 0 or self.target_total_max_s < 0 or self.target_total_hard_cap_s < 0:
+            raise ValueError("season target bounds must be >= 0")
+        if self.target_total_max_s and self.target_total_max_s < self.target_total_min_s:
+            raise ValueError("target_total_max_s must be >= target_total_min_s")
+        if self.target_total_hard_cap_s and self.target_total_max_s and self.target_total_hard_cap_s < self.target_total_max_s:
+            raise ValueError("target_total_hard_cap_s must be >= target_total_max_s")
+        if self.episode_min_s < 0 or self.episode_normal_s < 0 or self.episode_high_s < 0:
+            raise ValueError("episode target seconds must be >= 0")
+        if self.episode_high_s and self.episode_high_s < self.episode_min_s:
+            raise ValueError("episode_high_s must be >= episode_min_s")
+        if self.episode_normal_s and self.episode_high_s and self.episode_normal_s > self.episode_high_s:
+            raise ValueError("episode_normal_s must be <= episode_high_s")
+        if self.arc_size <= 0:
+            raise ValueError("arc_size must be > 0")
+        return self
 
 
 @dataclass(frozen=True)
@@ -92,7 +136,7 @@ def story_duration(duration_s: float, profile: VideoProfile | None) -> float:
     return max(0.0, duration_s - non_story)
 
 def target_base_duration(duration_s: float, profile: VideoProfile | None, recap_format: SeriesRecapFormat) -> float:
-    if recap_format == "episode_chaptered":
+    if recap_format in {"episode_chaptered", "episode_arc_chaptered"}:
         return duration_s
     return story_duration(duration_s, profile)
 
@@ -104,12 +148,253 @@ def episode_target_beats(
 ) -> int:
     if char_budget <= 0 or event_count <= 0:
         return 0
+    if recap_format == "episode_arc_chaptered":
+        return min(event_count, max(1, round(char_budget / 700) or 1))
     if recap_format == "episode_chaptered":
         return min(event_count, max(2, round(char_budget / 520) or 1))
     return min(event_count, max(1, round(char_budget / 360) or 1))
 
 def chaptered_episode_targets(bank: SeriesEventBank) -> list[EpisodeTargetPlan]:
     return [target for target in bank.episode_targets if target.char_budget > 0 and target.target_beats > 0]
+
+def is_chaptered_format(recap_format: SeriesRecapFormat) -> bool:
+    return recap_format in {"episode_chaptered", "episode_arc_chaptered"}
+
+def is_non_canon_episode(target: EpisodeTargetPlan) -> bool:
+    text = " ".join(str(value).lower() for value in (target.episode_key, target.title or "") if value)
+    return any(hint in text for hint in NON_CANON_TITLE_HINTS)
+
+def detailed_episode_seconds(target: EpisodeTargetPlan, settings: SeasonTargetSettings) -> float:
+    if target.recap_mode == "skip" or target.event_count <= 0 or is_non_canon_episode(target):
+        return 0.0
+    base_by_mode = {
+        "full": settings.episode_high_s,
+        "quick": settings.episode_normal_s,
+        "merge": settings.episode_min_s,
+        "skip": 0.0,
+    }
+    base = base_by_mode[target.recap_mode]
+    event_factor = min(1.0, target.event_count / 8.0)
+    factor = 0.78 + target.importance_score * 0.30 + target.continuity_dependency * 0.16 + event_factor * 0.08
+    target_s = base * factor
+    if target.recap_mode == "merge":
+        upper = settings.episode_normal_s or settings.episode_high_s or target_s
+        target_s = min(target_s, upper)
+    elif settings.episode_high_s:
+        target_s = min(target_s, settings.episode_high_s)
+    return max(settings.episode_min_s, target_s)
+
+def scale_episode_targets(
+    targets: list[EpisodeTargetPlan],
+    *,
+    desired_total_s: float,
+    settings: SeasonTargetSettings,
+    tts_cps: float,
+) -> list[EpisodeTargetPlan]:
+    adjustable = [target for target in targets if target.target_video_s > 0]
+    current_total = sum(target.target_video_s for target in adjustable)
+    if not adjustable or current_total <= 0 or desired_total_s <= 0:
+        return targets
+    factor = desired_total_s / current_total
+    updated: list[EpisodeTargetPlan] = []
+    for target in targets:
+        if target.target_video_s <= 0:
+            updated.append(target)
+            continue
+        target_s = max(settings.episode_min_s, target.target_video_s * factor)
+        char_budget = max(1, int(round(target_s * tts_cps)))
+        updated.append(
+            target.model_copy(
+                update={
+                    "target_video_s": round(target_s, 3),
+                    "char_budget": char_budget,
+                    "min_chars": max(1, int(round(char_budget * 0.75))),
+                    "target_beats": episode_target_beats(
+                        char_budget=char_budget,
+                        event_count=target.event_count,
+                        recap_format="episode_arc_chaptered",
+                    ),
+                }
+            )
+        )
+    return updated
+
+def group_episode_targets(targets: list[EpisodeTargetPlan], arc_size: int) -> list[list[EpisodeTargetPlan]]:
+    if not targets:
+        return []
+    arc_size = max(1, arc_size)
+    distinct_arcs = [arc for arc in dict.fromkeys(target.arc for target in targets if target.arc)]
+    groups: list[list[EpisodeTargetPlan]] = []
+    if len(distinct_arcs) > 1:
+        current: list[EpisodeTargetPlan] = []
+        current_arc: str | None = None
+        for target in targets:
+            target_arc = target.arc
+            if current and target_arc != current_arc:
+                groups.append(current)
+                current = []
+            current.append(target)
+            current_arc = target_arc
+        if current:
+            groups.append(current)
+    else:
+        groups = [targets[index : index + arc_size] for index in range(0, len(targets), arc_size)]
+
+    split_groups: list[list[EpisodeTargetPlan]] = []
+    for group in groups:
+        if len(group) <= arc_size:
+            split_groups.append(group)
+            continue
+        split_groups.extend(group[index : index + arc_size] for index in range(0, len(group), arc_size))
+    return split_groups
+
+def arc_title(group: list[EpisodeTargetPlan], arc_index: int) -> str:
+    arcs = [target.arc for target in group if target.arc]
+    if arcs and len(set(arcs)) == 1:
+        return arcs[0] or f"Arc {arc_index}"
+    first = group[0]
+    last = group[-1]
+    if first.episode_number is not None and last.episode_number is not None:
+        return f"Tap {first.episode_number}-{last.episode_number}"
+    return f"Arc {arc_index}"
+
+def build_arc_plans(targets: list[EpisodeTargetPlan], settings: SeasonTargetSettings) -> list[SeriesArcPlan]:
+    arcs: list[SeriesArcPlan] = []
+    for index, group in enumerate(group_episode_targets(targets, settings.arc_size), start=1):
+        target_video_s = round(sum(target.target_video_s for target in group), 3)
+        char_budget = sum(target.char_budget for target in group)
+        arcs.append(
+            SeriesArcPlan(
+                arc_id=f"arc-{index:02d}",
+                title=arc_title(group, index),
+                episode_keys=[target.episode_key for target in group],
+                target_video_s=target_video_s,
+                char_budget=char_budget,
+                min_chars=sum(target.min_chars for target in group),
+                target_beats=sum(target.target_beats for target in group),
+                episodes=group,
+            )
+        )
+    return arcs
+
+def build_season_target_plan(
+    *,
+    recap_format: SeriesRecapFormat,
+    episode_targets: list[EpisodeTargetPlan],
+    tts_cps: float,
+    settings: SeasonTargetSettings,
+) -> tuple[list[EpisodeTargetPlan], SeasonTargetPlan]:
+    settings = settings.validate()
+    warnings: list[str] = []
+    if recap_format != "episode_arc_chaptered":
+        total_target_video_s = round(sum(target.target_video_s for target in episode_targets), 3)
+        total_char_budget = sum(target.char_budget for target in episode_targets)
+        standard_settings = SeasonTargetSettings(
+            detail_level="standard",
+            target_total_min_s=0.0,
+            target_total_max_s=0.0,
+            target_total_hard_cap_s=0.0,
+            episode_min_s=0.0,
+            episode_normal_s=0.0,
+            episode_high_s=0.0,
+            arc_size=max(1, settings.arc_size),
+        )
+        arcs = build_arc_plans(episode_targets, standard_settings)
+        return episode_targets, SeasonTargetPlan(
+            recap_format=recap_format,
+            detail_level="standard",
+            target_total_min_s=0.0,
+            target_total_max_s=0.0,
+            target_total_hard_cap_s=0.0,
+            episode_min_s=0.0,
+            episode_normal_s=0.0,
+            episode_high_s=0.0,
+            arc_size=standard_settings.arc_size,
+            total_target_video_s=total_target_video_s,
+            total_char_budget=total_char_budget,
+            min_total_chars=max(0, int(round(total_char_budget * 0.85))),
+            max_total_chars=max(0, int(round(total_char_budget * 1.15))),
+            episode_count=len(episode_targets),
+            arc_count=len(arcs),
+            arcs=arcs,
+            warnings=[],
+        )
+
+    detailed_targets: list[EpisodeTargetPlan] = []
+    for target in episode_targets:
+        target_s = detailed_episode_seconds(target, settings)
+        if target.event_count <= 0 and target.recap_mode != "skip":
+            warnings.append(f"episode {target.episode_key} has no usable story events; assigned zero season budget")
+        char_budget = max(0, int(round(target_s * tts_cps)))
+        detailed_targets.append(
+            target.model_copy(
+                update={
+                    "target_video_s": round(target_s, 3),
+                    "char_budget": char_budget,
+                    "min_chars": max(0, int(round(char_budget * 0.75))),
+                    "target_beats": episode_target_beats(
+                        char_budget=char_budget,
+                        event_count=target.event_count,
+                        recap_format=recap_format,
+                    ),
+                }
+            )
+        )
+
+    targetable_count = sum(1 for target in detailed_targets if target.target_video_s > 0)
+    total_target_video_s = sum(target.target_video_s for target in detailed_targets)
+    # Do not inflate small 1-4 episode test ranges to full-season length. The 35-45 minute
+    # clamp applies once the selected scope looks like a real season.
+    enforce_season_bounds = targetable_count >= max(8, settings.arc_size * 2)
+    if enforce_season_bounds and settings.target_total_min_s and total_target_video_s < settings.target_total_min_s:
+        detailed_targets = scale_episode_targets(
+            detailed_targets,
+            desired_total_s=settings.target_total_min_s,
+            settings=settings,
+            tts_cps=tts_cps,
+        )
+        warnings.append("season target raised to target_total_min_s")
+    total_target_video_s = sum(target.target_video_s for target in detailed_targets)
+    if enforce_season_bounds and settings.target_total_max_s and total_target_video_s > settings.target_total_max_s:
+        detailed_targets = scale_episode_targets(
+            detailed_targets,
+            desired_total_s=settings.target_total_max_s,
+            settings=settings,
+            tts_cps=tts_cps,
+        )
+        warnings.append("season target lowered to target_total_max_s")
+    total_target_video_s = sum(target.target_video_s for target in detailed_targets)
+    if settings.target_total_hard_cap_s and total_target_video_s > settings.target_total_hard_cap_s:
+        detailed_targets = scale_episode_targets(
+            detailed_targets,
+            desired_total_s=settings.target_total_hard_cap_s,
+            settings=settings,
+            tts_cps=tts_cps,
+        )
+        warnings.append("season target lowered to target_total_hard_cap_s")
+
+    arcs = build_arc_plans(detailed_targets, settings)
+    total_target_video_s = round(sum(target.target_video_s for target in detailed_targets), 3)
+    total_char_budget = sum(target.char_budget for target in detailed_targets)
+    return detailed_targets, SeasonTargetPlan(
+        recap_format=recap_format,
+        detail_level=settings.detail_level,
+        target_total_min_s=settings.target_total_min_s,
+        target_total_max_s=settings.target_total_max_s,
+        target_total_hard_cap_s=settings.target_total_hard_cap_s,
+        episode_min_s=settings.episode_min_s,
+        episode_normal_s=settings.episode_normal_s,
+        episode_high_s=settings.episode_high_s,
+        arc_size=settings.arc_size,
+        total_target_video_s=total_target_video_s,
+        total_char_budget=total_char_budget,
+        min_total_chars=max(0, int(round(total_char_budget * 0.85))),
+        max_total_chars=max(0, int(round(total_char_budget * 1.15))),
+        episode_count=len(detailed_targets),
+        arc_count=len(arcs),
+        arcs=arcs,
+        warnings=warnings,
+    )
 
 
 def section_segment_span(section: StorySection, film_map: list[FilmMapSegment]) -> tuple[int, int]:
@@ -171,9 +456,27 @@ def build_event_bank(
     tts_cps: float = 15.0,
     mode_target_ratios: dict[str, float] | None = None,
     recap_format: SeriesRecapFormat = "compact",
+    detail_level: SeriesRecapDetailLevel = "standard",
+    target_total_min_s: float = 2100.0,
+    target_total_max_s: float = 2700.0,
+    target_total_hard_cap_s: float = 3000.0,
+    episode_min_s: float = 90.0,
+    episode_normal_s: float = 180.0,
+    episode_high_s: float = 300.0,
+    arc_size: int = 3,
 ) -> SeriesEventBank:
     manifest = load_series_manifest(manifest_path)
     ratios = {**MODE_TARGET_RATIOS, **(mode_target_ratios or {})}
+    target_settings = SeasonTargetSettings(
+        detail_level=detail_level,
+        target_total_min_s=target_total_min_s,
+        target_total_max_s=target_total_max_s,
+        target_total_hard_cap_s=target_total_hard_cap_s,
+        episode_min_s=episode_min_s,
+        episode_normal_s=episode_normal_s,
+        episode_high_s=episode_high_s,
+        arc_size=arc_size,
+    ).validate()
     events: list[SeriesEvent] = []
     episode_targets: list[EpisodeTargetPlan] = []
     warnings: list[str] = []
@@ -220,6 +523,7 @@ def build_event_bank(
                     episode_number=meta.episode_number,
                     title=meta.title,
                     source_path=meta.source_path,
+                    arc=meta.arc,
                     recap_mode=meta.recap_mode,
                     summary=section.summary,
                     event_type=section.type,
@@ -240,9 +544,13 @@ def build_event_bank(
                 episode_key=meta.episode_key,
                 episode_number=meta.episode_number,
                 title=meta.title,
+                arc=meta.arc,
                 recap_mode=meta.recap_mode,
                 source_duration_s=round(film_meta.duration, 3),
                 story_duration_s=round(episode_story_duration, 3),
+                importance_score=meta.importance_score,
+                continuity_dependency=meta.score_signals.continuity_dependency,
+                event_count=episode_event_count,
                 target_video_s=round(episode_target_video_s, 3),
                 char_budget=episode_char_budget,
                 min_chars=max(0, int(round(episode_char_budget * 0.75))),
@@ -257,6 +565,14 @@ def build_event_bank(
 
     if not events:
         raise ValueError("series event bank has no story events")
+    episode_targets, season_target_plan = build_season_target_plan(
+        recap_format=recap_format,
+        episode_targets=episode_targets,
+        tts_cps=tts_cps,
+        settings=target_settings,
+    )
+    target_video_s = season_target_plan.total_target_video_s
+    warnings.extend(season_target_plan.warnings)
     if target_video_s <= 0:
         target_video_s = sum(event.tc_end - event.tc_start for event in events[: min(3, len(events))]) * 0.25
     return SeriesEventBank(
@@ -267,6 +583,7 @@ def build_event_bank(
         target_video_s=round(target_video_s, 3),
         char_budget=max(1, int(round(target_video_s * tts_cps))),
         episode_targets=episode_targets,
+        season_target_plan=season_target_plan,
         events=events,
         warnings=warnings,
         created_at=datetime.now(timezone.utc),
@@ -276,12 +593,13 @@ def build_event_bank(
 def composer_length_plan(bank: SeriesEventBank) -> ComposerLengthPlan:
     event_count = max(1, len(bank.events))
     episode_count = max(1, len(bank.episode_keys))
-    if bank.recap_format == "episode_chaptered":
+    if is_chaptered_format(bank.recap_format):
         targets = chaptered_episode_targets(bank)
         min_beats = min(event_count, max(1, len(targets) + 1))
         desired_beats = 1 + sum(target.target_beats for target in targets)
         max_beats = min(event_count, max(min_beats, desired_beats))
-        target_beats = max(min_beats, min(max_beats, round(bank.char_budget / 480) or min_beats))
+        divisor = 680 if bank.recap_format == "episode_arc_chaptered" else 480
+        target_beats = max(min_beats, min(max_beats, round(bank.char_budget / divisor) or min_beats))
     else:
         if episode_count >= 3:
             base_min, base_max = 9, 11
@@ -315,6 +633,7 @@ def build_composer_prompt(bank: SeriesEventBank) -> str:
             "event_id": event.event_id,
             "episode_key": event.episode_key,
             "episode_number": event.episode_number,
+            "arc": event.arc,
             "recap_mode": event.recap_mode,
             "summary": event.summary,
             "event_type": event.event_type,
@@ -325,6 +644,53 @@ def build_composer_prompt(bank: SeriesEventBank) -> str:
         }
         for event in bank.events
     ]
+    if bank.recap_format == "episode_arc_chaptered":
+        target_payload = [
+            {
+                "episode_key": target.episode_key,
+                "episode_number": target.episode_number,
+                "title": target.title,
+                "arc": target.arc,
+                "recap_mode": target.recap_mode,
+                "importance_score": target.importance_score,
+                "continuity_dependency": target.continuity_dependency,
+                "event_count": target.event_count,
+                "target_video_s": target.target_video_s,
+                "char_budget": target.char_budget,
+                "min_chars": target.min_chars,
+                "target_beats": target.target_beats,
+            }
+            for target in bank.episode_targets
+            if target.char_budget > 0
+        ]
+        season_payload = bank.season_target_plan.model_dump(mode="json") if bank.season_target_plan else {}
+        return f"""
+You are composing one detailed Vietnamese recap video for a 12-episode anime season.
+Format: episode_arc_chaptered. Return ONLY JSON with key "beats": [{{"event_ids": [string], "narration": string, "is_hook": boolean}}].
+
+Rules:
+- Choose event_ids only from EVENT_BANK; do not invent timecodes, source paths, or episode ids.
+- Beat 0 is one shared cold-open hook for the whole video. It may use a strong event from any selected episode.
+- After beat 0, return to the earliest selected episode and recap every episode as a connected chapter in monotonic order.
+- The structure should feel like arcs of about three episodes: setup, escalation, payoff, then a bridge into the next arc.
+- Every episode in EPISODE_TARGET_PLAN with target_beats > 0 must have at least one non-hook beat after the hook.
+- Use every selected event_id at most once. Do not reuse the hook event later.
+- No OP/ED/theme-song/preview/recap-only content.
+- No verbatim dialogue or lyrics; transform into Vietnamese commentary.
+- Target total narration around {bank.char_budget} Vietnamese characters and {bank.target_video_s:.1f}s; stay between {length.min_total_chars} and {length.max_total_chars} characters unless the event bank is too small.
+- Return {length.min_beats}-{length.max_beats} beats. Most beats should be {length.per_beat_min_chars}-{length.per_beat_max_chars} characters, around {length.per_beat_target_chars} characters each.
+- For each episode, stay near its char_budget and target_beats from EPISODE_TARGET_PLAN. Never go below min_chars unless the episode has too few usable events.
+- Use 2-4 Vietnamese sentences per beat and make cause/effect explicit so the season recap feels detailed, not compressed.
+
+SEASON_TARGET_PLAN:
+{json.dumps(season_payload, ensure_ascii=False)}
+
+EPISODE_TARGET_PLAN:
+{json.dumps(target_payload, ensure_ascii=False)}
+
+EVENT_BANK:
+{json.dumps(payload, ensure_ascii=False)}
+""".strip()
     if bank.recap_format == "episode_chaptered":
         target_payload = [
             {
@@ -400,7 +766,12 @@ def source_ref_from_event(event: SeriesEvent) -> SeriesSourceRef:
     )
 
 
-def parse_composer_response(payload: object, bank: SeriesEventBank) -> list[SeriesReviewBeat]:
+def parse_composer_response(
+    payload: object,
+    bank: SeriesEventBank,
+    *,
+    require_hook: bool = True,
+) -> list[SeriesReviewBeat]:
     if not isinstance(payload, dict) or not isinstance(payload.get("beats"), list):
         raise ValueError("series composer response must be an object with beats[]")
     events_by_id = {event.event_id: event for event in bank.events}
@@ -421,12 +792,16 @@ def parse_composer_response(payload: object, bank: SeriesEventBank) -> list[Seri
                 beat_id=index,
                 narration=str(raw.get("narration", "")),
                 source_refs=source_refs,
-                is_hook=bool(raw.get("is_hook", index == 0)),
+                is_hook=bool(raw.get("is_hook", index == 0 and require_hook)),
             )
         )
-    if beats:
+    if beats and require_hook:
         beats[0] = beats[0].model_copy(update={"is_hook": True})
-    return validate_series_review_script(beats)
+        return validate_series_review_script(beats)
+    return [beat.model_copy(update={"is_hook": False}) for beat in beats]
+
+def renumber_beats(beats: list[SeriesReviewBeat]) -> list[SeriesReviewBeat]:
+    return [beat.model_copy(update={"beat_id": index}) for index, beat in enumerate(beats)]
 
 def beats_to_prompt_payload(beats: list[SeriesReviewBeat]) -> dict[str, object]:
     return {
@@ -462,7 +837,17 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
         )
 
     total_chars = sum(len(beat.narration) for beat in beats)
-    if total_chars < bank.char_budget * 0.85:
+    if bank.recap_format == "episode_arc_chaptered" and total_chars < bank.char_budget * 0.85:
+        report.append(
+            {
+                "level": "error",
+                "code": "season_under_char_budget",
+                "message": "Detailed season narration is below 85% of the season character budget",
+                "total_chars": total_chars,
+                "char_budget": bank.char_budget,
+            }
+        )
+    elif total_chars < bank.char_budget * 0.85:
         report.append(
             {
                 "level": "warning",
@@ -493,7 +878,7 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
             break
         previous = current
 
-    if bank.recap_format == "episode_chaptered":
+    if is_chaptered_format(bank.recap_format):
         targets = chaptered_episode_targets(bank)
         episode_order = {episode_key: index for index, episode_key in enumerate(bank.episode_keys)}
         non_hook_episode_chars: dict[str, int] = {target.episode_key: 0 for target in targets}
@@ -545,7 +930,7 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
         non_story_events = [
             event_id
             for event_id in selected
-            if events_by_id.get(event_id) is not None and events_by_id[event_id].event_type == "non_story"
+            if events_by_id.get(event_id) is not None and events_by_id[event_id].event_type in NON_STORY_EVENT_TYPES
         ]
         if non_story_events:
             report.append(
@@ -556,6 +941,60 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
                     "event_ids": non_story_events,
                 }
             )
+        if bank.recap_format == "episode_arc_chaptered" and bank.season_target_plan is not None:
+            plan = bank.season_target_plan
+            if plan.target_total_hard_cap_s and bank.char_budget:
+                estimated_duration_s = (total_chars / bank.char_budget) * bank.target_video_s
+                if estimated_duration_s > plan.target_total_hard_cap_s:
+                    report.append(
+                        {
+                            "level": "warning",
+                            "code": "estimated_duration_exceeds_hard_cap",
+                            "message": "Estimated final duration exceeds the season hard cap",
+                            "estimated_duration_s": round(estimated_duration_s, 3),
+                            "target_total_hard_cap_s": plan.target_total_hard_cap_s,
+                        }
+                    )
+            episode_to_arc = {
+                episode_key: arc.arc_id
+                for arc in plan.arcs
+                for episode_key in arc.episode_keys
+            }
+            arc_chars: dict[str, int] = {arc.arc_id: 0 for arc in plan.arcs}
+            for beat in chronological_beats:
+                episode_key = beat.source_refs[0].episode_key
+                arc_id = episode_to_arc.get(episode_key)
+                if arc_id is not None:
+                    arc_chars[arc_id] += len(beat.narration)
+            for arc in plan.arcs:
+                if arc.char_budget <= 0:
+                    continue
+                chars = arc_chars.get(arc.arc_id, 0)
+                if chars < arc.min_chars:
+                    report.append(
+                        {
+                            "level": "warning",
+                            "code": "arc_under_char_budget",
+                            "message": "Arc narration is below its minimum character budget",
+                            "arc_id": arc.arc_id,
+                            "chars": chars,
+                            "min_chars": arc.min_chars,
+                            "char_budget": arc.char_budget,
+                        }
+                    )
+            if len(arc_chars) > 1 and total_chars > 0:
+                dominant_arc, dominant_chars = max(arc_chars.items(), key=lambda item: item[1])
+                dominant_ratio = dominant_chars / total_chars
+                if dominant_ratio > 0.45:
+                    report.append(
+                        {
+                            "level": "warning",
+                            "code": "arc_dominates_too_much",
+                            "message": "One arc dominates too much of the detailed season script",
+                            "arc_id": dominant_arc,
+                            "char_ratio": round(dominant_ratio, 4),
+                        }
+                    )
     else:
         bridge_events = {
             event.event_id
@@ -596,8 +1035,8 @@ Hard revision requirements:
 - Total narration must be {length.min_total_chars}-{length.max_total_chars} Vietnamese characters.
 - Keep {length.min_beats}-{length.max_beats} beats and make most beats {length.per_beat_min_chars}-{length.per_beat_max_chars} characters.
 - Keep beat 0 as the cold-open hook; after beat 0, continue chronological episode/story order.
-- If format is episode_chaptered, every episode in EPISODE_TARGET_PLAN with target_beats > 0 must have a non-hook chapter after the hook.
-- If QA_REPORT contains under_target_length or episode_under_char_budget, expand the episode chapters with concrete cause/effect details. Being concise is a failure for episode_chaptered mode.
+- If format is episode_chaptered or episode_arc_chaptered, every episode in EPISODE_TARGET_PLAN with target_beats > 0 must have a non-hook chapter after the hook.
+- If QA_REPORT contains under_target_length, season_under_char_budget, or episode_under_char_budget, expand the episode chapters with concrete cause/effect details. Being concise is a failure for chaptered modes.
 - Do not reuse any event_id, including the hook event.
 - Return ONLY JSON with the same schema.
 
@@ -609,6 +1048,330 @@ PREVIOUS_DRAFT:
 {json.dumps(beats_to_prompt_payload(beats), ensure_ascii=False)}
 """.strip()
 
+def event_prompt_payload(events: list[SeriesEvent]) -> list[dict[str, object]]:
+    return [
+        {
+            "event_id": event.event_id,
+            "episode_key": event.episode_key,
+            "episode_number": event.episode_number,
+            "arc": event.arc,
+            "recap_mode": event.recap_mode,
+            "summary": event.summary,
+            "event_type": event.event_type,
+            "importance": event.importance,
+            "is_hook_candidate": event.is_hook_candidate,
+            "entity_hooks": event.entity_hooks,
+            "arc_hooks": event.arc_hooks,
+        }
+        for event in events
+    ]
+
+def episode_target_prompt_payload(targets: list[EpisodeTargetPlan]) -> list[dict[str, object]]:
+    return [
+        {
+            "episode_key": target.episode_key,
+            "episode_number": target.episode_number,
+            "title": target.title,
+            "arc": target.arc,
+            "recap_mode": target.recap_mode,
+            "importance_score": target.importance_score,
+            "continuity_dependency": target.continuity_dependency,
+            "event_count": target.event_count,
+            "target_video_s": target.target_video_s,
+            "char_budget": target.char_budget,
+            "min_chars": target.min_chars,
+            "target_beats": target.target_beats,
+        }
+        for target in targets
+        if target.char_budget > 0
+    ]
+
+def events_for_arc(bank: SeriesEventBank, arc: SeriesArcPlan) -> list[SeriesEvent]:
+    episode_keys = set(arc.episode_keys)
+    return [event for event in bank.events if event.episode_key in episode_keys]
+
+def global_hook_candidates(bank: SeriesEventBank, limit: int = 10) -> list[SeriesEvent]:
+    candidates = [event for event in bank.events if event.is_hook_candidate]
+    if not candidates:
+        candidates = list(bank.events)
+    return sorted(candidates, key=lambda event: event.importance, reverse=True)[:limit]
+
+def build_arc_composer_prompt(
+    *,
+    bank: SeriesEventBank,
+    arc: SeriesArcPlan,
+    arc_index: int,
+    qa_report: list[dict[str, object]] | None = None,
+    previous_arc_beats: list[SeriesReviewBeat] | None = None,
+    revision_number: int = 0,
+) -> str:
+    is_first_arc = arc_index == 0
+    hook_rule = (
+        "Include beat 0 as the single global cold-open hook. It may use GLOBAL_HOOK_CANDIDATES from any episode."
+        if is_first_arc
+        else "Do not include a hook beat. Every returned beat must have is_hook=false."
+    )
+    revision_block = ""
+    if qa_report is not None:
+        revision_block = f"""
+
+REVISION_NUMBER: {revision_number}
+QA_REPORT:
+{json.dumps(qa_report, ensure_ascii=False)}
+
+PREVIOUS_ARC_DRAFT:
+{json.dumps(beats_to_prompt_payload(previous_arc_beats or []), ensure_ascii=False)}
+""".rstrip()
+    return f"""
+You are drafting one arc of a detailed Vietnamese anime season recap.
+Return ONLY JSON with key "beats": [{{"event_ids": [string], "narration": string, "is_hook": boolean}}].
+
+Arc: {arc.arc_id} - {arc.title}
+Rules:
+- Choose event_ids only from ARC_EVENT_BANK, except the first arc may use GLOBAL_HOOK_CANDIDATES for the hook.
+- {hook_rule}
+- After the hook, recap only this arc's episodes in episode order.
+- Every episode in ARC_EPISODE_TARGETS with target_beats > 0 must have at least one non-hook beat.
+- Stay near the arc target of {arc.char_budget} Vietnamese characters and {arc.target_video_s:.1f}s.
+- Each episode must reach at least its min_chars unless there are too few usable events.
+- Use event_ids at most once inside this arc draft.
+- No OP/ED/theme-song/preview/recap-only content.
+- No verbatim dialogue or lyrics; transform into Vietnamese commentary.
+- Write detailed cause/effect narration. Do not summarize an episode as a tiny bridge unless its recap_mode is merge.
+
+ARC_EPISODE_TARGETS:
+{json.dumps(episode_target_prompt_payload(arc.episodes), ensure_ascii=False)}
+
+ARC_EVENT_BANK:
+{json.dumps(event_prompt_payload(events_for_arc(bank, arc)), ensure_ascii=False)}
+
+GLOBAL_HOOK_CANDIDATES:
+{json.dumps(event_prompt_payload(global_hook_candidates(bank)), ensure_ascii=False)}
+{revision_block}
+""".strip()
+
+def build_final_stitch_prompt(
+    *,
+    bank: SeriesEventBank,
+    beats: list[SeriesReviewBeat],
+    qa_report: list[dict[str, object]] | None = None,
+    revision_number: int = 0,
+) -> str:
+    length = composer_length_plan(bank)
+    draft = beats_to_prompt_payload(beats)
+    selected_event_ids = list(dict.fromkeys(ref.event_id for beat in beats for ref in beat.source_refs))
+    revision_block = ""
+    if qa_report is not None:
+        revision_block = f"""
+
+REVISION_NUMBER: {revision_number}
+QA_REPORT:
+{json.dumps(qa_report, ensure_ascii=False)}
+""".rstrip()
+    return f"""
+You are doing the final stitch pass for one detailed Vietnamese anime season recap.
+Return ONLY JSON with key "beats": [{{"event_ids": [string], "narration": string, "is_hook": boolean}}].
+
+Rules:
+- Smooth transitions, remove repetition, and keep the season as one continuous story.
+- Use only event_ids from SELECTED_EVENT_IDS. Do not add new event_ids, timecodes, source paths, or episode ids.
+- Keep beat 0 as the single hook. After beat 0, episode order must be monotonic from earliest to latest.
+- Every episode already represented in the arc drafts must keep at least one non-hook beat.
+- Stay between {length.min_total_chars} and {length.max_total_chars} Vietnamese characters.
+- Do not collapse detailed episode chapters into generic summaries.
+- No OP/ED/theme-song/preview/recap-only content. No verbatim dialogue or lyrics.
+
+SELECTED_EVENT_IDS:
+{json.dumps(selected_event_ids, ensure_ascii=False)}
+
+ARC_DRAFTS:
+{json.dumps(draft, ensure_ascii=False)}
+{revision_block}
+""".strip()
+
+def combine_arc_drafts(arc_drafts: list[list[SeriesReviewBeat]]) -> list[SeriesReviewBeat]:
+    combined: list[SeriesReviewBeat] = []
+    for arc_index, arc_beats in enumerate(arc_drafts):
+        if arc_index == 0:
+            combined.extend(arc_beats)
+        else:
+            combined.extend(beat.model_copy(update={"is_hook": False}) for beat in arc_beats)
+    return validate_series_review_script(renumber_beats(combined))
+
+def validate_stitch_event_subset(beats: list[SeriesReviewBeat], allowed_event_ids: set[str]) -> None:
+    selected = {ref.event_id for beat in beats for ref in beat.source_refs}
+    unknown = sorted(selected - allowed_event_ids)
+    if unknown:
+        raise ValueError(f"final stitch selected event_id outside arc drafts: {unknown[:10]}")
+
+def arc_indexes_for_revision(qa_report: list[dict[str, object]], bank: SeriesEventBank) -> set[int]:
+    plan = bank.season_target_plan
+    if plan is None:
+        return set()
+    episode_to_arc = {
+        episode_key: index
+        for index, arc in enumerate(plan.arcs)
+        for episode_key in arc.episode_keys
+    }
+    result: set[int] = set()
+    for item in qa_report:
+        code = item.get("code")
+        if code in {"under_target_length", "season_under_char_budget"}:
+            result.update(range(len(plan.arcs)))
+        arc_id = item.get("arc_id")
+        if isinstance(arc_id, str):
+            for index, arc in enumerate(plan.arcs):
+                if arc.arc_id == arc_id:
+                    result.add(index)
+        episode_key = item.get("episode_key")
+        if isinstance(episode_key, str) and episode_key in episode_to_arc:
+            result.add(episode_to_arc[episode_key])
+    return result
+
+def build_review_meta(
+    *,
+    bank: SeriesEventBank,
+    beats: list[SeriesReviewBeat],
+    qa_report: list[dict[str, object]],
+    revision_count: int,
+    prompt_count: int,
+) -> SeriesReviewMeta:
+    selected_event_ids = list(dict.fromkeys(ref.event_id for beat in beats for ref in beat.source_refs))
+    detail_level = bank.season_target_plan.detail_level if bank.season_target_plan is not None else "standard"
+    arc_count = bank.season_target_plan.arc_count if bank.season_target_plan is not None else 0
+    return SeriesReviewMeta(
+        series_id=bank.series_id,
+        target_video_s=bank.target_video_s,
+        char_budget=bank.char_budget,
+        est_total_chars=sum(len(beat.narration) for beat in beats),
+        n_events=len(bank.events),
+        selected_event_ids=selected_event_ids,
+        qa_report=qa_report,
+        model_versions={
+            "llm": "chatgpt_playwright",
+            "qa_revisions": str(revision_count),
+            "format": bank.recap_format,
+            "detail_level": detail_level,
+            "prompt_count": str(prompt_count),
+            "arc_count": str(arc_count),
+        },
+        warnings=bank.warnings + [str(item["message"]) for item in qa_report if item.get("level") == "warning"],
+        created_at=datetime.now(timezone.utc),
+    )
+
+async def compose_episode_arc_chaptered_with_client(
+    client: ChatClient,
+    bank: SeriesEventBank,
+    *,
+    qa_max_revisions: int,
+) -> tuple[list[SeriesReviewBeat], SeriesReviewMeta]:
+    if bank.season_target_plan is None or not bank.season_target_plan.arcs:
+        raise ValueError("episode_arc_chaptered requires season_target_plan arcs")
+    arc_drafts: list[list[SeriesReviewBeat]] = []
+    prompt_count = 0
+    revision_count = 0
+    qa_report: list[dict[str, object]] = []
+    for arc_index, arc in enumerate(bank.season_target_plan.arcs):
+        prompt = build_arc_composer_prompt(bank=bank, arc=arc, arc_index=arc_index)
+        prompt_count += 1
+        response = await client.ask(prompt)
+        arc_drafts.append(parse_composer_response(extract_json(response), bank, require_hook=arc_index == 0))
+
+    beats = combine_arc_drafts(arc_drafts)
+    prompt_count += 1
+    stitch_response = await client.ask(build_final_stitch_prompt(bank=bank, beats=beats))
+    try:
+        allowed_event_ids = {ref.event_id for beat in beats for ref in beat.source_refs}
+        stitched_beats = parse_composer_response(extract_json(stitch_response), bank)
+        validate_stitch_event_subset(stitched_beats, allowed_event_ids)
+        beats = stitched_beats
+    except (ValueError, json.JSONDecodeError) as exc:
+        qa_report.append(
+            {
+                "level": "warning",
+                "code": "invalid_final_stitch_json",
+                "message": "Final stitch returned invalid JSON; kept combined arc draft",
+                "error": str(exc),
+            }
+        )
+    qa_report = [*qa_report, *composer_qa_report(beats, bank)]
+
+    for _attempt in range(qa_max_revisions):
+        if not needs_revision(qa_report):
+            break
+        revision_count += 1
+        arc_indexes = arc_indexes_for_revision(qa_report, bank)
+        if arc_indexes:
+            for arc_index in sorted(arc_indexes):
+                arc = bank.season_target_plan.arcs[arc_index]
+                prompt = build_arc_composer_prompt(
+                    bank=bank,
+                    arc=arc,
+                    arc_index=arc_index,
+                    qa_report=qa_report,
+                    previous_arc_beats=arc_drafts[arc_index],
+                    revision_number=revision_count,
+                )
+                prompt_count += 1
+                response = await client.ask(prompt)
+                try:
+                    arc_drafts[arc_index] = parse_composer_response(
+                        extract_json(response),
+                        bank,
+                        require_hook=arc_index == 0,
+                    )
+                except (ValueError, json.JSONDecodeError) as exc:
+                    qa_report = [
+                        *qa_report,
+                        {
+                            "level": "warning",
+                            "code": "invalid_revision_json",
+                            "message": "Composer revision returned invalid JSON; kept previous valid draft",
+                            "error": str(exc),
+                        },
+                    ]
+                    break
+            beats = combine_arc_drafts(arc_drafts)
+        prompt_count += 1
+        stitch_response = await client.ask(
+            build_final_stitch_prompt(
+                bank=bank,
+                beats=beats,
+                qa_report=qa_report,
+                revision_number=revision_count,
+            )
+        )
+        retained_warning = [
+            item for item in qa_report if item.get("code") in {"invalid_revision_json", "invalid_final_stitch_json"}
+        ]
+        try:
+            allowed_event_ids = {ref.event_id for beat in beats for ref in beat.source_refs}
+            stitched_beats = parse_composer_response(extract_json(stitch_response), bank)
+            validate_stitch_event_subset(stitched_beats, allowed_event_ids)
+            beats = stitched_beats
+            qa_report = retained_warning
+        except (ValueError, json.JSONDecodeError) as exc:
+            qa_report = [
+                *retained_warning,
+                {
+                    "level": "warning",
+                    "code": "invalid_revision_json",
+                    "message": "Composer revision returned invalid JSON; kept previous valid draft",
+                    "error": str(exc),
+                },
+            ]
+            break
+        qa_report = [*qa_report, *composer_qa_report(beats, bank)]
+
+    meta = build_review_meta(
+        bank=bank,
+        beats=beats,
+        qa_report=qa_report,
+        revision_count=revision_count,
+        prompt_count=prompt_count,
+    )
+    return beats, meta
+
 async def compose_with_client(
     client: ChatClient,
     bank: SeriesEventBank,
@@ -617,11 +1380,15 @@ async def compose_with_client(
 ) -> tuple[list[SeriesReviewBeat], SeriesReviewMeta]:
     if qa_max_revisions < 0:
         raise ValueError("qa_max_revisions must be >= 0")
+    if bank.recap_format == "episode_arc_chaptered":
+        return await compose_episode_arc_chaptered_with_client(client, bank, qa_max_revisions=qa_max_revisions)
     prompt = build_composer_prompt(bank)
     revision_count = 0
+    prompt_count = 0
     beats: list[SeriesReviewBeat] = []
     qa_report: list[dict[str, object]] = []
     for attempt in range(qa_max_revisions + 1):
+        prompt_count += 1
         response = await client.ask(prompt)
         try:
             beats = parse_composer_response(extract_json(response), bank)
@@ -648,24 +1415,66 @@ async def compose_with_client(
             qa_report=qa_report,
             revision_number=revision_count,
         )
-    selected_event_ids = list(dict.fromkeys(ref.event_id for beat in beats for ref in beat.source_refs))
-    meta = SeriesReviewMeta(
-        series_id=bank.series_id,
-        target_video_s=bank.target_video_s,
-        char_budget=bank.char_budget,
-        est_total_chars=sum(len(beat.narration) for beat in beats),
-        n_events=len(bank.events),
-        selected_event_ids=selected_event_ids,
+    meta = build_review_meta(
+        bank=bank,
+        beats=beats,
         qa_report=qa_report,
-        model_versions={
-            "llm": "chatgpt_playwright",
-            "qa_revisions": str(revision_count),
-            "format": bank.recap_format,
-        },
-        warnings=bank.warnings + [str(item["message"]) for item in qa_report if item.get("level") == "warning"],
-        created_at=datetime.now(timezone.utc),
+        revision_count=revision_count,
+        prompt_count=prompt_count,
     )
     return beats, meta
+
+def build_series_arc_plan(bank: SeriesEventBank) -> SeasonTargetPlan:
+    if bank.season_target_plan is not None:
+        return bank.season_target_plan
+    arcs = build_arc_plans(bank.episode_targets, SeasonTargetSettings(arc_size=max(1, len(bank.episode_targets) or 1)))
+    return SeasonTargetPlan(
+        recap_format=bank.recap_format,
+        detail_level="standard",
+        target_total_min_s=0.0,
+        target_total_max_s=0.0,
+        target_total_hard_cap_s=0.0,
+        episode_min_s=0.0,
+        episode_normal_s=0.0,
+        episode_high_s=0.0,
+        arc_size=max(1, len(bank.episode_targets) or 1),
+        total_target_video_s=bank.target_video_s,
+        total_char_budget=bank.char_budget,
+        min_total_chars=max(0, int(round(bank.char_budget * 0.85))),
+        max_total_chars=max(0, int(round(bank.char_budget * 1.15))),
+        episode_count=len(bank.episode_targets),
+        arc_count=len(arcs),
+        arcs=arcs,
+        warnings=[],
+    )
+
+def build_series_composer_qa(
+    *,
+    bank: SeriesEventBank,
+    meta: SeriesReviewMeta,
+    tts_cps: float,
+) -> SeriesComposerQa:
+    plan = build_series_arc_plan(bank)
+    revision_count = int(meta.model_versions.get("qa_revisions", "0"))
+    prompt_count = int(meta.model_versions.get("prompt_count", "0"))
+    return SeriesComposerQa(
+        series_id=bank.series_id,
+        recap_format=bank.recap_format,
+        detail_level=plan.detail_level,
+        target_video_s=bank.target_video_s,
+        target_total_hard_cap_s=plan.target_total_hard_cap_s or None,
+        char_budget=bank.char_budget,
+        est_total_chars=meta.est_total_chars,
+        estimated_duration_s=round(meta.est_total_chars / tts_cps, 3) if tts_cps > 0 else 0.0,
+        n_events=len(bank.events),
+        selected_event_ids=meta.selected_event_ids,
+        qa_report=meta.qa_report,
+        revision_count=revision_count,
+        prompt_count=prompt_count,
+        arc_count=plan.arc_count,
+        warnings=meta.warnings,
+        created_at=datetime.now(timezone.utc),
+    )
 
 
 def chapter_title(target: EpisodeTargetPlan) -> str:
