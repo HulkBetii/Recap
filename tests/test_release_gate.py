@@ -72,6 +72,7 @@ def test_wheel_inspector_requires_runtime_roots_and_excludes_artifacts(tmp_path:
         archive.writestr("run.py", "")
         for root in RUNTIME_ROOTS:
             archive.writestr(f"{root}/__init__.py", "")
+        archive.writestr("recap_ui/static/index.html", "<!doctype html>")
         archive.writestr("recap-0.1.0.dist-info/METADATA", "")
 
     report = inspect_wheel(wheel)

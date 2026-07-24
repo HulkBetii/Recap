@@ -13,6 +13,7 @@ RUNTIME_ROOTS = {
     "match",
     "orchestrator",
     "preflight",
+    "recap_ui",
     "render",
     "review",
     "series_composer",
@@ -23,7 +24,7 @@ RUNTIME_ROOTS = {
     "tts",
     "visual_index",
 }
-EXCLUDED_WHEEL_ROOTS = {"tests", "runs", "work", "data", "broll", "tts_align", "scripts"}
+EXCLUDED_WHEEL_ROOTS = {"tests", "runs", "work", "data", "broll", "tts_align", "scripts", "web"}
 INGEST_ARTIFACTS = (
     "audio.wav",
     "transcript_aligned.json",
@@ -90,14 +91,17 @@ def inspect_wheel(path: Path) -> dict:
     missing = sorted(root for root in RUNTIME_ROOTS if not any(name.startswith(f"{root}/") for name in names))
     excluded = sorted(EXCLUDED_WHEEL_ROOTS & roots)
     has_run = "run.py" in names
-    if missing or excluded or not has_run:
+    has_ui_static = "recap_ui/static/index.html" in names
+    if missing or excluded or not has_run or not has_ui_static:
         raise ValueError(
-            f"wheel content invalid: missing={missing}, excluded={excluded}, run.py={has_run}"
+            "wheel content invalid: "
+            f"missing={missing}, excluded={excluded}, run.py={has_run}, ui_static={has_ui_static}"
         )
     return {
         "wheel": path.name,
         "runtime_roots": sorted(RUNTIME_ROOTS),
         "entry_module": "run.py",
+        "ui_static": has_ui_static,
         "file_count": len(names),
         "excluded_roots_found": excluded,
     }

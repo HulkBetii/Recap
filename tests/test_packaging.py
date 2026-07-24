@@ -12,6 +12,7 @@ RUNTIME_PACKAGES = {
     "match*",
     "orchestrator*",
     "preflight*",
+    "recap_ui*",
     "render*",
     "review*",
     "series_composer*",
@@ -37,6 +38,11 @@ EXCLUDED_TOP_LEVEL = {
 QUALITY_DEV_TOOLS = {
     "ruff",
     "tach",
+}
+UI_RUNTIME_TOOLS = {
+    "fastapi",
+    "uvicorn",
+    "psutil",
 }
 
 
@@ -68,6 +74,12 @@ def test_dev_extra_includes_quality_gate_tools() -> None:
 
     assert QUALITY_DEV_TOOLS <= dev_dependencies
 
+def test_ui_extra_includes_local_web_runtime() -> None:
+    extras = load_pyproject()["project"]["optional-dependencies"]
+    ui_dependencies = {dependency.split(">=", 1)[0].split("==", 1)[0] for dependency in extras["ui"]}
+
+    assert UI_RUNTIME_TOOLS <= ui_dependencies
+
 def test_ruff_starts_with_check_only_critical_rules() -> None:
     config = load_pyproject()["tool"]["ruff"]
 
@@ -88,6 +100,7 @@ def test_tach_tracks_runtime_boundaries() -> None:
 
     assert set(modules) == {item.removesuffix("*") for item in RUNTIME_PACKAGES}
     assert modules["common"] == set()
+    assert modules["recap_ui"] == {"common", "orchestrator", "series_recap"}
     assert modules["match"] == {"common", "visual_index"}
     assert modules["series_composer"] == {"common", "review"}
     assert modules["series_match"] == {"common"}

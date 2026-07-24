@@ -95,6 +95,24 @@ try {
     Invoke-GateStep "git_diff_check" {
         Invoke-NativeCommand "git" @("diff", "--check", "HEAD", "--")
     }
+    Invoke-GateStep "frontend_install" {
+        Invoke-NativeCommand "npm" @("--prefix", "web", "ci")
+    }
+    Invoke-GateStep "frontend_typecheck" {
+        Invoke-NativeCommand "npm" @("--prefix", "web", "run", "typecheck")
+    }
+    Invoke-GateStep "frontend_lint" {
+        Invoke-NativeCommand "npm" @("--prefix", "web", "run", "lint")
+    }
+    Invoke-GateStep "frontend_test" {
+        Invoke-NativeCommand "npm" @("--prefix", "web", "run", "test")
+    }
+    Invoke-GateStep "frontend_build" {
+        Invoke-NativeCommand "npm" @("--prefix", "web", "run", "build")
+    }
+    Invoke-GateStep "pytest" {
+        Invoke-NativeCommand "python" @("-m", "pytest", "-q")
+    }
     Invoke-GateStep "ruff_check" {
         Invoke-NativeCommand "python" @("-m", "ruff", "check", ".")
     }
@@ -121,11 +139,8 @@ try {
             throw "Tach boundary issues found. See $tachReportPath."
         }
     }
-    Invoke-GateStep "pytest" {
-        Invoke-NativeCommand "python" @("-m", "pytest", "-q")
-    }
     Invoke-GateStep "compileall" {
-        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "episode_planner", "ingest", "match", "orchestrator", "preflight", "render", "review", "series_composer", "series_match", "series_recap", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py")
+        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "episode_planner", "ingest", "match", "orchestrator", "preflight", "recap_ui", "render", "review", "series_composer", "series_match", "series_recap", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py")
     }
     Invoke-GateStep "editable_install_dry_run" {
         Invoke-NativeCommand "python" @("-m", "pip", "install", "--dry-run", "--no-deps", "-e", ".")
@@ -153,7 +168,7 @@ try {
         New-Item -ItemType Directory -Path $smokeDir | Out-Null
         Push-Location $smokeDir
         try {
-            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, common, episode_planner, ingest, match, orchestrator, preflight, render, review, series_composer, series_match, series_recap, shots, storymap, tts, visual_index; modules=(run,common,episode_planner,ingest,match,orchestrator,preflight,render,review,series_composer,series_match,series_recap,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
+            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, common, episode_planner, ingest, match, orchestrator, preflight, recap_ui, render, review, series_composer, series_match, series_recap, shots, storymap, tts, visual_index; modules=(run,common,episode_planner,ingest,match,orchestrator,preflight,recap_ui,render,review,series_composer,series_match,series_recap,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
         } finally {
             Pop-Location
         }
@@ -162,7 +177,7 @@ try {
         $smokeDir = Join-Path $resolvedWorkDir "outside-repo"
         Push-Location $smokeDir
         try {
-            foreach ($module in @("episode_planner", "ingest", "match", "series_composer", "series_match", "series_recap", "visual_index")) {
+            foreach ($module in @("episode_planner", "ingest", "match", "recap_ui", "series_composer", "series_match", "series_recap", "visual_index")) {
                 Invoke-NativeCommand $venvPython @("-m", $module, "--help")
             }
         } finally {

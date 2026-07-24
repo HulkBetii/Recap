@@ -582,3 +582,15 @@ repo/
 - `config.anime.series.localvision.yaml` is opt-in for local Qwen frame descriptions: `vision_provider=local_qwen2_5_vl`, `vision_model=Qwen/Qwen2.5-VL-7B-Instruct`, `max_vision_frames=30`, resize long edge 768, batch size 1. Install optional deps with `python -m pip install -e ".[anime-vision]"`.
 - Local vision is best-effort. If the local model/deps/runtime are unavailable, ingest logs a warning, writes an empty `vision.json`, and continues without visual gap descriptions; it must not fallback to OpenAI vision silently.
 - Do not automate batch vision through Playwright. Playwright remains the primary backend only for text/review/composer/QA tasks where browser contracts are stable.
+
+## 44. LOCAL WEB UI V1
+
+- The local UI runs with `python -m recap_ui` or `scripts/start_recap_ui.ps1` and binds to `127.0.0.1` only. React/Vite production assets are served by the same FastAPI origin.
+- The UI is a supervisor over the existing public CLIs. It must execute `run.py` or `python -m series_recap` through `subprocess.Popen`; it must not call pipeline stage functions in the FastAPI process or change the stage JSON contracts.
+- Operational state lives in `data/recap_ui/recap_ui.db` using SQLite WAL. Pipeline artifacts under `runs/` remain the source of truth for validation, cache and delivery QA.
+- V1 uses one active pipeline job with a FIFO queue. Run-dir, pipeline and `PROFILE_GPT_1` locks prevent duplicate work; resume always reuses the same run-dir without force.
+- Browser clients receive opaque path/artifact tokens. Filesystem and media routes canonicalize paths against configured roots, and mutation routes require the per-process startup token.
+- The browser never receives secret values or raw ChatGPT prompts. Provider health reports only configured/available booleans, and worker logs redact key-like values.
+- Delivery QA is additive and UI-only: it distinguishes process success from final delivery pass/warn/block, probes rendered media, compares estimated versus actual duration, validates chapters/source coverage, and cross-checks EDL placements against story-safe shots.
+- Season delivery duration is minimum-only: the actual rendered duration blocks delivery when it is below `target_total_min_s`; exceeding `target_total_max_s` or `target_total_hard_cap_s` remains acceptable. Maximum and hard-cap values stay as Composer planning references, not final-delivery blockers.
+- Frontend source lives in `web/`; generated production assets live in `recap_ui/static/` and are built before wheel packaging. Node is a development/release dependency, not a daily runtime dependency after assets are built.

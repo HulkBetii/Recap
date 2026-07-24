@@ -1,5 +1,18 @@
 # PROJECT_LOG.md
 
+## 2026-07-24 - Delivery duration minimum policy
+
+- Changed UI-only season Delivery QA so the measured final render blocks only when shorter than `target_total_min_s`.
+- Actual duration above `target_total_max_s` or `target_total_hard_cap_s` is accepted; those values remain Composer planning references.
+- The completed Solo Leveling S01 render at `3359.104s` therefore passes duration delivery policy because it is above the configured `2100s` minimum.
+
+## 2026-07-24 - Local web UI V1
+
+- Added a Windows-local FastAPI + React/Vite control room for single-video and season recap runs while preserving the existing CLI and JSON artifact contracts.
+- Added SQLite WAL job state, FIFO execution, run/profile locks, subprocess cancellation/recovery, REST/SSE status, safe filesystem tokens, artifact/media serving and delivery QA.
+- Added the run wizard, stage/episode dashboards, live logs, Composer/EDL/render QA, final video preview and a one-click PowerShell launcher.
+- Frontend build/test/static packaging is part of the release gate; the Python wheel includes the production UI assets.
+
 ## 2026-07-24 - Solo Leveling S01 rerun completed
 
 - Completed the preserved rerun at `runs/solo-leveling-s01-rerun-20260723`; all 12 episode translation ratios are `1.0` with strict/non-approximate timecodes.

@@ -26,6 +26,41 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
+## Local Web UI
+
+UI local chạy FastAPI + React/Vite trên `127.0.0.1`, điều khiển nguyên các CLI hiện có và không upload video qua browser.
+
+Thiết lập lần đầu:
+
+```powershell
+python -m pip install -e ".[dev,ui]"
+npm --prefix web ci
+npm --prefix web run build
+```
+
+Mở UI production bằng launcher một lần bấm:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_recap_ui.ps1
+```
+
+Hoặc chạy trực tiếp:
+
+```powershell
+python -m recap_ui --host 127.0.0.1 --port 8765 --open
+```
+
+Development mode chạy FastAPI ở cổng `8765`, Vite ở `5173` và proxy `/api`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_recap_ui.ps1 -Dev
+```
+
+- Job state nằm trong `data/recap_ui/recap_ui.db`; artifact pipeline vẫn nằm trong `runs/` và giữ nguyên contract/cache cũ.
+- V1 chạy một pipeline job tại một thời điểm, các job còn lại xếp FIFO. Resume không truyền `--force`.
+- UI chỉ nhận path/artifact token dưới các filesystem root đã cấu hình; API key chỉ hiển thị trạng thái configured/available, không trả giá trị secret.
+- Final delivery QA tách riêng process success với pass/warn/block của translation, timecode, Composer, EDL, source coverage và render media. Với season recap, duration chỉ block khi render thực tế thấp hơn `target_total_min_s`; vượt target max/hard cap vẫn được giao.
+
 
 ## Chạy toàn pipeline bằng `run.py`
 

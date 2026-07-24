@@ -24,9 +24,16 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
       - name: Install development runtime
         shell: pwsh
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,ui]"
 
       - name: Run offline release gate
         shell: pwsh

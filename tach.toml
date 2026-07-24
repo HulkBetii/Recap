@@ -25,6 +25,10 @@ path = "preflight"
 depends_on = ["common"]
 
 [[modules]]
+path = "recap_ui"
+depends_on = ["common", "orchestrator", "series_recap"]
+
+[[modules]]
 path = "ingest"
 depends_on = ["common"]
 
