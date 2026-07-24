@@ -32,13 +32,15 @@ def test_split_long_scenes_keeps_parts_under_limit() -> None:
 
 def test_run_ffmpeg_scene_parses_showinfo(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs.get("text") is not True
         return subprocess.CompletedProcess(
             args=args[0],
             returncode=0,
-            stdout="",
+            stdout=b"",
             stderr=(
-                "[Parsed_showinfo_2] n:   0 pts:    885 pts_time:29.5 duration_time:0.0333333\n"
-                "[Parsed_showinfo_2] n:   1 pts:   1322 pts_time:44.066667 duration_time:0.0333333\n"
+                b"\x8d"
+                b"[Parsed_showinfo_2] n:   0 pts:    885 pts_time:29.5 duration_time:0.0333333\n"
+                b"[Parsed_showinfo_2] n:   1 pts:   1322 pts_time:44.066667 duration_time:0.0333333\n"
             ),
         )
 

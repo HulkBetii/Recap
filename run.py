@@ -79,6 +79,8 @@ def build_fallback_config(config: dict) -> dict:
     ingest["asr_policy"] = "openai_hybrid"
     ingest["asr_provider"] = orchestrator.get("fallback_ingest_asr_provider", "openai-gpt4o-hybrid")
     ingest["max_vision_frames"] = orchestrator.get("fallback_max_vision_frames", 0)
+    if int(ingest.get("max_vision_frames") or 0) <= 0:
+        ingest["vision_provider"] = "off"
     return fallback
 
 def write_fallback_artifacts(paths, plan: dict, summary: dict | None = None) -> None:  # type: ignore[no-untyped-def]

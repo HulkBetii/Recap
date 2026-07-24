@@ -8,11 +8,19 @@ import pytest
 
 from common.schema import SeriesReviewBeat
 from series_composer.builder import (
+    SeasonTargetSettings,
+    arc_indexes_for_revision,
+    build_arc_composer_prompt,
     build_event_bank,
+    build_season_target_plan,
     build_series_arc_plan,
     build_series_chapters,
+    combine_arc_drafts,
     composer_qa_report,
+    compose_deterministic_fallback,
     compose_with_client,
+    fallback_arc_draft,
+    parse_composer_response,
     source_ref_from_event,
     to_tts_review_script,
 )
@@ -343,6 +351,89 @@ def test_composer_derives_source_refs_and_tts_script(tmp_path: Path) -> None:
     assert [beat.beat_id for beat in tts_script] == [0, 1]
     assert tts_script[0].src_tc_end == 10.0
 
+def test_parse_composer_response_ignores_placeholder_event_ids(tmp_path: Path) -> None:
+    source_one = tmp_path / "Grand_Blue.S03E01.mp4"
+    source_two = tmp_path / "Grand_Blue.S03E02.mp4"
+    manifest = tmp_path / "series_manifest.json"
+    write_manifest(manifest, source_one, source_two)
+    write_episode_artifacts(
+        tmp_path / "s03e01",
+        episode_key="s03e01",
+        source_path=source_one,
+        recap_mode="full",
+        importance_score=0.75,
+        section_type="reveal",
+        section_summary="Iori finds the key joke.",
+    )
+    write_episode_artifacts(
+        tmp_path / "s03e02",
+        episode_key="s03e02",
+        source_path=source_two,
+        recap_mode="quick",
+        importance_score=0.5,
+        section_type="setup",
+        section_summary="The club resets the stakes.",
+    )
+    bank = build_event_bank(
+        manifest_path=manifest,
+        episode_run_dirs={"s03e01": tmp_path / "s03e01", "s03e02": tmp_path / "s03e02"},
+    )
+
+    beats = parse_composer_response(
+        {
+            "beats": [
+                {
+                    "event_ids": ["...", "s03e01:section:0"],
+                    "narration": "Hook",
+                    "is_hook": True,
+                }
+            ]
+        },
+        bank,
+    )
+
+    assert [ref.event_id for ref in beats[0].source_refs] == ["s03e01:section:0"]
+
+def test_combine_arc_drafts_promotes_first_available_beat_to_hook(tmp_path: Path) -> None:
+    source_one = tmp_path / "Grand_Blue.S03E01.mp4"
+    source_two = tmp_path / "Grand_Blue.S03E02.mp4"
+    manifest = tmp_path / "series_manifest.json"
+    write_manifest(manifest, source_one, source_two)
+    write_episode_artifacts(
+        tmp_path / "s03e01",
+        episode_key="s03e01",
+        source_path=source_one,
+        recap_mode="quick",
+        importance_score=0.5,
+        section_type="setup",
+        section_summary="Episode one setup matters.",
+    )
+    write_episode_artifacts(
+        tmp_path / "s03e02",
+        episode_key="s03e02",
+        source_path=source_two,
+        recap_mode="quick",
+        importance_score=0.5,
+        section_type="reveal",
+        section_summary="Episode two reveal matters.",
+    )
+    bank = build_event_bank(
+        manifest_path=manifest,
+        episode_run_dirs={"s03e01": tmp_path / "s03e01", "s03e02": tmp_path / "s03e02"},
+    )
+    late_beat = SeriesReviewBeat(
+        beat_id=12,
+        narration="Tập hai mở tiếp mạch truyện sau khi arc đầu không trả về hook hợp lệ.",
+        source_refs=[source_ref_from_event(bank.events[1])],
+        is_hook=False,
+    )
+
+    combined = combine_arc_drafts([[], [late_beat]])
+
+    assert [beat.beat_id for beat in combined] == [0]
+    assert combined[0].is_hook
+    assert combined[0].source_refs[0].event_id == "s03e02:section:0"
+
 def test_composer_revises_under_target_script(tmp_path: Path) -> None:
     source_one = tmp_path / "Grand_Blue.S03E01.mp4"
     source_two = tmp_path / "Grand_Blue.S03E02.mp4"
@@ -371,8 +462,14 @@ def test_composer_revises_under_target_script(tmp_path: Path) -> None:
         episode_run_dirs={"s03e01": tmp_path / "s03e01", "s03e02": tmp_path / "s03e02"},
         tts_cps=200.0,
     )
-    long_hook = "Mở đầu bằng cú rơi nhịp của Iori khi kế hoạch tưởng đã ổn bỗng lộ ra một lỗ hổng lớn. " * 2
-    long_follow = "Từ đó cả nhóm phải vừa che giấu vừa ứng biến, khiến trò đùa nhỏ biến thành chuỗi hiểu lầm nối thẳng sang tập sau. " * 2
+    long_hook = (
+        "Mở đầu bằng cú rơi nhịp của Iori khi kế hoạch tưởng đã ổn bỗng lộ ra một lỗ hổng lớn. "
+        "Cú đảo này làm cả nhóm mất thế chủ động và buộc câu chuyện chuyển sang một hướng khó lường hơn. "
+    )
+    long_follow = (
+        "Từ đó cả nhóm phải vừa che giấu vừa ứng biến, khiến trò đùa nhỏ biến thành chuỗi hiểu lầm nối thẳng sang tập sau. "
+        "Hệ quả mới kéo các nhân vật vào một vòng rối khác, nên đoạn này cần được giữ để mạch recap không hụt nguyên nhân. "
+    )
     client = SequenceChatClient(
         [
             {
@@ -429,7 +526,7 @@ def test_composer_qa_allows_cold_open_before_chronological_story(tmp_path: Path)
     beats = [
         SeriesReviewBeat(
             beat_id=0,
-            narration="Hook đủ dài để không bị under target.",
+            narration="Hook đủ dài để không bị quá ngắn.",
             source_refs=[source_ref_from_event(bank.events[1])],
             is_hook=True,
         ),
@@ -512,17 +609,17 @@ def test_episode_chaptered_composer_revises_missing_episode_chapter(tmp_path: Pa
                 "beats": [
                     {
                         "event_ids": ["s03e03:section:1"],
-                        "narration": "Hook chung dat van de lon cho ca cum tap.",
+                        "narration": "Hook chung đặt vấn đề lớn cho cả cụm tập.",
                         "is_hook": True,
                     },
                     {
                         "event_ids": ["s03e01:section:0"],
-                        "narration": "Tap mot thiet lap tinh huong va de lai chi tiet can nho.",
+                        "narration": "Tập một thiết lập tình huống và để lại chi tiết cần nhớ.",
                         "is_hook": False,
                     },
                     {
                         "event_ids": ["s03e03:section:0"],
-                        "narration": "Tap ba tiep tuc bang he qua lon hon.",
+                        "narration": "Tập ba tiếp tục bằng hệ quả lớn hơn.",
                         "is_hook": False,
                     },
                 ]
@@ -531,22 +628,22 @@ def test_episode_chaptered_composer_revises_missing_episode_chapter(tmp_path: Pa
                 "beats": [
                     {
                         "event_ids": ["s03e03:section:1"],
-                        "narration": "Hook chung dat van de lon cho ca cum tap.",
+                        "narration": "Hook chung đặt vấn đề lớn cho cả cụm tập.",
                         "is_hook": True,
                     },
                     {
                         "event_ids": ["s03e01:section:0"],
-                        "narration": "Tap mot thiet lap tinh huong va de lai chi tiet can nho.",
+                        "narration": "Tập một thiết lập tình huống và để lại chi tiết cần nhớ.",
                         "is_hook": False,
                     },
                     {
                         "event_ids": ["s03e02:section:0"],
-                        "narration": "Tap hai noi tiep nguyen nhan, bien chuyen do thanh mot loi hua moi.",
+                        "narration": "Tập hai nối tiếp nguyên nhân, biến chuyển đó thành một lời hứa mới.",
                         "is_hook": False,
                     },
                     {
                         "event_ids": ["s03e03:section:0"],
-                        "narration": "Tap ba dua tat ca he qua ve cung mot diem chot cho phan sau.",
+                        "narration": "Tập ba đưa tất cả hệ quả về cùng một điểm chốt cho phần sau.",
                         "is_hook": False,
                     },
                 ]
@@ -570,6 +667,7 @@ def write_detailed_episode_set(
     count: int,
     arcs: list[str | None] | None = None,
     tts_cps: float = 24.0,
+    recap_mode: str = "quick",
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
     sources = [tmp_path / f"Grand_Blue.S03E{index:02d}.mp4" for index in range(1, count + 1)]
@@ -587,7 +685,7 @@ def write_detailed_episode_set(
             tmp_path / f"s03e{index:02d}",
             episode_key=f"s03e{index:02d}",
             source_path=source,
-            recap_mode="quick",
+            recap_mode=recap_mode,
             importance_score=0.5,
             section_type="inciting_incident",
             section_summary=f"Episode {index} starts a comic problem.",
@@ -624,6 +722,39 @@ def test_episode_arc_chaptered_event_bank_builds_detailed_12_episode_plan(tmp_pa
     assert all(target.target_video_s >= 90 for target in bank.episode_targets)
     assert all(target.target_beats > 0 for target in bank.episode_targets)
 
+def test_detailed_full_season_scales_to_configured_maximum(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=12, recap_mode="full")
+
+    assert bank.target_video_s == 2700.0
+    assert bank.char_budget == 64_800
+    assert sum(target.target_video_s for target in bank.episode_targets) == 2700.0
+    assert "season target lowered to target_total_max_s" in bank.warnings
+
+def test_season_scaling_fails_when_episode_minimums_exceed_cap(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=12)
+
+    with pytest.raises(ValueError, match="episode minimum floor"):
+        build_season_target_plan(
+            recap_format="episode_arc_chaptered",
+            episode_targets=bank.episode_targets,
+            tts_cps=24.0,
+            settings=SeasonTargetSettings(
+                target_total_min_s=0.0,
+                target_total_max_s=1000.0,
+                target_total_hard_cap_s=1000.0,
+                episode_min_s=90.0,
+            ),
+        )
+
+def test_arc_prompt_includes_proportional_hard_character_limit(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=12, recap_mode="full")
+    arc = bank.season_target_plan.arcs[0]
+
+    prompt = build_arc_composer_prompt(bank=bank, arc=arc, arc_index=0)
+
+    assert "HARD MAXIMUM" in prompt
+    assert "18000 characters" in prompt
+
 def test_episode_arc_chaptered_groups_manual_arcs_and_non_multiple_counts(tmp_path: Path) -> None:
     _manifest, manual_bank = write_detailed_episode_set(
         tmp_path / "manual",
@@ -643,10 +774,95 @@ def test_episode_arc_chaptered_groups_manual_arcs_and_non_multiple_counts(tmp_pa
 
     assert [len(arc.episode_keys) for arc in chunked_plan.arcs] == [3, 3, 3, 1]
 
+def test_later_arc_fallback_draft_does_not_require_hook(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=6, tts_cps=1.0)
+    plan = build_series_arc_plan(bank)
+
+    beats = fallback_arc_draft(bank, plan.arcs[1], arc_index=1)
+
+    assert beats
+    assert all(not beat.is_hook for beat in beats)
+    assert [beat.beat_id for beat in beats] == list(range(len(beats)))
+
+def test_deterministic_fallback_is_hooked_and_long_enough(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=12, tts_cps=1.0)
+
+    beats, meta = compose_deterministic_fallback(bank, reason="test")
+
+    assert beats[0].is_hook
+    assert len(beats) >= 12
+    assert sum(len(beat.narration) for beat in beats) >= bank.char_budget * 0.75
+    assert meta.qa_report[0]["code"] == "deterministic_composer_fallback"
+
+def test_composer_qa_rejects_repeated_template_and_sentences(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=4, tts_cps=1.0)
+    repeated = (
+        "Ở tập 8, chuyện cần giữ lại là: đây là một bước ngoặt của mạch truyện. "
+        "Mốc này quan trọng vì nó làm thay đổi trạng thái câu chuyện. "
+        "Mốc này quan trọng vì nó làm thay đổi trạng thái câu chuyện."
+    )
+    beats = [
+        SeriesReviewBeat(
+            beat_id=index,
+            narration=repeated.replace("tập 8", f"tập {index + 1}"),
+            source_refs=[source_ref_from_event(event)],
+            is_hook=index == 0,
+        )
+        for index, event in enumerate(bank.events[:4])
+    ]
+
+    codes = {item["code"] for item in composer_qa_report(beats, bank)}
+
+    assert "intra_beat_sentence_repetition" in codes
+    assert "repeated_narration_template" in codes
+    assert "generic_fallback_narration" in codes
+
+def test_composer_qa_rejects_foreign_or_unaccented_narration(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=2, tts_cps=1.0)
+    beats = [
+        SeriesReviewBeat(
+            beat_id=0,
+            narration="Hook mở đầu since there seems to be a limit. 起きろ.",
+            source_refs=[source_ref_from_event(bank.events[0])],
+            is_hook=True,
+        ),
+        SeriesReviewBeat(
+            beat_id=1,
+            narration="Tap hai tiep tuc bang he qua moi",
+            source_refs=[source_ref_from_event(bank.events[1])],
+            is_hook=False,
+        ),
+    ]
+
+    codes = {item["code"] for item in composer_qa_report(beats, bank)}
+
+    assert "foreign_language_in_narration" in codes
+    assert "unaccented_vietnamese_narration" in codes
+
+def test_revision_maps_beat_level_qa_to_owning_arc(tmp_path: Path) -> None:
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=12)
+    event = next(event for event in bank.events if event.episode_key == "s03e08")
+    beats = [
+        SeriesReviewBeat(
+            beat_id=45,
+            narration="Đây là một beat cần sửa vì còn cụm từ tiếng nước ngoài.",
+            source_refs=[source_ref_from_event(event)],
+            is_hook=False,
+        )
+    ]
+
+    indexes = arc_indexes_for_revision(
+        [{"level": "error", "code": "foreign_language_in_narration", "beat_ids": [45]}],
+        bank,
+        beats,
+    )
+
+    assert indexes == {2}
+
 def long_narration(label: str) -> str:
     return (
-        f"{label} duoc ke lai bang nhan qua ro rang, giu ten nhan vat va trang thai cau chuyen on dinh. "
-        f"{label} tiep tuc them chi tiet de nguoi xem nho vi sao tap nay quan trong cho mach sau. "
+        f"{label} được kể lại bằng nhân quả rõ ràng, giữ tên nhân vật và trạng thái câu chuyện ổn định. "
+        f"{label} tiếp tục thêm chi tiết để người xem nhớ vì sao tập này quan trọng cho mạch sau. "
     )
 
 def arc_response(
@@ -662,7 +878,7 @@ def arc_response(
         beats.append(
             {
                 "event_ids": [f"s03e{hook_episode_number:02d}:section:1"],
-                "narration": long_narration("Hook mua phim"),
+                "narration": long_narration("Hook mùa phim"),
                 "is_hook": True,
             }
         )
@@ -672,7 +888,7 @@ def arc_response(
         beats.append(
             {
                 "event_ids": [f"s03e{episode_number:02d}:section:0"],
-                "narration": long_narration(f"Tap {episode_number}"),
+                "narration": long_narration(f"Tập {episode_number}"),
                 "is_hook": False,
             }
         )

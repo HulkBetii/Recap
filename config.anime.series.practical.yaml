@@ -7,17 +7,12 @@ orchestrator:
   fallback_ingest_asr_provider: openai-gpt4o-hybrid
   fallback_max_vision_frames: 0
   runtime_preflight: false
-  series_manifest: null
-  episode_key: null
-  episode_number: null
-  series_memory_dir: null
-  recap_mode: "off"
+  recap_mode: auto
   recap_full_threshold: 0.70
   recap_quick_threshold: 0.35
   recap_merge_threshold: 0.15
   quick_target_ratio: 0.12
   quick_min_coverage: 0.45
-  python: null
   log_level: INFO
 
 preflight:
@@ -34,22 +29,21 @@ preflight:
 ingest:
   whisper_model: large-v3
   gap_threshold: 4.0
-  max_vision_frames: 200
+  max_vision_frames: 0
   max_visual_gap_s: 20
   translate_model: gpt-4.1-mini
-  translation_required: false
-  translation_min_success_ratio: 0.0
-  source_language: ko
-  translate_mode: ko-en
-  vision_provider: openai
+  translation_required: true
+  translation_min_success_ratio: 0.95
+  source_language: ja
+  translate_mode: ja-en
+  vision_provider: "off"
   vision_model: gpt-4.1-mini
   vision_resize_long_edge: 768
   vision_batch_size: 1
-  device: cpu
+  device: cuda
   asr_policy: preset
   asr_provider: faster-whisper
-  aligner: none
-  transcript_input: null
+  aligner: whisperx
   timecode_quality: strict
   max_segment_s: 30
   merge_gap_s: 0
@@ -58,37 +52,33 @@ ingest:
   openai_chunk_s: 20
   alignment_device: cuda
   transcript_correction: "off"
-  glossary: null
   correction_model: gpt-4.1-mini
-  drop_non_korean_intro_s: 30
+  drop_non_korean_intro_s: 0
   drop_visual_before_s: 0
   log_level: INFO
 
 storymap:
   enabled: true
-  content_type: movie
-  target_story_sections: 7
+  content_type: anime_series
+  target_story_sections: 6
   log_level: INFO
 
 review:
-  content_type: movie
-  hook_mode: setup
+  content_type: anime_series
+  hook_mode: cold_open
   target_ratio: auto
   tts_cps: 15
   min_coverage: 0.85
   max_qa_iterations: 3
   max_qa_rewrites_per_iteration: 6
-  opening_coherence_qa: true
+  opening_coherence_qa: false
   micro_beats: false
   target_beat_audio_s: 12
   max_beat_audio_s: 18
   story_map: auto
   context_file: null
-  review_intent_output: null
   chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
   chat_session_policy: auto
-  chat_session_meta: null
-  chat_title: null
   reply_timeout_s: 600
   llm_backend: chatgpt_playwright
   playwright_max_attempts: 2
@@ -106,7 +96,7 @@ review:
   log_level: INFO
 
 tts:
-  voice_id: null
+  voice_id: vbee_hn_female_ngochuyen_full_24k-st
   provider_mode: auto
   genmax_voice_id: null
   model: eleven_multilingual_v2
@@ -116,44 +106,30 @@ tts:
   inter_beat_pause: 0.15
   concurrency: 3
   normalize: true
-  cost_per_1k_chars: 0.0
   text_normalization: vi
-  pronunciation_lexicon: null
-  normalized_script_output: null
-  normalization_report: null
   pronunciation_qa: true
-  pronunciation_qa_output: null
   pronunciation_suggest_backend: null
-  lexicon_candidates_output: null
   log_level: INFO
 
 shots:
-  detector: adaptive
+  detector: ffmpeg-scene
   min_shot_len: 0.4
   sample_frames: 5
-  frame_sampling: per-shot
-  face_detection: "on"
+  frame_sampling: batch
+  face_detection: "off"
   min_brightness: 0.06
-  end_credit_guard: false
+  end_credit_guard: true
   end_credit_tail_s: 600
   end_credit_threshold: 0.60
-  skip_intro: 0
-  skip_outro: 0
   downscale: auto
   scene_threshold: 0.3
   scene_scale_width: 640
   scene_min_gap: 0.3
-  max_shot_len: 0
+  max_shot_len: 8
   log_level: INFO
 
 visual_index:
   enabled: false
-  embedding_mode: siglip2
-  embedding_model: google/siglip2-base-patch16-384
-  device: auto
-  batch_size: 16
-  keyframes_per_shot: 2
-  frame_sampling: per-frame
   log_level: INFO
 
 match:
@@ -167,7 +143,7 @@ match:
   allow_repeat: true
   allow_speedfit: false
   exclude_non_story: true
-  exclude_end_credits: false
+  exclude_end_credits: true
   max_repeat_per_beat: 2
   max_repeat_ratio_per_beat: 0.35
   min_repeat_alternative_score_ratio: 0.75
@@ -179,38 +155,22 @@ match:
   opening_story_visual_start: true
   opening_allow_short_fill: true
   seed: 1234
-  w_motion: 0.60
-  w_face: 0.18
+  w_motion: 0.65
+  w_face: 0.0
   w_bright: 0.12
   w_reuse: 0.35
-  w_semantic: 0.15
-  w_visual: 0.15
+  w_semantic: 0.25
+  w_visual: 0.0
   min_semantic_score: 0.22
   match_strategy: chronological
-  chronology_weight: 0.70
+  chronology_weight: 0.75
   max_source_drift_s: 12
   semantic_mode: bge-m3
   semantic_model: BAAI/bge-m3
   semantic_device: auto
   semantic_batch_size: 16
-  semantic_cache_dir: null
   visual_mode: "off"
   visual_index: auto
-  visual_cache_dir: null
-  visual_device: null
-  visual_batch_size: null
-  output_visual_qa: null
-  film_map: auto
-  output_qa: null
-  output_review_html: null
-  review_asset_dir: null
-  review_thumbs_per_beat: 8
-  review_intent: auto
-  story_map: auto
-  opening_ordered_fill: true
-  opening_intra_beat_align: false
-  hook_min_brightness: 0.0
-  ordered_fill_by_audio_progress: true
   review_html: true
   log_level: INFO
 
@@ -225,3 +185,31 @@ render:
   audio_delay_s: 0.0
   log_level: INFO
 
+series_recap:
+  scope: end_to_end
+  format: episode_arc_chaptered
+  detail_level: detailed
+  llm_backend: chatgpt_playwright
+  tts_cps: 24.0
+  target_total_min_s: 2100
+  target_total_max_s: 2700
+  target_total_hard_cap_s: 3000
+  episode_min_s: 90
+  episode_normal_s: 180
+  episode_high_s: 300
+  arc_size: 3
+  mode_target_ratios:
+    full: 0.22
+    quick: 0.14
+    merge: 0.05
+    skip: 0.0
+  chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
+  reply_timeout_s: 600
+  playwright_max_attempts: 2
+  playwright_recovery_timeout_s: 60
+  qa_max_revisions: 1
+  headless: false
+  min_clip: 3.0
+  max_clip: 5.0
+  min_visual_clip: 0.6
+  log_level: INFO

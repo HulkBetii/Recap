@@ -72,9 +72,10 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
         if asr_policy == "local_first" and ingest.get("aligner") in {None, "none"}:
             ingest["aligner"] = "whisperx"
         ingest["max_vision_frames"] = 0
+        ingest["vision_provider"] = "off"
         if tts.get("pronunciation_suggest_backend") is None:
             tts["pronunciation_suggest_backend"] = "off"
-        warnings.append("low_cost disables OpenAI vision and uses local-first ASR; KO translation may still require API unless translate_mode=none")
+        warnings.append("low_cost disables vision and uses local-first ASR; translation may still require API unless translate_mode=none")
     elif quality_mode == "max_quality":
         if asr_policy in {"preset", "openai_hybrid"}:
             ingest["asr_policy"] = "openai_hybrid"
@@ -120,19 +121,22 @@ def describe_ingest(ingest: dict[str, Any]) -> dict[str, Any]:
     asr_provider = ingest.get("asr_provider", "faster-whisper")
     translate_mode = ingest.get("translate_mode", "ko-en")
     vision_frames = int(ingest.get("max_vision_frames", 0) or 0)
+    vision_provider = ingest.get("vision_provider", "openai")
     openai_uses: list[str] = []
     if str(asr_provider).startswith("openai"):
         openai_uses.append("asr")
     if translate_mode not in {"none", "off", None}:
         openai_uses.append("translation")
-    if vision_frames > 0:
+    if vision_frames > 0 and vision_provider == "openai":
         openai_uses.append("vision")
     return {
         "asr_policy": ingest.get("asr_policy", "preset"),
         "asr_provider": asr_provider,
         "aligner": ingest.get("aligner", "none"),
         "translate_mode": translate_mode,
+        "translation_required": bool(ingest.get("translation_required", False)),
         "max_vision_frames": vision_frames,
+        "vision_provider": vision_provider,
         "backend": "openai_api" if openai_uses else "local",
         "openai_uses": openai_uses,
         "cost": "paid_api" if openai_uses else "local",

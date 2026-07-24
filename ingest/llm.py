@@ -48,17 +48,45 @@ class OpenAIIngestClient:
         warnings_count = 0
         for offset in range(0, len(segments), batch_size):
             batch = segments[offset : offset + batch_size]
+            missing_ids = {str(item.id) for item in batch}
+            mapping: dict[str, str] = {}
             try:
                 mapping = retry_call(lambda: self._translate_batch(batch, source_language=source_language))
             except Exception as exc:  # noqa: BLE001
-                warnings_count += len(batch)
                 if logger:
                     logger.warning("translation batch failed: %s", exc)
-                mapping = {str(item.id): TRANSLATION_UNAVAILABLE for item in batch}
+                mapping = {}
+            else:
+                missing_ids = {
+                    str(item.id)
+                    for item in batch
+                    if not self._translated_text(mapping, item)
+                }
+                if missing_ids and logger:
+                    logger.info(
+                        "translation batch returned %d/%d ids; retrying missing segments individually",
+                        len(batch) - len(missing_ids),
+                        len(batch),
+                    )
+            if missing_ids:
+                for segment in batch:
+                    segment_id = str(segment.id)
+                    if segment_id not in missing_ids:
+                        continue
+                    try:
+                        single_mapping = retry_call(lambda s=segment: self._translate_batch([s], source_language=source_language))
+                        text = self._translated_text(single_mapping, segment)
+                        if text:
+                            mapping[segment_id] = text
+                            missing_ids.discard(segment_id)
+                            continue
+                    except Exception as exc:  # noqa: BLE001
+                        if logger:
+                            logger.warning("translation segment %s failed: %s", segment.id, exc)
+            warnings_count += len(missing_ids)
             for segment in batch:
-                text = str(mapping.get(str(segment.id)) or mapping.get(segment.id) or "").strip()
+                text = self._translated_text(mapping, segment)
                 if not text:
-                    warnings_count += 1
                     text = TRANSLATION_UNAVAILABLE
                 translated.append(
                     TranslatedSegment(
@@ -70,6 +98,10 @@ class OpenAIIngestClient:
                     )
                 )
         return translated, warnings_count
+
+    def _translated_text(self, mapping: dict[str, str], segment: TranscriptSegment) -> str:
+        text = str(mapping.get(str(segment.id)) or mapping.get(segment.id) or "").strip()
+        return text
 
     def describe_frame(self, frame_path: Path) -> str:
         return retry_call(lambda: self._describe_frame(frame_path))

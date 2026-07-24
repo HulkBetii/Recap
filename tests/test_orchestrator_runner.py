@@ -203,11 +203,12 @@ def write_stage_outputs(command: list[str]) -> None:
     elif stage == "tts":
         audio = flag(command, "--output-audio")
         timing = flag(command, "--output-timing")
+        review_script_hash = file_hash(flag(command, "--review-script"))
         audio.write_bytes(b"voice")
         timing.write_text(json.dumps([{"beat_id":0,"audio_path":"audio/0.mp3","tl_start":0,"tl_end":2,"duration":2}]), encoding="utf-8")
         timing.with_name("tts_script.json").write_text(json.dumps([{"beat_id":0,"original_text":"M? ??u","tts_text":"M? ??u","changed":False,"rules_applied":[],"warnings":[]}]), encoding="utf-8")
         timing.with_name("tts_normalization_report.json").write_text(json.dumps({"mode":"vi","pronunciation_lexicon_path":None,"n_items":1,"n_changed":0,"warnings":[]}), encoding="utf-8")
-        timing.with_name("tts_meta.json").write_text(json.dumps({"voice_id":"voice","provider_mode":"ai33","model":"eleven_multilingual_v2","speed":1,"inter_beat_pause_s":0.15,"total_duration_s":2,"film_duration_s":2,"real_ratio":1,"total_chars":6,"est_cost":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
+        timing.with_name("tts_meta.json").write_text(json.dumps({"voice_id":"voice","provider_mode":"ai33","model":"eleven_multilingual_v2","speed":1,"inter_beat_pause_s":0.15,"total_duration_s":2,"film_duration_s":2,"real_ratio":1,"total_chars":6,"est_cost":0,"created_at":NOW,"cache_hits":[],"warnings":[],"review_script_hash":review_script_hash}), encoding="utf-8")
     elif stage == "shots":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"src":"film.mp4","index":0,"tc_start":0,"tc_end":2,"duration":2,"thumb":"shots/film-000.jpg","motion_score":0.5,"face_count":0,"face_area":0,"brightness":0.5,"is_usable":True}]), encoding="utf-8")

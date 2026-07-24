@@ -10,7 +10,7 @@ from common.schema import EdlPlacement, RenderMeta
 from render.cache import RenderCache
 from render.compose import concat_list_text, concat_video, mux_voiceover, pad_video_by_tail, pad_video_to_duration, tail_pad_frame_count
 from render.cut import RenderParams, build_video_filter, clamp_source, temp_cache_key
-from render.quantize import quantize_placements
+from render.quantize import QuantizeError, quantize_placements
 
 
 def placement(tl_start: float, tl_end: float, src_in: float | None = None, src_out: float | None = None, speed: float = 1.0) -> EdlPlacement:
@@ -52,6 +52,17 @@ def test_quantize_global_timeline_is_continuous() -> None:
     assert frames[0].f_start == 0
     assert frames[0].f_end == frames[1].f_start
     assert frames[-1].f_end == round(2.0 * 30)
+
+
+def test_quantize_absorbs_small_timeline_gap_within_render_tolerance() -> None:
+    frames = quantize_placements([placement(0, 1.0), placement(1.05, 2.05, 1.05, 2.05)], fps=30)
+    assert frames[0].f_end == frames[1].f_start
+    assert frames[-1].f_end == round(2.05 * 30)
+
+
+def test_quantize_rejects_large_timeline_gap() -> None:
+    with pytest.raises(QuantizeError, match="timeline has frame gap or overlap"):
+        quantize_placements([placement(0, 1.0), placement(1.08, 2.08, 1.08, 2.08)], fps=30)
 
 
 def test_clamp_source_warns_and_never_negative() -> None:

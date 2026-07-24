@@ -55,9 +55,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_vision_frames": 200,
         "max_visual_gap_s": 20.0,
         "translate_model": "gpt-4.1-mini",
+        "translation_required": False,
+        "translation_min_success_ratio": 0.0,
         "source_language": "ko",
         "translate_mode": "ko-en",
+        "vision_provider": "openai",
         "vision_model": "gpt-4.1-mini",
+        "vision_resize_long_edge": 768,
+        "vision_batch_size": 1,
         "device": "cpu",
         "asr_provider": "faster-whisper",
         "aligner": "none",
@@ -257,6 +262,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "merge": 0.015,
             "skip": 0.0,
         },
+        "llm_backend": "chatgpt_playwright",
         "chatgpt_profile_dir": str(CHATGPT_PLAYWRIGHT_PROFILE_DIR),
         "reply_timeout_s": 600,
         "playwright_max_attempts": 2,
@@ -317,6 +323,7 @@ def load_config(path: Path | None) -> dict[str, Any]:
 def normalize_yaml_enum_literals(config: dict[str, Any]) -> None:
     normalize_bool_enum(config, "orchestrator", "recap_mode", false_value="off")
     normalize_bool_enum(config, "ingest", "transcript_correction", false_value="off")
+    normalize_bool_enum(config, "ingest", "vision_provider", false_value="off")
     normalize_bool_enum(config, "match", "visual_mode", false_value="off")
     normalize_bool_enum(config, "shots", "face_detection", false_value="off", true_value="on")
 

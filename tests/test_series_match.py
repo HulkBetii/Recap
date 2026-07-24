@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from series_match.__main__ import run_series_match
+from series_match.__main__ import choose_clip_duration, run_series_match
 
 CREATED_AT = "2026-07-21T00:00:00Z"
 
@@ -178,3 +178,11 @@ def test_series_match_avoids_sub_min_visual_tail_fragment(tmp_path: Path) -> Non
 
     assert [round(item["tl_end"] - item["tl_start"], 3) for item in edl] == [4.8, 0.6]
     assert edl[-1]["shot_index"] == 2
+
+def test_choose_clip_skips_candidate_that_leaves_unfillable_tail() -> None:
+    assert choose_clip_duration(
+        available=0.668,
+        remaining=0.974,
+        max_clip=5.0,
+        min_visual_clip=0.6,
+    ) == 0.0

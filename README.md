@@ -91,9 +91,13 @@ Anime recap V1 có hai preset local:
 ```powershell
 python run.py --input path\to\anime.mp4 --run-dir runs\anime-series01 --config config.anime.series.yaml
 python run.py --input path\to\anime-movie.mp4 --run-dir runs\anime-movie01 --config config.anime.movie.yaml
+python -m series_recap --manifest examples\anime\series_manifest.example.yaml --config config.anime.series.practical.yaml --episodes 1-12
 ```
 
 - `config.anime.series.yaml`: `content_type=anime_series`, `source_language=ja`, `translate_mode=ja-en`, `shots.face_detection=off`, `match.w_face=0.0`, `match.w_visual=0.0`, `exclude_non_story=true`, `orchestrator.recap_mode=auto`.
+- `config.anime.series.practical.yaml`: preset season 12 tap thuc dung. OpenAI API chi dung cho JA->EN transcript translation (`translation_required=true`, `translation_min_success_ratio=0.95`), `vision_provider="off"` va `max_vision_frames=0`; review/composer/QA dung ChatGPT Playwright, ASR/shots/match/render local, TTS dung provider configured.
+- `config.anime.series.localvision.yaml`: opt-in local Qwen vision (`vision_provider=local_qwen2_5_vl`, `Qwen/Qwen2.5-VL-7B-Instruct`, `max_vision_frames=30`, resize long edge 768). Cai optional deps bang `python -m pip install -e ".[anime-vision]"`; neu local model/deps thieu thi ingest warning va tiep tuc khong co visual gap descriptions.
+- Khong dung Playwright cho batch vision automation; Playwright chi la duong text/review/composer/QA. Batch vision phai la OpenAI API co cap ro rang hoac local model opt-in.
 - `config.anime.movie.yaml`: `content_type=anime_movie`, cùng ingest defaults tiếng Nhật, `hook_mode=setup`, và cùng posture strict OP/ED/preview guard.
 - `preflight.manual_ranges` và `preflight.anime_context` nhận YAML/JSON local, rồi merge vào `video_profile.non_story_ranges`; `review.context_file` nạp cùng anime context để giữ glossary, continuity và spoiler guard nhất quán.
 - Anime context là metadata local only, không dùng AniList/API. OP/ED/theme/preview/recap zones phải đi qua manual ranges hoặc detector tin cậy, không hardcode duration.

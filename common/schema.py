@@ -93,9 +93,15 @@ class FilmMapMeta(BaseModel):
     whisper_model: str
     translate_model: str
     vision_model: str
+    vision_provider: str = "openai"
     gap_threshold: float = Field(ge=0)
     max_vision_frames: int = Field(ge=0)
     max_visual_gap_s: float = Field(ge=0, default=20.0)
+    translation_required: bool = False
+    translation_min_success_ratio: float | None = Field(default=None, ge=0, le=1)
+    translation_total_count: int = Field(default=0, ge=0)
+    translation_success_count: int = Field(default=0, ge=0)
+    translation_success_ratio: float | None = Field(default=None, ge=0, le=1)
     speech_count: int = Field(ge=0)
     visual_count: int = Field(ge=0)
     cache_hits: list[str] = Field(default_factory=list)
@@ -345,6 +351,7 @@ class TtsMeta(BaseModel):
     fallback_count: int = Field(default=0, ge=0)
     openai_model: str | None = None
     openai_voice: str | None = None
+    review_script_hash: str | None = None
 
 
 

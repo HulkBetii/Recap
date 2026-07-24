@@ -40,7 +40,20 @@ def test_low_cost_policy_uses_local_asr_and_disables_vision() -> None:
     assert resolved["ingest"]["asr_policy"] == "local_first"
     assert resolved["ingest"]["asr_provider"] == "faster-whisper"
     assert resolved["ingest"]["max_vision_frames"] == 0
+    assert resolved["ingest"]["vision_provider"] == "off"
     assert policy.stages["ingest"]["openai_uses"] == []
+
+def test_practical_anime_policy_uses_openai_translation_only() -> None:
+    _resolved, policy = resolve_cost_policy(load_config(Path("config.anime.series.practical.yaml")))
+
+    assert policy.stages["ingest"]["openai_uses"] == ["translation"]
+    assert policy.stages["ingest"]["vision_provider"] == "off"
+
+def test_localvision_anime_policy_keeps_vision_local() -> None:
+    _resolved, policy = resolve_cost_policy(load_config(Path("config.anime.series.localvision.yaml")))
+
+    assert policy.stages["ingest"]["openai_uses"] == ["translation"]
+    assert policy.stages["ingest"]["vision_provider"] == "local_qwen2_5_vl"
 
 
 def test_budget_guard_blocks_low_cost_openai_usage() -> None:
@@ -102,6 +115,8 @@ def test_direct_review_backend_is_rejected(backend: str) -> None:
         "config.vi.stable.yaml",
         "config.vi.low_openai.yaml",
         "config.vi.balanced.auto.yaml",
+        "config.anime.series.practical.yaml",
+        "config.anime.series.localvision.yaml",
     ],
 )
 def test_shipped_presets_keep_playwright_as_review_primary(preset: str) -> None:

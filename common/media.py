@@ -19,10 +19,19 @@ def require_ffmpeg() -> None:
 
 
 def run_command(args: list[str]) -> None:
-    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    result = subprocess.run(args, capture_output=True, check=False)
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
     if result.returncode != 0:
-        message = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        message = stderr.strip() or stdout.strip() or "unknown error"
         raise MediaError(message)
+
+def _decode_process_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def probe_duration(input_path: Path) -> float:
@@ -38,14 +47,15 @@ def probe_duration(input_path: Path) -> float:
             str(input_path),
         ],
         capture_output=True,
-        text=True,
         check=False,
     )
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
     if result.returncode != 0:
-        message = result.stderr.strip() or "ffprobe failed"
+        message = stderr.strip() or "ffprobe failed"
         raise MediaError(message)
     try:
-        payload: dict[str, Any] = json.loads(result.stdout)
+        payload: dict[str, Any] = json.loads(stdout)
         return float(payload["format"]["duration"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise MediaError("could not read media duration with ffprobe") from exc
@@ -76,14 +86,15 @@ def probe_video_stream(input_path: Path) -> dict[str, Any]:
             str(input_path),
         ],
         capture_output=True,
-        text=True,
         check=False,
     )
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
     if result.returncode != 0:
-        message = result.stderr.strip() or "ffprobe failed"
+        message = stderr.strip() or "ffprobe failed"
         raise MediaError(message)
     try:
-        payload: dict[str, Any] = json.loads(result.stdout)
+        payload: dict[str, Any] = json.loads(stdout)
         stream = payload["streams"][0]
         rate_text = stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0/1"
         fps = _parse_rate(rate_text)
@@ -113,14 +124,15 @@ def has_audio_stream(input_path: Path) -> bool:
             str(input_path),
         ],
         capture_output=True,
-        text=True,
         check=False,
     )
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
     if result.returncode != 0:
-        message = result.stderr.strip() or "ffprobe failed"
+        message = stderr.strip() or "ffprobe failed"
         raise MediaError(message)
     try:
-        payload: dict[str, Any] = json.loads(result.stdout)
+        payload: dict[str, Any] = json.loads(stdout)
         return bool(payload.get("streams"))
     except json.JSONDecodeError as exc:
         raise MediaError("could not read audio streams with ffprobe") from exc

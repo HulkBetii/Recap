@@ -97,6 +97,31 @@ def test_anime_series_preset_defaults_to_detailed_episode_arc_chaptered() -> Non
     assert config["series_recap"]["tts_cps"] == 24.0
     assert config["series_recap"]["qa_max_revisions"] == 1
 
+def test_practical_anime_series_preset_uses_translation_only_openai() -> None:
+    config = load_config(Path("config.anime.series.practical.yaml"))
+
+    assert config["ingest"]["source_language"] == "ja"
+    assert config["ingest"]["translate_mode"] == "ja-en"
+    assert config["ingest"]["translation_required"] is True
+    assert config["ingest"]["translation_min_success_ratio"] == 0.95
+    assert config["ingest"]["vision_provider"] == "off"
+    assert config["ingest"]["max_vision_frames"] == 0
+    assert config["review"]["openai_fallback_model"] is None
+    assert config["series_recap"]["format"] == "episode_arc_chaptered"
+    assert config["series_recap"]["detail_level"] == "detailed"
+    assert config["series_recap"]["target_total_min_s"] == 2100
+    assert config["series_recap"]["target_total_max_s"] == 2700
+
+def test_localvision_anime_series_preset_is_optional_and_capped() -> None:
+    config = load_config(Path("config.anime.series.localvision.yaml"))
+
+    assert config["ingest"]["translation_required"] is True
+    assert config["ingest"]["vision_provider"] == "local_qwen2_5_vl"
+    assert config["ingest"]["vision_model"] == "Qwen/Qwen2.5-VL-7B-Instruct"
+    assert config["ingest"]["max_vision_frames"] == 30
+    assert config["ingest"]["vision_resize_long_edge"] == 768
+    assert config["ingest"]["vision_batch_size"] == 1
+
 def test_manifest_rejects_missing_and_duplicate_source_path(tmp_path: Path) -> None:
     missing = tmp_path / "missing.json"
     missing.write_text(
@@ -165,6 +190,50 @@ def test_series_recap_dry_run_shows_episode_and_final_stages_without_writing(tmp
     assert "--source-map" in output
     assert not (run_dir / "series_recap" / "summary.json").exists()
     assert not (run_dir / "series_recap" / "work" / "episode_configs" / "s03e01.json").exists()
+
+def test_series_recap_practical_dry_run_plans_12_episode_flow(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    manifest_path = tmp_path / "series_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "series_id": "solo-leveling-s01",
+                "series_title": "Solo Leveling Season 1",
+                "season": 1,
+                "episodes": [
+                    {
+                        "episode_key": f"s01e{episode:02d}",
+                        "episode_number": episode,
+                        "title": f"Episode {episode}",
+                        "source_path": str(tmp_path / f"Solo_Leveling.S01E{episode:02d}.mp4"),
+                        "spoiler_limit_episode": episode,
+                    }
+                    for episode in range(1, 13)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        manifest=manifest_path,
+        config=Path("config.anime.series.practical.yaml"),
+        episodes="1-12",
+        run_dir=tmp_path / "runs" / "solo-leveling-s01",
+        python="python",
+        dry_run=True,
+        force=False,
+        force_final=False,
+        log_level="ERROR",
+    )
+
+    assert run_series_recap(args, executor=lambda _command, _log_path: None) == 0
+    output = capsys.readouterr().out
+
+    assert output.count(":episode_planner") == 12
+    assert output.count(":episode_shots") == 12
+    assert "[planned] series_composer" in output
+    assert "[planned] tts" in output
+    assert "[planned] series_match" in output
+    assert "[planned] render" in output
 
 def test_episode_config_auto_discovers_manual_ranges_sidecar(tmp_path: Path) -> None:
     manifest_path = tmp_path / "series_manifest.json"

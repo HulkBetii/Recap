@@ -33,6 +33,8 @@ from ingest.integrity import (
     vision_cache_key,
 )
 from ingest.llm import OpenAIIngestClient
+from ingest.llm import TRANSLATION_UNAVAILABLE
+from ingest.local_vision import LocalQwenVisionClient, LocalVisionError
 from ingest.transcribe import transcribe_korean, transcribe_openai_chunked, transcribe_openai_gpt4o
 from ingest.vision import describe_gaps
 
@@ -47,10 +49,46 @@ SOURCE_LANGUAGE_TRANSLATE_MODES = {
     "vi": {"none"},
     "ja": {"ja-en", "none"},
 }
+VISION_PROVIDERS = {"openai", "off", "local_qwen2_5_vl"}
 
 
 class IngestError(RuntimeError):
     pass
+
+def validate_openai_api_key(raw_key: str) -> str:
+    key = raw_key.strip()
+    if not key:
+        raise IngestError("OPENAI_API_KEY is required for configured ingest OpenAI usage")
+    if not key.startswith("sk-"):
+        raise IngestError("OPENAI_API_KEY must start with sk-; check that the environment variable contains the key text")
+    if any(ord(char) < 32 or ord(char) == 127 for char in key):
+        raise IngestError("OPENAI_API_KEY contains hidden/control characters; copy the key again and trim whitespace")
+    return key
+
+def translation_success_count(translated: list[TranslatedSegment]) -> int:
+    return sum(1 for item in translated if item.en.strip() and item.en.strip() != TRANSLATION_UNAVAILABLE)
+
+def translation_success_ratio(translated: list[TranslatedSegment]) -> float:
+    if not translated:
+        return 1.0
+    return translation_success_count(translated) / len(translated)
+
+def enforce_translation_quality(
+    translated: list[TranslatedSegment],
+    *,
+    translation_required: bool,
+    min_success_ratio: float,
+) -> None:
+    if not translation_required:
+        return
+    ratio = translation_success_ratio(translated)
+    if ratio < min_success_ratio:
+        success = translation_success_count(translated)
+        total = len(translated)
+        raise IngestError(
+            f"translation success ratio {ratio:.3f} is below required threshold {min_success_ratio:.3f} "
+            f"({success}/{total} translated segments)"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,9 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-vision-frames", default=DEFAULT_MAX_VISION_FRAMES, type=int)
     parser.add_argument("--max-visual-gap-s", default=DEFAULT_MAX_VISUAL_GAP_S, type=float)
     parser.add_argument("--translate-model", default=DEFAULT_TRANSLATE_MODEL)
+    parser.add_argument("--translation-required", action="store_true")
+    parser.add_argument("--translation-min-success-ratio", default=0.0, type=float)
     parser.add_argument("--source-language", default="ko", choices=["ko", "vi", "ja"], help="Source speech language in the input video")
     parser.add_argument("--translate-mode", default="ko-en", choices=["ko-en", "ja-en", "none"], help="Translate transcript or keep source text as-is")
+    parser.add_argument("--vision-provider", default="openai", choices=sorted(VISION_PROVIDERS))
     parser.add_argument("--vision-model", default=DEFAULT_VISION_MODEL)
+    parser.add_argument("--vision-resize-long-edge", default=768, type=int)
+    parser.add_argument("--vision-batch-size", default=1, type=int)
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
     parser.add_argument("--asr-provider", default="faster-whisper", choices=["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"])
     parser.add_argument("--aligner", default="none", choices=["none", "whisperx", "qwen3"])
@@ -217,16 +260,29 @@ def load_translations(
     logger: logging.Logger,
     translate_mode: str = "ko-en",
     source_language: str = "ko",
+    translation_required: bool = False,
+    translation_min_success_ratio: float = 0.0,
 ) -> tuple[list[TranslatedSegment], int]:
     if cache.has("translated.json"):
         logger.info("[3/6] Using cached translated.json")
-        return [TranslatedSegment.model_validate(item) for item in cache.read_json("translated.json")], 0
+        cached = [TranslatedSegment.model_validate(item) for item in cache.read_json("translated.json")]
+        enforce_translation_quality(
+            cached,
+            translation_required=translation_required,
+            min_success_ratio=translation_min_success_ratio,
+        )
+        return cached, len(cached) - translation_success_count(cached)
     if translate_mode == "none":
         logger.info("[3/6] Keeping source transcript text without translation")
         translated = [
             TranslatedSegment(id=segment.id, tc_start=segment.tc_start, tc_end=segment.tc_end, ko=segment.ko, en=segment.ko)
             for segment in transcript
         ]
+        enforce_translation_quality(
+            translated,
+            translation_required=translation_required,
+            min_success_ratio=translation_min_success_ratio,
+        )
         cache.write_json("translated.json", translated)
         return translated, 0
     if client is None:
@@ -234,6 +290,11 @@ def load_translations(
     source_name = {"ko": "KO", "ja": "JA", "vi": "VI"}.get(source_language, source_language.upper())
     logger.info("[3/6] Translating %s -> EN with stable segment ids", source_name)
     translated, warnings_count = client.translate_segments(transcript, logger=logger, source_language=source_language)
+    enforce_translation_quality(
+        translated,
+        translation_required=translation_required,
+        min_success_ratio=translation_min_success_ratio,
+    )
     cache.write_json("translated.json", translated)
     return translated, warnings_count
 
@@ -251,6 +312,30 @@ def overlaps_non_story(start: float, end: float, profile: VideoProfile | None) -
         return False
     return any(start < item.end_s and end > item.start_s for item in profile.non_story_ranges)
 
+def build_vision_client(
+    *,
+    args: argparse.Namespace,
+    openai_client: OpenAIIngestClient | None,
+    logger: logging.Logger,
+):
+    if args.max_vision_frames <= 0 or args.vision_provider == "off":
+        return None
+    if args.vision_provider == "openai":
+        return openai_client
+    if args.vision_provider == "local_qwen2_5_vl":
+        try:
+            return LocalQwenVisionClient(
+                args.vision_model,
+                device=args.device,
+                resize_long_edge=args.vision_resize_long_edge,
+                batch_size=args.vision_batch_size,
+            )
+        except (LocalVisionError, OSError, RuntimeError) as exc:
+            logger.warning("local vision unavailable; continuing without visual gap descriptions: %s", exc)
+            return None
+    expected = ", ".join(sorted(VISION_PROVIDERS))
+    raise IngestError(f"--vision-provider must be one of: {expected}")
+
 def load_vision(
     *,
     cache: StageCache,
@@ -262,6 +347,7 @@ def load_vision(
     max_visual_gap_s: float,
     client: OpenAIIngestClient | None,
     logger: logging.Logger,
+    vision_provider: str = "openai",
     drop_visual_before_s: float = 0.0,
     video_profile: VideoProfile | None = None,
 ) -> tuple[list[VisionSegment], int]:
@@ -280,7 +366,15 @@ def load_vision(
     if not selected_gaps:
         cache.write_json("vision.json", [])
         return [], 0
+    if vision_provider == "off":
+        logger.info("[5/6] Vision provider is off; writing empty vision.json")
+        cache.write_json("vision.json", [])
+        return [], 0
     if client is None:
+        if vision_provider == "local_qwen2_5_vl":
+            logger.warning("local vision client is unavailable; writing empty vision.json")
+            cache.write_json("vision.json", [])
+            return [], 1
         raise IngestError("OPENAI_API_KEY is required for vision")
     vision_segments, warnings_count = describe_gaps(
         input_path=input_path,
@@ -321,6 +415,11 @@ def run_ingest(args: argparse.Namespace) -> int:
         "video_profile": None,
         "source_language": "ko",
         "translate_mode": "ko-en",
+        "translation_required": False,
+        "translation_min_success_ratio": 0.0,
+        "vision_provider": "openai",
+        "vision_resize_long_edge": 768,
+        "vision_batch_size": 1,
     }.items():
         if not hasattr(args, key):
             setattr(args, key, value)
@@ -333,6 +432,15 @@ def run_ingest(args: argparse.Namespace) -> int:
         raise IngestError("--max-vision-frames must be >= 0")
     if args.max_visual_gap_s < 0:
         raise IngestError("--max-visual-gap-s must be >= 0")
+    if not 0 <= args.translation_min_success_ratio <= 1:
+        raise IngestError("--translation-min-success-ratio must be between 0 and 1")
+    if args.vision_provider not in VISION_PROVIDERS:
+        expected = ", ".join(sorted(VISION_PROVIDERS))
+        raise IngestError(f"--vision-provider must be one of: {expected}")
+    if args.vision_resize_long_edge <= 0:
+        raise IngestError("--vision-resize-long-edge must be > 0")
+    if args.vision_batch_size <= 0:
+        raise IngestError("--vision-batch-size must be > 0")
     if args.max_segment_s < 0:
         raise IngestError("--max-segment-s must be >= 0")
     if args.drop_non_korean_intro_s < 0:
@@ -352,22 +460,23 @@ def run_ingest(args: argparse.Namespace) -> int:
                 f"translate_mode={args.translate_mode} is not valid for source_language={args.source_language}; "
                 f"expected one of: {expected}"
             )
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = os.getenv("OPENAI_API_KEY", "")
     needs_openai_asr = args.asr_provider in {"openai-gpt4o", "openai-gpt4o-hybrid"}
     needs_openai_translate = args.translate_mode != "none"
-    needs_openai_vision = args.max_vision_frames > 0
+    needs_openai_vision = args.max_vision_frames > 0 and args.vision_provider == "openai"
     needs_openai_correction = args.transcript_correction == "openai"
-    if (needs_openai_asr or needs_openai_translate or needs_openai_vision or needs_openai_correction) and not api_key:
-        raise IngestError("OPENAI_API_KEY is required for configured ingest OpenAI usage")
+    if needs_openai_asr or needs_openai_translate or needs_openai_vision or needs_openai_correction:
+        api_key = validate_openai_api_key(api_key)
 
     require_ffmpeg()
     cache = StageCache(work_dir, force=args.force)
     cache.prepare()
-    client = (
+    openai_client = (
         OpenAIIngestClient(api_key, args.translate_model, args.vision_model)
         if needs_openai_translate or needs_openai_vision
         else None
     )
+    vision_client = build_vision_client(args=args, openai_client=openai_client, logger=logger)
 
     logger.info("[0/6] Probing input video")
     duration = probe_duration(input_path)
@@ -408,10 +517,12 @@ def run_ingest(args: argparse.Namespace) -> int:
     translated, translation_warnings = load_translations(
         cache,
         transcript,
-        client,
+        openai_client,
         logger,
         translate_mode=args.translate_mode,
         source_language=args.source_language,
+        translation_required=args.translation_required,
+        translation_min_success_ratio=args.translation_min_success_ratio,
     )
     if not translation_cached:
         cache.commit_stage("translation", stage_translation_key)
@@ -436,8 +547,9 @@ def run_ingest(args: argparse.Namespace) -> int:
         gap_threshold=args.gap_threshold,
         max_vision_frames=args.max_vision_frames,
         max_visual_gap_s=args.max_visual_gap_s,
-        client=client,
+        client=vision_client,
         logger=logger,
+        vision_provider=args.vision_provider,
         drop_visual_before_s=args.drop_visual_before_s,
         video_profile=video_profile,
     )
@@ -449,6 +561,9 @@ def run_ingest(args: argparse.Namespace) -> int:
     film_map = build_film_map(translated, vision_segments, duration)
     validate_film_map(film_map, duration)
     write_json(output_path, film_map)
+    translation_total = len(translated)
+    translation_success = translation_success_count(translated)
+    translation_ratio = translation_success / translation_total if translation_total else 1.0
 
     meta = FilmMapMeta(
         input_path=str(input_path),
@@ -457,9 +572,15 @@ def run_ingest(args: argparse.Namespace) -> int:
         whisper_model=args.whisper_model,
         translate_model=args.translate_model if args.translate_mode != "none" else "none",
         vision_model=args.vision_model,
+        vision_provider=args.vision_provider,
         gap_threshold=args.gap_threshold,
         max_vision_frames=args.max_vision_frames,
         max_visual_gap_s=args.max_visual_gap_s,
+        translation_required=args.translation_required,
+        translation_min_success_ratio=args.translation_min_success_ratio,
+        translation_total_count=translation_total,
+        translation_success_count=translation_success,
+        translation_success_ratio=translation_ratio,
         speech_count=sum(1 for item in film_map if item.type == "speech"),
         visual_count=sum(1 for item in film_map if item.type == "visual"),
         cache_hits=cache.cache_hits,

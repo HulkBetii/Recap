@@ -47,7 +47,7 @@ def make_args(tmp_path, input_path):  # type: ignore[no-untyped-def]
 
 
 def test_run_ingest_rejects_missing_input(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
 
     with pytest.raises(IngestError, match="Input video does not exist"):
         run_ingest(make_args(tmp_path, tmp_path / "missing.mp4"))
@@ -62,10 +62,22 @@ def test_run_ingest_requires_openai_key(tmp_path, monkeypatch) -> None:  # type:
         run_ingest(make_args(tmp_path, input_path))
 
 
+def test_run_ingest_rejects_invalid_openai_key_before_client(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    input_path = tmp_path / "film.mp4"
+    input_path.write_bytes(b"fake")
+    monkeypatch.setenv("OPENAI_API_KEY", "\x16")
+    monkeypatch.setattr(
+        "ingest.__main__.OpenAIIngestClient",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("client should not be created")),
+    )
+
+    with pytest.raises(IngestError, match="must start with sk-"):
+        run_ingest(make_args(tmp_path, input_path))
+
 def test_run_ingest_mocked_end_to_end(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     input_path = tmp_path / "film.mp4"
     input_path.write_bytes(b"fake")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
     monkeypatch.setattr("ingest.__main__.require_ffmpeg", lambda: None)
     monkeypatch.setattr("ingest.__main__.probe_duration", lambda path: 10.0)
     monkeypatch.setattr("ingest.__main__.extract_audio", lambda src, dst: dst.write_bytes(b"wav"))

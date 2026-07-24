@@ -1,5 +1,47 @@
 # PROJECT_LOG.md
 
+## 2026-07-24 - Solo Leveling S01 rerun completed
+
+- Completed the preserved rerun at `runs/solo-leveling-s01-rerun-20260723`; all 12 episode translation ratios are `1.0` with strict/non-approximate timecodes.
+- Playwright produced four valid arc drafts plus one targeted revision. Composer QA has 72 beats, 12 ordered episode chapters plus the hook, no blocking narration/fallback code, and an estimated duration of `2650.917s` under the `3000s` composer hard cap.
+- AI33 synthesized all 72 beats with zero fallback and zero pronunciation risks. Measured voiceover duration is `3359.154s`, showing that the nominal `tts_cps=24` estimate is faster than this voice's observed delivery rate.
+- Series match produced 1,064 placements across all 12 sources with continuous coverage, `0.6-5.0s` clip lengths, and zero non-story/unusable/end-credit shot violations.
+- Final render is H.264 `1920x1080`, declared `30/1` fps, with one AAC stereo 48 kHz voiceover stream, no source audio, and matched video/audio duration near `3359.104s`.
+- Validation: full `python -m pytest -q` -> `476 passed`; compileall and `git diff --check` passed.
+
+## 2026-07-24 - Season composer hard-cap enforcement
+
+- Fixed detailed season target planning so 12 full episodes scale to the configured 2,700-second maximum instead of treating the 3,000-second hard cap as audit-only.
+- Episode minimums are preserved during proportional scaling; impossible minimum/cap combinations now fail before any Playwright prompt is submitted.
+- Arc prompts now include proportional hard character maxima, and deterministic QA revises both hard-cap overflow and arc over-budget output.
+- Beat-level narration QA now maps `beat_ids` through source references to the owning arc, so a foreign phrase such as the one found in Solo Leveling beat 45 triggers the correct Playwright arc revision.
+- Targeted Playwright/composer regression suite passes with `38 passed`.
+
+## 2026-07-24 - Series match tail-fragment recovery
+
+- Fixed a chronological matcher edge case where a short usable shot consumed the remaining capacity and left a sub-`min_visual_clip` tail, even though the next shot could fill the beat.
+- The matcher now skips only that candidate and continues to the next story shot; no non-story or end-credit footage is relaxed.
+
+## 2026-07-24 - Playwright long-prompt safety
+
+- Removed clipboard paste from ChatGPT prompt preparation after the web UI converted 12K-character season-composer prompts into truncated `Pasted text` attachments.
+- The adapter now clears pending file tiles, verifies whitespace-canonical prompt content after direct fill or chunked `insert_text`, and fails before Send when the full prompt cannot be proven intact.
+- High-reasoning responses that expose `Answer now` without creating an assistant message are completed by one bounded click after 300 seconds; the same-response/no-resubmit contract remains unchanged.
+- Added regression coverage for ProseMirror newline expansion, missing prompt suffixes, stale attachment cleanup, and the no-submit guarantee on verification failure.
+
+## 2026-07-23 - TTS repeated content gate fix
+
+- Added deterministic narration QA shared by composer and TTS so repeated sentences, repeated templates, generic fallback paragraphs, foreign text, and unaccented Vietnamese fail before any provider call.
+- Removed the old deterministic fallback behavior that could repeat the same generic paragraph to hit target length.
+- `tts_meta.json` now records `review_script_hash`, and season recap validation rejects stale TTS artifacts when the script hash changes.
+
+## 2026-07-23 - Practical anime season pipeline preset
+
+- Added `config.anime.series.practical.yaml` for 12-episode anime season smoke/production runs that use OpenAI only for required JA->EN transcript translation and keep OpenAI vision disabled.
+- Added optional `config.anime.series.localvision.yaml` plus `anime-vision` extra for capped local Qwen2.5-VL frame descriptions; missing local model/deps degrade to empty visual gaps instead of failing ingest.
+- Hardened G1 against bad API-key environment values and placeholder-only translations: invalid `OPENAI_API_KEY` is rejected locally, and required translation must meet the configured success ratio before cache/output commit.
+- `film_map.meta.json` now records translation success counts/ratio and the active `vision_provider` for smoke audit.
+
 ## 2026-07-21 - Detailed 12-episode anime season recap
 
 - Added `series_recap.format=episode_arc_chaptered` with `detail_level=detailed` for 12+ episode anime seasons.

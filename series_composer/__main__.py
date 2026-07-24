@@ -23,6 +23,7 @@ from series_composer.builder import (
     build_series_arc_plan,
     build_series_chapters,
     build_series_composer_qa,
+    compose_deterministic_fallback,
     compose_with_client,
     to_tts_review_script,
 )
@@ -59,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Override target contribution ratio as recap_mode=float, e.g. full=0.12",
     )
-    parser.add_argument("--llm-backend", choices=["chatgpt_playwright"], default="chatgpt_playwright")
+    parser.add_argument("--llm-backend", choices=["chatgpt_playwright", "deterministic"], default="chatgpt_playwright")
     parser.add_argument("--chatgpt-profile-dir", type=Path, default=CHATGPT_PLAYWRIGHT_PROFILE_DIR)
     parser.add_argument("--reply-timeout-s", default=600, type=int)
     parser.add_argument("--playwright-max-attempts", default=2, type=int)
@@ -171,14 +172,28 @@ async def run_composer_async(args: argparse.Namespace) -> int:
         episode_high_s=args.episode_high_s,
         arc_size=args.arc_size,
     )
-    async with PlaywrightChatClient(
-        profile_dir(args.chatgpt_profile_dir),
-        headless=args.headless,
-        timeout_s=args.reply_timeout_s,
-        max_attempts=args.playwright_max_attempts,
-        recovery_timeout_s=args.playwright_recovery_timeout_s,
-    ) as client:
-        beats, meta = await compose_with_client(client, bank, qa_max_revisions=args.qa_max_revisions)
+    if args.llm_backend == "deterministic":
+        logging.warning("Using deterministic series composer backend")
+        beats, meta = compose_deterministic_fallback(bank, reason="llm backend deterministic")
+    else:
+        try:
+            async with PlaywrightChatClient(
+                profile_dir(args.chatgpt_profile_dir),
+                headless=args.headless,
+                timeout_s=args.reply_timeout_s,
+                max_attempts=args.playwright_max_attempts,
+                recovery_timeout_s=args.playwright_recovery_timeout_s,
+            ) as client:
+                beats, meta = await compose_with_client(client, bank, qa_max_revisions=args.qa_max_revisions)
+        except (PlaywrightChatError, ValueError, json.JSONDecodeError) as exc:
+            if args.format == "episode_arc_chaptered" and args.detail_level == "detailed":
+                raise SeriesComposerError(
+                    "ChatGPT series composer failed; deterministic fallback is disabled for detailed episode-arc production"
+                ) from exc
+            if args.format != "episode_arc_chaptered":
+                raise
+            logging.warning("ChatGPT series composer failed; using deterministic fallback: %s", exc)
+            beats, meta = compose_deterministic_fallback(bank, reason=f"chatgpt_playwright failed: {exc}")
     write_json(args.output_event_bank, bank)
     write_json(args.output, beats)
     write_json(args.output_tts_script, to_tts_review_script(beats))

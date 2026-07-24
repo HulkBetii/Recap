@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.media import MediaError, normalize_audio, probe_duration, require_ffmpeg
-from common.schema import ReviewBeat, TtsManifestEntry, TtsMeta, validate_review_script, write_json
+from common.integrity import file_hash
+from common.narration_qa import BLOCKING_NARRATION_QA_CODES, analyze_narration_content
+from common.schema import ReviewBeat, TtsManifestEntry, TtsMeta, write_json
 from tts.cache import TtsCache, build_cache_key, stable_hash
 from tts.concat import concat_voiceover
 from tts.cost import estimate_cost, real_ratio
@@ -78,6 +80,21 @@ def load_review_script(path: Path) -> list[ReviewBeat]:
         raise TtsError("review_script.json must be a JSON array")
     beats = [ReviewBeat.model_validate(item) for item in data]
     return sorted(beats, key=lambda item: item.beat_id)
+
+def validate_review_script_content(beats: list[ReviewBeat]) -> None:
+    issues = analyze_narration_content(beats)
+    blocking = [
+        issue
+        for issue in issues
+        if issue.get("level") == "error" or issue.get("code") in BLOCKING_NARRATION_QA_CODES
+    ]
+    if not blocking:
+        return
+    details = "; ".join(
+        f"{item.get('code')}: {item.get('message')} (beats={item.get('beat_ids', [])})"
+        for item in blocking[:8]
+    )
+    raise TtsError(f"review_script content QA failed: {details}")
 
 
 def load_film_duration(path: Path | None) -> tuple[float | None, list[str]]:
@@ -205,6 +222,8 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
     beats = load_review_script(review_script)
     if not beats:
         raise TtsError("review_script.json is empty")
+    validate_review_script_content(beats)
+    review_script_hash = file_hash(review_script)
     text_normalization = getattr(args, "tts_text_normalization", "vi")
     lexicon_path = getattr(args, "tts_pronunciation_lexicon", None)
     lexicon_path = lexicon_path.expanduser().resolve() if lexicon_path else None
@@ -353,6 +372,7 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         fallback_count=fallback_count,
         openai_model=openai_model,
         openai_voice=openai_voice,
+        review_script_hash=review_script_hash,
     )
     write_json(output_timing.with_name("tts_meta.json"), meta)
     return timings, meta

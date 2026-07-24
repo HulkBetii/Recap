@@ -14,9 +14,14 @@ INGEST_CONFIG_FIELDS = (
     "max_vision_frames",
     "max_visual_gap_s",
     "translate_model",
+    "translation_required",
+    "translation_min_success_ratio",
     "source_language",
     "translate_mode",
+    "vision_provider",
     "vision_model",
+    "vision_resize_long_edge",
+    "vision_batch_size",
     "device",
     "asr_provider",
     "aligner",
@@ -50,11 +55,17 @@ def ingest_config_hash(settings: Mapping[str, Any] | object) -> str:
         "openai_chunk_s",
         "drop_non_korean_intro_s",
         "drop_visual_before_s",
+        "translation_min_success_ratio",
     ):
         if payload.get(name) is not None:
             payload[name] = float(payload[name])
     if payload.get("max_vision_frames") is not None:
         payload["max_vision_frames"] = int(payload["max_vision_frames"])
+    if payload.get("vision_resize_long_edge") is not None:
+        payload["vision_resize_long_edge"] = int(payload["vision_resize_long_edge"])
+    if payload.get("vision_batch_size") is not None:
+        payload["vision_batch_size"] = int(payload["vision_batch_size"])
+    payload["translation_required"] = bool(payload.get("translation_required"))
     if payload.get("transcript_correction") in {None, False}:
         payload["transcript_correction"] = "off"
     transcript_input = _value(settings, "transcript_input")
@@ -116,6 +127,8 @@ def translation_cache_key(transcript_hash: str, settings: Mapping[str, Any] | ob
             "transcript_hash": transcript_hash,
             "translate_mode": _value(settings, "translate_mode"),
             "translate_model": _value(settings, "translate_model"),
+            "translation_required": bool(_value(settings, "translation_required", False)),
+            "translation_min_success_ratio": _value(settings, "translation_min_success_ratio", 0.0),
             "translation_pipeline": "segment-stable-v1",
         }
     )
@@ -136,7 +149,10 @@ def vision_cache_key(
             "gap_threshold": _value(settings, "gap_threshold"),
             "max_vision_frames": _value(settings, "max_vision_frames"),
             "max_visual_gap_s": _value(settings, "max_visual_gap_s"),
+            "vision_provider": _value(settings, "vision_provider", "openai"),
             "vision_model": _value(settings, "vision_model"),
+            "vision_resize_long_edge": _value(settings, "vision_resize_long_edge", 768),
+            "vision_batch_size": _value(settings, "vision_batch_size", 1),
             "drop_visual_before_s": _value(settings, "drop_visual_before_s"),
             "vision_pipeline": "silent-gap-profile-v2",
         }

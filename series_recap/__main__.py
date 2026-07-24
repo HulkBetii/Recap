@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from common.integrity import file_hash
 from common.inputs import load_series_manifest
 from common.schema import (
     BeatTiming,
@@ -401,6 +402,7 @@ def composer_command(
     add_option(command, "format", section.get("format"))
     for key in (
         "detail_level",
+        "llm_backend",
         "tts_cps",
         "target_total_min_s",
         "target_total_max_s",
@@ -566,13 +568,20 @@ def composer_outputs_valid(paths: SeriesPaths) -> bool:
     validate_series_review_script(beats)
     [SeriesChapter.model_validate(item) for item in load_json(paths.series_chapters)]
     SeasonTargetPlan.model_validate(load_json(paths.series_arc_plan))
-    SeriesComposerQa.model_validate(load_json(paths.series_composer_qa))
+    composer_qa = SeriesComposerQa.model_validate(load_json(paths.series_composer_qa))
+    if any(
+        item.get("level") == "error" or item.get("code") == "deterministic_composer_fallback"
+        for item in composer_qa.qa_report
+    ):
+        return False
     return True
 
 def tts_outputs_valid(paths: SeriesPaths) -> bool:
     if not files_exist([paths.voiceover, paths.beats_timing, paths.tts_meta]):
         return False
     meta = TtsMeta.model_validate(load_json(paths.tts_meta))
+    if meta.review_script_hash is None or meta.review_script_hash != file_hash(paths.series_tts_script):
+        return False
     timings = [BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)]
     validate_beats_timing(timings, pause_s=meta.inter_beat_pause_s)
     return True

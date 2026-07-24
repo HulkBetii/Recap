@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Protocol
 
 from common.inputs import load_series_manifest
+from common.narration_qa import (
+    BLOCKING_NARRATION_QA_CODES,
+    analyze_narration_content,
+    safe_summary_fragment as qa_safe_summary_fragment,
+)
 from common.schema import (
     EpisodeTargetPlan,
     EpisodeMemory,
@@ -47,8 +52,13 @@ REVISION_QA_CODES = {
     "episode_under_char_budget",
     "arc_under_char_budget",
     "season_under_char_budget",
+    "estimated_duration_exceeds_hard_cap",
+    "arc_exceeds_hard_char_budget",
     "non_monotonic_episode_order",
     "non_monotonic_story_order",
+    "foreign_language_in_narration",
+    "unaccented_vietnamese_narration",
+    *BLOCKING_NARRATION_QA_CODES,
 }
 NON_CANON_TITLE_HINTS = ("ova", "bonus", "special", "recap-only", "recap only")
 NON_STORY_EVENT_TYPES = {
@@ -60,6 +70,9 @@ NON_STORY_EVENT_TYPES = {
     "sponsor_card",
     "studio_logo",
 }
+DETERMINISTIC_FALLBACK_CHAR_SCALE = 0.86
+PLACEHOLDER_EVENT_ID_MARKERS = ("...", "…")
+MAX_FINAL_STITCH_PROMPT_CHARS = 20_000
 
 @dataclass(frozen=True)
 class SeasonTargetSettings:
@@ -195,13 +208,48 @@ def scale_episode_targets(
     current_total = sum(target.target_video_s for target in adjustable)
     if not adjustable or current_total <= 0 or desired_total_s <= 0:
         return targets
-    factor = desired_total_s / current_total
+    minimum_total = settings.episode_min_s * len(adjustable)
+    if desired_total_s + 1e-6 < minimum_total:
+        raise ValueError(
+            "season target cannot be met: "
+            f"desired {desired_total_s:.3f}s is below the episode minimum floor {minimum_total:.3f}s"
+        )
+
+    # Scale toward the requested season bound while preserving the minimum chapter
+    # duration for every included episode. A plain proportional scale can leave the
+    # result above the bound when several episodes hit that floor.
+    if desired_total_s < current_total:
+        floor = settings.episode_min_s
+        reducible_total = sum(max(0.0, target.target_video_s - floor) for target in adjustable)
+        extra_total = max(0.0, desired_total_s - minimum_total)
+        factor = extra_total / reducible_total if reducible_total > 0 else 0.0
+        target_seconds = {
+            target.episode_key: floor + max(0.0, target.target_video_s - floor) * factor
+            for target in adjustable
+        }
+    else:
+        factor = desired_total_s / current_total
+        target_seconds = {
+            target.episode_key: max(settings.episode_min_s, target.target_video_s * factor)
+            for target in adjustable
+        }
+
+    # Keep rounded episode values from drifting above a hard season bound.
+    rounded_total = sum(round(value, 3) for value in target_seconds.values())
+    rounding_delta = round(desired_total_s - rounded_total, 3)
+    if rounding_delta:
+        largest = max(adjustable, key=lambda target: target_seconds[target.episode_key])
+        target_seconds[largest.episode_key] = max(
+            settings.episode_min_s,
+            target_seconds[largest.episode_key] + rounding_delta,
+        )
+
     updated: list[EpisodeTargetPlan] = []
     for target in targets:
         if target.target_video_s <= 0:
             updated.append(target)
             continue
-        target_s = max(settings.episode_min_s, target.target_video_s * factor)
+        target_s = max(settings.episode_min_s, target_seconds[target.episode_key])
         char_budget = max(1, int(round(target_s * tts_cps)))
         updated.append(
             target.model_copy(
@@ -363,7 +411,7 @@ def build_season_target_plan(
             tts_cps=tts_cps,
         )
         warnings.append("season target lowered to target_total_max_s")
-    total_target_video_s = sum(target.target_video_s for target in detailed_targets)
+        total_target_video_s = sum(target.target_video_s for target in detailed_targets)
     if settings.target_total_hard_cap_s and total_target_video_s > settings.target_total_hard_cap_s:
         detailed_targets = scale_episode_targets(
             detailed_targets,
@@ -372,6 +420,12 @@ def build_season_target_plan(
             tts_cps=tts_cps,
         )
         warnings.append("season target lowered to target_total_hard_cap_s")
+        total_target_video_s = sum(target.target_video_s for target in detailed_targets)
+    if settings.target_total_hard_cap_s and total_target_video_s > settings.target_total_hard_cap_s + 1e-3:
+        raise ValueError(
+            "season target exceeds target_total_hard_cap_s after scaling: "
+            f"{total_target_video_s:.3f}s > {settings.target_total_hard_cap_s:.3f}s"
+        )
 
     arcs = build_arc_plans(detailed_targets, settings)
     total_target_video_s = round(sum(target.target_video_s for target in detailed_targets), 3)
@@ -675,9 +729,11 @@ Rules:
 - The structure should feel like arcs of about three episodes: setup, escalation, payoff, then a bridge into the next arc.
 - Every episode in EPISODE_TARGET_PLAN with target_beats > 0 must have at least one non-hook beat after the hook.
 - Use every selected event_id at most once. Do not reuse the hook event later.
+- Never use placeholder event_ids like ... or ellipses; copy exact event_id strings from EVENT_BANK.
 - No OP/ED/theme-song/preview/recap-only content.
 - No verbatim dialogue or lyrics; transform into Vietnamese commentary.
-- Target total narration around {bank.char_budget} Vietnamese characters and {bank.target_video_s:.1f}s; stay between {length.min_total_chars} and {length.max_total_chars} characters unless the event bank is too small.
+- Write pure Vietnamese with proper diacritics. Do not copy raw English/Japanese phrases from the event summaries; paraphrase them in Vietnamese instead.
+- Target total narration around {bank.char_budget} Vietnamese characters and {bank.target_video_s:.1f}s; do not go below {length.min_total_chars} characters unless the event bank is too small. {length.max_total_chars} characters is only a soft advisory; longer output is acceptable if the story needs it.
 - Return {length.min_beats}-{length.max_beats} beats. Most beats should be {length.per_beat_min_chars}-{length.per_beat_max_chars} characters, around {length.per_beat_target_chars} characters each.
 - For each episode, stay near its char_budget and target_beats from EPISODE_TARGET_PLAN. Never go below min_chars unless the episode has too few usable events.
 - Use 2-4 Vietnamese sentences per beat and make cause/effect explicit so the season recap feels detailed, not compressed.
@@ -718,9 +774,11 @@ Rules:
 - Treat quick episodes as real chapter recaps, not tiny bridges. Use merge episodes as short continuity chapters. Skip episodes with a zero budget.
 - Chapter transitions should connect cause and effect between episodes; do not restart each episode like a separate video.
 - Use every selected event_id at most once. Do not reuse the hook event later.
+- Never use placeholder event_ids like ... or ellipses; copy exact event_id strings from EVENT_BANK.
 - No OP/ED/theme-song/preview/recap-only content.
 - No verbatim dialogue or lyrics; transform into Vietnamese commentary.
-- Target total narration around {bank.char_budget} Vietnamese characters and {bank.target_video_s:.1f}s; stay between {length.min_total_chars} and {length.max_total_chars} characters unless the event bank is too small.
+- Write pure Vietnamese with proper diacritics. Do not copy raw English/Japanese phrases from the event summaries; paraphrase them in Vietnamese instead.
+- Target total narration around {bank.char_budget} Vietnamese characters and {bank.target_video_s:.1f}s; do not go below {length.min_total_chars} characters unless the event bank is too small. {length.max_total_chars} characters is only a soft advisory; longer output is acceptable if the story needs it.
 - Return {length.min_beats}-{length.max_beats} beats. Most beats should be {length.per_beat_min_chars}-{length.per_beat_max_chars} characters, around {length.per_beat_target_chars} characters each.
 - For each episode, try to stay near its char_budget and target_beats from EPISODE_TARGET_PLAN. Never go below min_chars unless the episode has too few usable events.
 - Use 2-3 Vietnamese sentences per beat; do not collapse an episode chapter into one generic sentence.
@@ -741,9 +799,11 @@ Rules:
 - Use every selected event_id at most once. Do not reuse the hook event later.
 - The first beat must be a hook. After that hook, continue in chronological episode/story order.
 - Use quick/merge episodes as short continuity bridges; if every episode in scope is quick, still build a complete but tight arc.
+- Never use placeholder event_ids like ... or ellipses; copy exact event_id strings from EVENT_BANK.
 - No OP/ED/theme-song/preview/recap-only content.
 - No verbatim dialogue or lyrics; transform into Vietnamese commentary.
-- Target total narration around {bank.char_budget} Vietnamese characters and {bank.target_video_s:.1f}s; stay between {length.min_total_chars} and {length.max_total_chars} characters unless the event bank is too small.
+- Write pure Vietnamese with proper diacritics. Do not copy raw English/Japanese phrases from the event summaries; paraphrase them in Vietnamese instead.
+- Target total narration around {bank.char_budget} Vietnamese characters and {bank.target_video_s:.1f}s; do not go below {length.min_total_chars} characters unless the event bank is too small. {length.max_total_chars} characters is only a soft advisory; longer output is acceptable if the story needs it.
 - Return {length.min_beats}-{length.max_beats} beats. Most beats should be {length.per_beat_min_chars}-{length.per_beat_max_chars} characters, around {length.per_beat_target_chars} characters each.
 - Use 2-3 Vietnamese sentences per beat; do not collapse a multi-event beat into one generic sentence.
 - When grouping adjacent events, mention the cause/effect progression from each selected event so the season recap feels connected and complete.
@@ -784,9 +844,14 @@ def parse_composer_response(
             raise ValueError("series composer beat requires event_ids")
         source_refs: list[SeriesSourceRef] = []
         for event_id in event_ids:
-            if event_id not in events_by_id:
+            event_id_text = str(event_id)
+            if any(marker in event_id_text for marker in PLACEHOLDER_EVENT_ID_MARKERS):
+                continue
+            if event_id_text not in events_by_id:
                 raise ValueError(f"series composer selected unknown event_id: {event_id}")
-            source_refs.append(source_ref_from_event(events_by_id[str(event_id)]))
+            source_refs.append(source_ref_from_event(events_by_id[event_id_text]))
+        if not source_refs:
+            continue
         beats.append(
             SeriesReviewBeat(
                 beat_id=index,
@@ -800,8 +865,278 @@ def parse_composer_response(
         return validate_series_review_script(beats)
     return [beat.model_copy(update={"is_hook": False}) for beat in beats]
 
+def clean_event_summary(summary: str, limit: int = 420) -> str:
+    cleaned = " ".join(summary.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[:limit].rsplit(" ", 1)[0].rstrip(" ,.;:") + "..."
+
+def summary_looks_safe_for_tts(summary: str) -> bool:
+    cleaned = " ".join(summary.split())
+    return bool(cleaned) and bool(qa_safe_summary_fragment(cleaned, limit=320))
+
+def safe_summary_fragment(summary: str, limit: int = 240) -> str:
+    return qa_safe_summary_fragment(summary, limit=limit)
+
+def fallback_arc_draft(bank: SeriesEventBank, arc: SeriesArcPlan, *, arc_index: int) -> list[SeriesReviewBeat]:
+    return validated_fallback_arc_draft(bank, arc, arc_index=arc_index)
+
+def validated_fallback_arc_draft(bank: SeriesEventBank, arc: SeriesArcPlan, *, arc_index: int) -> list[SeriesReviewBeat]:
+    events = [
+        event
+        for event in events_for_arc(bank, arc)
+        if event.event_type not in NON_STORY_EVENT_TYPES and event.tc_end > event.tc_start
+    ]
+    if not events:
+        return []
+    beats: list[SeriesReviewBeat] = []
+    used: set[str] = set()
+    if arc_index == 0:
+        hook_event = next(
+            (event for event in global_hook_candidates(bank, limit=6) if event.event_type not in NON_STORY_EVENT_TYPES),
+            events[0],
+        )
+        used.add(hook_event.event_id)
+        beats.append(
+            SeriesReviewBeat(
+                beat_id=0,
+                narration=fallback_text(
+                    "Mở đầu bằng bước ngoặt nổi bật của mùa",
+                    hook_event.summary,
+                    target_chars=420,
+                ),
+                source_refs=[source_ref_from_event(hook_event)],
+                is_hook=True,
+            )
+        )
+
+    for target in arc.episodes:
+        if target.target_beats <= 0 or target.char_budget <= 0:
+            continue
+        episode_events = [
+            event
+            for event in events
+            if event.episode_key == target.episode_key and event.event_id not in used
+        ]
+        episode_events = sorted(episode_events, key=lambda event: (event.tc_start, -event.importance))
+        quota = max(1, min(len(episode_events), target.target_beats or 1))
+        episode_label = f"tập {target.episode_number}" if target.episode_number is not None else target.episode_key
+        for event in episode_events[:quota]:
+            used.add(event.event_id)
+            beats.append(
+                SeriesReviewBeat(
+                    beat_id=len(beats),
+                    narration=fallback_text(
+                        f"Ở {episode_label}, mạch truyện giữ mốc quan trọng này",
+                        event.summary,
+                        target_chars=max(320, int(target.char_budget * 0.45) if target.char_budget > 0 else 320),
+                    ),
+                    source_refs=[source_ref_from_event(event)],
+                    is_hook=False,
+                )
+            )
+    renumbered = renumber_beats(beats)
+    if arc_index == 0:
+        return normalize_series_beats(renumbered)
+    return [beat.model_copy(update={"is_hook": False}) for beat in renumbered]
+
+def safe_fallback_arc_draft(bank: SeriesEventBank, arc: SeriesArcPlan, *, arc_index: int) -> list[SeriesReviewBeat]:
+    return validated_fallback_arc_draft(bank, arc, arc_index=arc_index)
+    events = [
+        event
+        for event in events_for_arc(bank, arc)
+        if event.event_type not in NON_STORY_EVENT_TYPES and event.tc_end > event.tc_start
+    ]
+    if not events:
+        return []
+    beats: list[SeriesReviewBeat] = []
+    used: set[str] = set()
+    if arc_index == 0:
+        hook_event = next(
+            (event for event in global_hook_candidates(bank, limit=6) if event.event_type not in NON_STORY_EVENT_TYPES),
+            events[0],
+        )
+        used.add(hook_event.event_id)
+        beats.append(
+            SeriesReviewBeat(
+                beat_id=0,
+                narration=f"Má»Ÿ Ä‘áº§u báº±ng bÆ°á»›c ngoáº·t ná»•i báº­t cá»§a mÃ¹a: {clean_event_summary(hook_event.summary)}",
+                source_refs=[source_ref_from_event(hook_event)],
+                is_hook=True,
+            )
+        )
+    for target in arc.episodes:
+        if target.target_beats <= 0 or target.char_budget <= 0:
+            continue
+        episode_events = [
+            event
+            for event in events
+            if event.episode_key == target.episode_key and event.event_id not in used
+        ]
+        episode_events = sorted(episode_events, key=lambda event: (event.tc_start, -event.importance))
+        quota = max(1, min(len(episode_events), target.target_beats or 1))
+        episode_label = f"táº­p {target.episode_number}" if target.episode_number is not None else target.episode_key
+        for event in episode_events[:quota]:
+            used.add(event.event_id)
+            beats.append(
+                SeriesReviewBeat(
+                    beat_id=len(beats),
+                    narration=(
+                        f"á»ž {episode_label}, máº¡ch truyá»‡n giá»¯ má»‘c quan trá»ng nÃ y: "
+                        f"{clean_event_summary(event.summary)} "
+                        "Diá»…n biáº¿n áº¥y trá»Ÿ thÃ nh ná»n Ä‘á»ƒ ná»‘i tiáº¿p xung Ä‘á»™t cá»§a mÃ¹a."
+                    ),
+                    source_refs=[source_ref_from_event(event)],
+                    is_hook=False,
+            )
+            )
+    return renumber_beats(beats)
+
+def fallback_text(prefix: str, summary: str, *, target_chars: int) -> str:
+    cleaned_summary = qa_safe_summary_fragment(summary, limit=320)
+    sentences = []
+    if cleaned_summary:
+        sentences.append(f"{prefix}: {cleaned_summary}.")
+    else:
+        sentences.append(
+            f"{prefix}: đây là một bước chuyển của mạch truyện, khi tình thế đổi hướng và nhân vật phải bước sang hệ quả tiếp theo."
+        )
+    sentences.extend(
+        [
+            "Mốc này giữ nguyên nguyên nhân và hệ quả thay vì kể lướt một cách máy móc.",
+            "Nó còn tạo đủ ngữ cảnh để recap nối sang phần sau mà không bị đứt mạch.",
+            "Vì vậy, chi tiết này nên được hiểu như ý nghĩa câu chuyện chứ không phải nguyên văn đối thoại.",
+        ]
+    )
+    text = " ".join(sentences)
+    if len(text) <= target_chars:
+        return text.strip()
+    trimmed = text[:target_chars].rsplit(" ", 1)[0].rstrip(" ,.;:")
+    return trimmed + "."
+
+def deterministic_series_draft(bank: SeriesEventBank) -> list[SeriesReviewBeat]:
+    events = [
+        event
+        for event in bank.events
+        if event.event_type not in NON_STORY_EVENT_TYPES and event.tc_end > event.tc_start
+    ]
+    if not events:
+        return []
+
+    events_by_episode: dict[str, list[SeriesEvent]] = {}
+    for event in sorted(events, key=lambda item: (bank.episode_keys.index(item.episode_key), item.tc_start)):
+        events_by_episode.setdefault(event.episode_key, []).append(event)
+
+    beats: list[SeriesReviewBeat] = []
+    used: set[str] = set()
+    hook_event = next(
+        (event for event in global_hook_candidates(bank, limit=10) if event.event_type not in NON_STORY_EVENT_TYPES),
+        events[0],
+    )
+    used.add(hook_event.event_id)
+    beats.append(
+        SeriesReviewBeat(
+            beat_id=0,
+            narration=fallback_text(
+                "Mở đầu mùa phim",
+                hook_event.summary,
+                target_chars=max(
+                    360,
+                    min(
+                        720,
+                        int(bank.char_budget * DETERMINISTIC_FALLBACK_CHAR_SCALE) // max(8, len(bank.episode_keys)),
+                    ),
+                ),
+            ),
+            source_refs=[source_ref_from_event(hook_event)],
+            is_hook=True,
+        )
+    )
+
+    targets = chaptered_episode_targets(bank)
+    if not targets:
+        per_event_chars = max(
+            320,
+            int(bank.char_budget * DETERMINISTIC_FALLBACK_CHAR_SCALE) // max(1, len(events)),
+        )
+        for event in events:
+            if event.event_id in used:
+                continue
+            beats.append(
+                SeriesReviewBeat(
+                    beat_id=len(beats),
+                    narration=fallback_text("Câu nối mạch truyện", event.summary, target_chars=per_event_chars),
+                    source_refs=[source_ref_from_event(event)],
+                    is_hook=False,
+                )
+            )
+        return normalize_series_beats(beats)
+
+    for target in targets:
+        episode_events = [event for event in events_by_episode.get(target.episode_key, []) if event.event_id not in used]
+        if not episode_events:
+            episode_events = list(events_by_episode.get(target.episode_key, []))
+        if not episode_events:
+            continue
+        quota = max(1, min(len(episode_events), target.target_beats or len(episode_events)))
+        per_beat_chars = max(
+            320,
+            int(target.char_budget * DETERMINISTIC_FALLBACK_CHAR_SCALE) // quota if quota else target.char_budget,
+        )
+        episode_label = f"tập {target.episode_number}" if target.episode_number is not None else target.episode_key
+        for event in episode_events[:quota]:
+            used.add(event.event_id)
+            beats.append(
+                SeriesReviewBeat(
+                    beat_id=len(beats),
+                    narration=fallback_text(
+                        f"Ở {episode_label}, chuyện cần giữ lại là",
+                        event.summary,
+                        target_chars=per_beat_chars,
+                    ),
+                    source_refs=[source_ref_from_event(event)],
+                    is_hook=False,
+                )
+            )
+    return normalize_series_beats(beats)
+
+def compose_deterministic_fallback(
+    bank: SeriesEventBank,
+    *,
+    reason: str,
+    prompt_count: int = 0,
+    revision_count: int = 0,
+) -> tuple[list[SeriesReviewBeat], SeriesReviewMeta]:
+    beats = deterministic_series_draft(bank)
+    qa_report = [
+        {
+            "level": "warning",
+            "code": "deterministic_composer_fallback",
+            "message": "Series composer used deterministic event-bank fallback",
+            "reason": reason,
+        },
+        *composer_qa_report(beats, bank),
+    ]
+    meta = build_review_meta(
+        bank=bank,
+        beats=beats,
+        qa_report=qa_report,
+        revision_count=revision_count,
+        prompt_count=prompt_count,
+    )
+    return beats, meta
+
 def renumber_beats(beats: list[SeriesReviewBeat]) -> list[SeriesReviewBeat]:
     return [beat.model_copy(update={"beat_id": index}) for index, beat in enumerate(beats)]
+
+def normalize_series_beats(beats: list[SeriesReviewBeat]) -> list[SeriesReviewBeat]:
+    if not beats:
+        return []
+    normalized = [
+        beat.model_copy(update={"is_hook": index == 0})
+        for index, beat in enumerate(beats)
+    ]
+    return validate_series_review_script(renumber_beats(normalized))
 
 def beats_to_prompt_payload(beats: list[SeriesReviewBeat]) -> dict[str, object]:
     return {
@@ -835,6 +1170,8 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
                 "event_ids": duplicated,
             }
         )
+
+    report.extend(analyze_narration_content(beats))
 
     total_chars = sum(len(beat.narration) for beat in beats)
     if bank.recap_format == "episode_arc_chaptered" and total_chars < bank.char_budget * 0.85:
@@ -962,11 +1299,14 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
             }
             arc_chars: dict[str, int] = {arc.arc_id: 0 for arc in plan.arcs}
             for beat in chronological_beats:
-                episode_key = beat.source_refs[0].episode_key
-                arc_id = episode_to_arc.get(episode_key)
+                if beat.is_hook and plan.arcs:
+                    arc_id = plan.arcs[0].arc_id
+                else:
+                    episode_key = beat.source_refs[0].episode_key
+                    arc_id = episode_to_arc.get(episode_key)
                 if arc_id is not None:
                     arc_chars[arc_id] += len(beat.narration)
-            for arc in plan.arcs:
+            for arc_index, arc in enumerate(plan.arcs):
                 if arc.char_budget <= 0:
                     continue
                 chars = arc_chars.get(arc.arc_id, 0)
@@ -980,6 +1320,18 @@ def composer_qa_report(beats: list[SeriesReviewBeat], bank: SeriesEventBank) -> 
                             "chars": chars,
                             "min_chars": arc.min_chars,
                             "char_budget": arc.char_budget,
+                        }
+                    )
+                hard_max_chars = arc_hard_max_chars(bank, arc_index)
+                if chars > hard_max_chars:
+                    report.append(
+                        {
+                            "level": "warning",
+                            "code": "arc_exceeds_hard_char_budget",
+                            "message": "Arc narration exceeds its hard character budget",
+                            "arc_id": arc.arc_id,
+                            "chars": chars,
+                            "hard_max_chars": hard_max_chars,
                         }
                     )
             if len(arc_chars) > 1 and total_chars > 0:
@@ -1032,12 +1384,14 @@ The previous draft failed deterministic QA. Rewrite the full JSON from scratch.
 
 Hard revision requirements:
 - Fix every issue in QA_REPORT.
-- Total narration must be {length.min_total_chars}-{length.max_total_chars} Vietnamese characters.
+- Total narration must not fall below {length.min_total_chars} Vietnamese characters. {length.max_total_chars} is a soft advisory; longer output is acceptable if the story needs it.
 - Keep {length.min_beats}-{length.max_beats} beats and make most beats {length.per_beat_min_chars}-{length.per_beat_max_chars} characters.
 - Keep beat 0 as the cold-open hook; after beat 0, continue chronological episode/story order.
 - If format is episode_chaptered or episode_arc_chaptered, every episode in EPISODE_TARGET_PLAN with target_beats > 0 must have a non-hook chapter after the hook.
 - If QA_REPORT contains under_target_length, season_under_char_budget, or episode_under_char_budget, expand the episode chapters with concrete cause/effect details. Being concise is a failure for chaptered modes.
 - Do not reuse any event_id, including the hook event.
+- Never use placeholder event_ids like ... or ellipses; copy exact event_id strings from EVENT_BANK.
+- Write pure Vietnamese with proper diacritics. Do not copy raw English/Japanese phrases from the event summaries; paraphrase them in Vietnamese instead.
 - Return ONLY JSON with the same schema.
 
 REVISION_NUMBER: {revision_number}
@@ -1048,6 +1402,14 @@ PREVIOUS_DRAFT:
 {json.dumps(beats_to_prompt_payload(beats), ensure_ascii=False)}
 """.strip()
 
+def compact_text_list(values: list[str], *, limit: int = 3, item_limit: int = 28) -> list[str]:
+    items: list[str] = []
+    for value in values[:limit]:
+        cleaned = safe_summary_fragment(str(value), limit=item_limit)
+        if cleaned:
+            items.append(cleaned)
+    return items
+
 def event_prompt_payload(events: list[SeriesEvent]) -> list[dict[str, object]]:
     return [
         {
@@ -1056,12 +1418,12 @@ def event_prompt_payload(events: list[SeriesEvent]) -> list[dict[str, object]]:
             "episode_number": event.episode_number,
             "arc": event.arc,
             "recap_mode": event.recap_mode,
-            "summary": event.summary,
+            "summary": clean_event_summary(event.summary, limit=220),
             "event_type": event.event_type,
             "importance": event.importance,
             "is_hook_candidate": event.is_hook_candidate,
-            "entity_hooks": event.entity_hooks,
-            "arc_hooks": event.arc_hooks,
+            "entity_hooks": compact_text_list(event.entity_hooks, limit=3),
+            "arc_hooks": compact_text_list(event.arc_hooks, limit=3),
         }
         for event in events
     ]
@@ -1096,6 +1458,20 @@ def global_hook_candidates(bank: SeriesEventBank, limit: int = 10) -> list[Serie
         candidates = list(bank.events)
     return sorted(candidates, key=lambda event: event.importance, reverse=True)[:limit]
 
+def arc_hard_max_chars(bank: SeriesEventBank, arc_index: int) -> int:
+    plan = bank.season_target_plan
+    if plan is None or not plan.arcs:
+        return max(1, bank.char_budget)
+    if not plan.target_total_hard_cap_s or bank.target_video_s <= 0 or bank.char_budget <= 0:
+        return max(1, plan.arcs[arc_index].char_budget)
+
+    hard_total_chars = int(plan.target_total_hard_cap_s * bank.char_budget / bank.target_video_s)
+    cumulative_budget = sum(arc.char_budget for arc in plan.arcs[: arc_index + 1])
+    previous_budget = sum(arc.char_budget for arc in plan.arcs[:arc_index])
+    cumulative_limit = hard_total_chars * cumulative_budget // bank.char_budget
+    previous_limit = hard_total_chars * previous_budget // bank.char_budget
+    return max(1, cumulative_limit - previous_limit)
+
 def build_arc_composer_prompt(
     *,
     bank: SeriesEventBank,
@@ -1106,6 +1482,7 @@ def build_arc_composer_prompt(
     revision_number: int = 0,
 ) -> str:
     is_first_arc = arc_index == 0
+    hard_max_chars = arc_hard_max_chars(bank, arc_index)
     hook_rule = (
         "Include beat 0 as the single global cold-open hook. It may use GLOBAL_HOOK_CANDIDATES from any episode."
         if is_first_arc
@@ -1122,6 +1499,13 @@ QA_REPORT:
 PREVIOUS_ARC_DRAFT:
 {json.dumps(beats_to_prompt_payload(previous_arc_beats or []), ensure_ascii=False)}
 """.rstrip()
+    global_hook_block = ""
+    if is_first_arc:
+        global_hook_block = f"""
+
+GLOBAL_HOOK_CANDIDATES:
+{json.dumps(event_prompt_payload(global_hook_candidates(bank, limit=4)), ensure_ascii=False)}
+""".rstrip()
     return f"""
 You are drafting one arc of a detailed Vietnamese anime season recap.
 Return ONLY JSON with key "beats": [{{"event_ids": [string], "narration": string, "is_hook": boolean}}].
@@ -1133,10 +1517,13 @@ Rules:
 - After the hook, recap only this arc's episodes in episode order.
 - Every episode in ARC_EPISODE_TARGETS with target_beats > 0 must have at least one non-hook beat.
 - Stay near the arc target of {arc.char_budget} Vietnamese characters and {arc.target_video_s:.1f}s.
+- HARD MAXIMUM: all narration returned for this arc must total no more than {hard_max_chars} characters. Shorten wording before returning JSON if needed.
 - Each episode must reach at least its min_chars unless there are too few usable events.
 - Use event_ids at most once inside this arc draft.
+- Never use placeholder event_ids like ... or ellipses; if you cannot name an exact event_id, omit that beat.
 - No OP/ED/theme-song/preview/recap-only content.
 - No verbatim dialogue or lyrics; transform into Vietnamese commentary.
+- Write pure Vietnamese with proper diacritics. Do not copy raw English/Japanese phrases from the event summaries; paraphrase them in Vietnamese instead.
 - Write detailed cause/effect narration. Do not summarize an episode as a tiny bridge unless its recap_mode is merge.
 
 ARC_EPISODE_TARGETS:
@@ -1145,8 +1532,7 @@ ARC_EPISODE_TARGETS:
 ARC_EVENT_BANK:
 {json.dumps(event_prompt_payload(events_for_arc(bank, arc)), ensure_ascii=False)}
 
-GLOBAL_HOOK_CANDIDATES:
-{json.dumps(event_prompt_payload(global_hook_candidates(bank)), ensure_ascii=False)}
+{global_hook_block}
 {revision_block}
 """.strip()
 
@@ -1177,9 +1563,11 @@ Rules:
 - Use only event_ids from SELECTED_EVENT_IDS. Do not add new event_ids, timecodes, source paths, or episode ids.
 - Keep beat 0 as the single hook. After beat 0, episode order must be monotonic from earliest to latest.
 - Every episode already represented in the arc drafts must keep at least one non-hook beat.
-- Stay between {length.min_total_chars} and {length.max_total_chars} Vietnamese characters.
+- Do not go below {length.min_total_chars} Vietnamese characters. {length.max_total_chars} is a soft advisory; longer output is acceptable if the story needs it.
 - Do not collapse detailed episode chapters into generic summaries.
+- Never use placeholder event_ids like ... or ellipses; keep only exact event_ids from SELECTED_EVENT_IDS.
 - No OP/ED/theme-song/preview/recap-only content. No verbatim dialogue or lyrics.
+- Write pure Vietnamese with proper diacritics. Do not copy raw English/Japanese phrases from the event summaries; paraphrase them in Vietnamese instead.
 
 SELECTED_EVENT_IDS:
 {json.dumps(selected_event_ids, ensure_ascii=False)}
@@ -1196,7 +1584,7 @@ def combine_arc_drafts(arc_drafts: list[list[SeriesReviewBeat]]) -> list[SeriesR
             combined.extend(arc_beats)
         else:
             combined.extend(beat.model_copy(update={"is_hook": False}) for beat in arc_beats)
-    return validate_series_review_script(renumber_beats(combined))
+    return normalize_series_beats(combined)
 
 def validate_stitch_event_subset(beats: list[SeriesReviewBeat], allowed_event_ids: set[str]) -> None:
     selected = {ref.event_id for beat in beats for ref in beat.source_refs}
@@ -1204,7 +1592,11 @@ def validate_stitch_event_subset(beats: list[SeriesReviewBeat], allowed_event_id
     if unknown:
         raise ValueError(f"final stitch selected event_id outside arc drafts: {unknown[:10]}")
 
-def arc_indexes_for_revision(qa_report: list[dict[str, object]], bank: SeriesEventBank) -> set[int]:
+def arc_indexes_for_revision(
+    qa_report: list[dict[str, object]],
+    bank: SeriesEventBank,
+    beats: list[SeriesReviewBeat],
+) -> set[int]:
     plan = bank.season_target_plan
     if plan is None:
         return set()
@@ -1213,10 +1605,25 @@ def arc_indexes_for_revision(qa_report: list[dict[str, object]], bank: SeriesEve
         for index, arc in enumerate(plan.arcs)
         for episode_key in arc.episode_keys
     }
+    event_to_arc = {
+        event.event_id: episode_to_arc[event.episode_key]
+        for event in bank.events
+        if event.episode_key in episode_to_arc
+    }
+    beats_by_id = {beat.beat_id: beat for beat in beats}
     result: set[int] = set()
     for item in qa_report:
         code = item.get("code")
-        if code in {"under_target_length", "season_under_char_budget"}:
+        if code in {
+            "empty_script",
+            "missing_hook",
+            "repeated_events",
+            "under_target_length",
+            "season_under_char_budget",
+            "estimated_duration_exceeds_hard_cap",
+            "non_monotonic_episode_order",
+            "non_monotonic_story_order",
+        }:
             result.update(range(len(plan.arcs)))
         arc_id = item.get("arc_id")
         if isinstance(arc_id, str):
@@ -1226,6 +1633,26 @@ def arc_indexes_for_revision(qa_report: list[dict[str, object]], bank: SeriesEve
         episode_key = item.get("episode_key")
         if isinstance(episode_key, str) and episode_key in episode_to_arc:
             result.add(episode_to_arc[episode_key])
+        beat_ids = item.get("beat_ids")
+        if isinstance(beat_ids, list):
+            for beat_id in beat_ids:
+                if not isinstance(beat_id, int) or beat_id not in beats_by_id:
+                    continue
+                beat = beats_by_id[beat_id]
+                if beat.is_hook and plan.arcs:
+                    result.add(0)
+                result.update(
+                    episode_to_arc[ref.episode_key]
+                    for ref in beat.source_refs
+                    if ref.episode_key in episode_to_arc
+                )
+        event_ids = item.get("event_ids")
+        if isinstance(event_ids, list):
+            result.update(
+                event_to_arc[event_id]
+                for event_id in event_ids
+                if isinstance(event_id, str) and event_id in event_to_arc
+            )
     return result
 
 def build_review_meta(
@@ -1275,23 +1702,62 @@ async def compose_episode_arc_chaptered_with_client(
         prompt = build_arc_composer_prompt(bank=bank, arc=arc, arc_index=arc_index)
         prompt_count += 1
         response = await client.ask(prompt)
-        arc_drafts.append(parse_composer_response(extract_json(response), bank, require_hook=arc_index == 0))
+        try:
+            parsed_arc = parse_composer_response(extract_json(response), bank, require_hook=arc_index == 0)
+            if not parsed_arc:
+                raise ValueError("series composer returned no beats for this arc")
+        except (ValueError, json.JSONDecodeError) as exc:
+            qa_report.append(
+                {
+                    "level": "warning",
+                    "code": "invalid_arc_json",
+                    "message": f"Arc {arc.arc_id} returned invalid/empty JSON; used deterministic fallback",
+                    "error": str(exc),
+                    "arc_id": arc.arc_id,
+                }
+            )
+            try:
+                parsed_arc = fallback_arc_draft(bank, arc, arc_index=arc_index)
+            except Exception as fallback_exc:  # pragma: no cover - defensive smoke fallback
+                qa_report.append(
+                    {
+                        "level": "warning",
+                        "code": "fallback_arc_failed",
+                        "message": f"Arc {arc.arc_id} fallback failed; used bare deterministic draft",
+                        "error": str(fallback_exc),
+                        "arc_id": arc.arc_id,
+                    }
+                )
+                parsed_arc = safe_fallback_arc_draft(bank, arc, arc_index=arc_index)
+        arc_drafts.append(parsed_arc)
 
     beats = combine_arc_drafts(arc_drafts)
-    prompt_count += 1
-    stitch_response = await client.ask(build_final_stitch_prompt(bank=bank, beats=beats))
-    try:
-        allowed_event_ids = {ref.event_id for beat in beats for ref in beat.source_refs}
-        stitched_beats = parse_composer_response(extract_json(stitch_response), bank)
-        validate_stitch_event_subset(stitched_beats, allowed_event_ids)
-        beats = stitched_beats
-    except (ValueError, json.JSONDecodeError) as exc:
+    stitch_prompt = build_final_stitch_prompt(bank=bank, beats=beats)
+    if len(stitch_prompt) <= MAX_FINAL_STITCH_PROMPT_CHARS:
+        prompt_count += 1
+        stitch_response = await client.ask(stitch_prompt)
+        try:
+            allowed_event_ids = {ref.event_id for beat in beats for ref in beat.source_refs}
+            stitched_beats = parse_composer_response(extract_json(stitch_response), bank)
+            validate_stitch_event_subset(stitched_beats, allowed_event_ids)
+            beats = normalize_series_beats(stitched_beats)
+        except (ValueError, json.JSONDecodeError) as exc:
+            qa_report.append(
+                {
+                    "level": "warning",
+                    "code": "invalid_final_stitch_json",
+                    "message": "Final stitch returned invalid JSON; kept combined arc draft",
+                    "error": str(exc),
+                }
+            )
+    else:
         qa_report.append(
             {
                 "level": "warning",
-                "code": "invalid_final_stitch_json",
-                "message": "Final stitch returned invalid JSON; kept combined arc draft",
-                "error": str(exc),
+                "code": "final_stitch_skipped_prompt_too_large",
+                "message": "Final stitch prompt was too large for reliable ChatGPT browser input; kept combined arc draft",
+                "prompt_chars": len(stitch_prompt),
+                "max_prompt_chars": MAX_FINAL_STITCH_PROMPT_CHARS,
             }
         )
     qa_report = [*qa_report, *composer_qa_report(beats, bank)]
@@ -1300,7 +1766,7 @@ async def compose_episode_arc_chaptered_with_client(
         if not needs_revision(qa_report):
             break
         revision_count += 1
-        arc_indexes = arc_indexes_for_revision(qa_report, bank)
+        arc_indexes = arc_indexes_for_revision(qa_report, bank, beats)
         if arc_indexes:
             for arc_index in sorted(arc_indexes):
                 arc = bank.season_target_plan.arcs[arc_index]
@@ -1315,52 +1781,87 @@ async def compose_episode_arc_chaptered_with_client(
                 prompt_count += 1
                 response = await client.ask(prompt)
                 try:
-                    arc_drafts[arc_index] = parse_composer_response(
+                    parsed_arc = parse_composer_response(
                         extract_json(response),
                         bank,
                         require_hook=arc_index == 0,
                     )
+                    if not parsed_arc:
+                        raise ValueError("series composer returned no beats for this arc")
                 except (ValueError, json.JSONDecodeError) as exc:
                     qa_report = [
                         *qa_report,
                         {
                             "level": "warning",
                             "code": "invalid_revision_json",
-                            "message": "Composer revision returned invalid JSON; kept previous valid draft",
+                            "message": "Composer revision returned invalid/empty JSON; used deterministic fallback for that arc",
                             "error": str(exc),
                         },
                     ]
-                    break
+                    try:
+                        parsed_arc = fallback_arc_draft(bank, arc, arc_index=arc_index)
+                    except Exception as fallback_exc:  # pragma: no cover - defensive smoke fallback
+                        qa_report = [
+                            *qa_report,
+                            {
+                                "level": "warning",
+                                "code": "fallback_arc_failed",
+                                "message": f"Revision fallback failed; used bare deterministic draft for arc {arc.arc_id}",
+                                "error": str(fallback_exc),
+                                "arc_id": arc.arc_id,
+                            },
+                        ]
+                        parsed_arc = safe_fallback_arc_draft(bank, arc, arc_index=arc_index)
+                arc_drafts[arc_index] = parsed_arc
             beats = combine_arc_drafts(arc_drafts)
-        prompt_count += 1
-        stitch_response = await client.ask(
-            build_final_stitch_prompt(
-                bank=bank,
-                beats=beats,
-                qa_report=qa_report,
-                revision_number=revision_count,
-            )
-        )
         retained_warning = [
-            item for item in qa_report if item.get("code") in {"invalid_revision_json", "invalid_final_stitch_json"}
+            item
+            for item in qa_report
+            if item.get("code")
+            in {
+                "invalid_arc_json",
+                "invalid_revision_json",
+                "invalid_final_stitch_json",
+                "final_stitch_skipped_prompt_too_large",
+            }
         ]
-        try:
-            allowed_event_ids = {ref.event_id for beat in beats for ref in beat.source_refs}
-            stitched_beats = parse_composer_response(extract_json(stitch_response), bank)
-            validate_stitch_event_subset(stitched_beats, allowed_event_ids)
-            beats = stitched_beats
-            qa_report = retained_warning
-        except (ValueError, json.JSONDecodeError) as exc:
+        stitch_prompt = build_final_stitch_prompt(
+            bank=bank,
+            beats=beats,
+            qa_report=qa_report,
+            revision_number=revision_count,
+        )
+        if len(stitch_prompt) <= MAX_FINAL_STITCH_PROMPT_CHARS:
+            prompt_count += 1
+            stitch_response = await client.ask(stitch_prompt)
+            try:
+                allowed_event_ids = {ref.event_id for beat in beats for ref in beat.source_refs}
+                stitched_beats = parse_composer_response(extract_json(stitch_response), bank)
+                validate_stitch_event_subset(stitched_beats, allowed_event_ids)
+                beats = normalize_series_beats(stitched_beats)
+                qa_report = retained_warning
+            except (ValueError, json.JSONDecodeError) as exc:
+                qa_report = [
+                    *retained_warning,
+                    {
+                        "level": "warning",
+                        "code": "invalid_revision_json",
+                        "message": "Composer revision returned invalid JSON; kept previous valid draft",
+                        "error": str(exc),
+                    },
+                ]
+                break
+        else:
             qa_report = [
                 *retained_warning,
                 {
                     "level": "warning",
-                    "code": "invalid_revision_json",
-                    "message": "Composer revision returned invalid JSON; kept previous valid draft",
-                    "error": str(exc),
+                    "code": "final_stitch_skipped_prompt_too_large",
+                    "message": "Revision final stitch prompt was too large for reliable ChatGPT browser input; kept combined arc draft",
+                    "prompt_chars": len(stitch_prompt),
+                    "max_prompt_chars": MAX_FINAL_STITCH_PROMPT_CHARS,
                 },
             ]
-            break
         qa_report = [*qa_report, *composer_qa_report(beats, bank)]
 
     meta = build_review_meta(

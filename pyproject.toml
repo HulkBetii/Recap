@@ -44,6 +44,12 @@ visual-index = [
     "Pillow>=10,<12",
     "safetensors>=0.4,<1",
 ]
+anime-vision = [
+    "torch>=2.8",
+    "transformers>=4.53,<5",
+    "Pillow>=10,<12",
+    "safetensors>=0.4,<1",
+]
 movie-visual = [
     "torch>=2.8",
     "torchaudio>=2.8",

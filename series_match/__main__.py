@@ -183,6 +183,10 @@ def choose_clip_duration(
         shrink_by = min_visual_clip - tail_after
         if duration - shrink_by >= min_visual_clip:
             duration -= shrink_by
+        else:
+            # Leave this candidate for a later shot that can absorb the
+            # remainder without creating a sub-minimum flash fragment.
+            return 0.0
     return duration
 
 def build_edl(

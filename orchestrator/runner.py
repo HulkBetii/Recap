@@ -342,8 +342,10 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--classifier", "heuristic"]
     elif stage == "ingest":
         command += ["--input", str(film), "--output", str(paths.film_map)]
-        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "source_language", "translate_mode", "vision_model", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
+        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "translation_min_success_ratio", "source_language", "translate_mode", "vision_provider", "vision_model", "vision_resize_long_edge", "vision_batch_size", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
             add_option(command, key, section.get(key))
+        if section.get("translation_required", False):
+            command.append("--translation-required")
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file():
             command += ["--video-profile", str(paths.video_profile)]
         if not section.get("vad_filter", True):

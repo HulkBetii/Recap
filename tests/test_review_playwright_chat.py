@@ -49,13 +49,55 @@ class _FakePage:
     def __init__(self) -> None:
         self.assistant = _CountLocator([2, 2, 3, 3])
         self.stop = _CountLocator([0, 0, 1, 0])
+        self.answer_now = _AnswerNowLocator(visible=False)
 
-    def locator(self, selector: str) -> _CountLocator:
+    def locator(self, selector: str):  # type: ignore[no-untyped-def]
         if selector == playwright_chat.ASSISTANT_MSG_SEL:
             return self.assistant
         if selector == playwright_chat.STOP_BUTTON_SEL:
             return self.stop
+        if selector in playwright_chat.ANSWER_NOW_SELS:
+            return self.answer_now
         raise AssertionError(selector)
+
+
+class _AnswerNowLocator:
+    def __init__(self, *, visible: bool) -> None:
+        self.visible = visible
+        self.clicks = 0
+
+    @property
+    def first(self) -> "_AnswerNowLocator":
+        return self
+
+    async def is_visible(self, timeout: int) -> bool:
+        assert timeout == 1_000
+        return self.visible
+
+    async def is_enabled(self) -> bool:
+        return self.visible
+
+    async def click(self) -> None:
+        self.clicks += 1
+
+
+class _AnswerNowPage(_FakePage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.assistant = _CountLocator([2, 3])
+        self.stop = _CountLocator([0])
+        self.answer_now = _AnswerNowLocator(visible=True)
+
+
+class _AnswerNowTextPage(_FakePage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.answer_now_text = _AnswerNowLocator(visible=True)
+
+    def get_by_text(self, text: str, *, exact: bool) -> _AnswerNowLocator:
+        assert text == "Answer now"
+        assert exact is True
+        return self.answer_now_text
 
 
 class _FakeTextPage:
@@ -68,6 +110,10 @@ class _FakeTextPage:
 
 
 class _PromptBox:
+    def __init__(self) -> None:
+        self.fills: list[str] = []
+        self.text = ""
+
     @property
     def first(self) -> "_PromptBox":
         return self
@@ -75,12 +121,26 @@ class _PromptBox:
     async def click(self) -> None:
         return None
 
-    async def fill(self, _prompt: str) -> None:
+    async def fill(self, prompt: str) -> None:
+        self.fills.append(prompt)
+        self.text = prompt
         return None
 
     async def is_visible(self, timeout: int) -> bool:
         assert timeout == 2_000
         return True
+
+    async def evaluate(self, _expression: str, arg=None, timeout: int = 10_000) -> str | None:
+        assert timeout == 10_000
+        if arg is not None:
+            self.text = str(arg)
+            return None
+        return self.text
+
+
+class _EmptyLocator:
+    async def count(self) -> int:
+        return 0
 
 
 class _AskPage:
@@ -93,7 +153,77 @@ class _AskPage:
             return self.assistant
         if selector == playwright_chat.PROMPT_INPUT_SEL:
             return self.prompt
+        if selector in playwright_chat.ATTACHMENT_REMOVE_SELS:
+            return _EmptyLocator()
         raise AssertionError(selector)
+
+class _Keyboard:
+    def __init__(self, page: "_LongPromptPage") -> None:
+        self.page = page
+        self.presses: list[str] = []
+
+    async def press(self, key: str) -> None:
+        self.presses.append(key)
+        if key == "Backspace":
+            self.page.prompt.text = ""
+
+    async def insert_text(self, text: str) -> None:
+        self.page.prompt.text += text
+
+class _LongPromptPage(_AskPage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.keyboard = _Keyboard(self)
+
+
+class _AttachmentButton:
+    def __init__(self, page: "_AttachmentPage", index: int) -> None:
+        self.page = page
+        self.index = index
+
+    async def click(self, timeout: int) -> None:
+        assert timeout == 10_000
+        self.page.attachments.pop(self.index)
+
+
+class _AttachmentLocator:
+    def __init__(self, page: "_AttachmentPage") -> None:
+        self.page = page
+
+    async def count(self) -> int:
+        return len(self.page.attachments)
+
+    def nth(self, index: int) -> _AttachmentButton:
+        return _AttachmentButton(self.page, index)
+
+
+class _AttachmentPage(_AskPage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attachments = ["Pasted text.txt"]
+
+    def locator(self, selector: str):  # type: ignore[no-untyped-def]
+        if selector in playwright_chat.ATTACHMENT_REMOVE_SELS:
+            return _AttachmentLocator(self)
+        return super().locator(selector)
+
+
+class _TruncatingPromptBox(_PromptBox):
+    async def fill(self, prompt: str) -> None:
+        self.fills.append(prompt)
+        self.text = prompt[:-16] if prompt else ""
+
+
+class _TruncatingKeyboard(_Keyboard):
+    async def insert_text(self, text: str) -> None:
+        self.page.prompt.text += text.replace("END_MARKER", "")
+
+
+class _TruncatingPage(_LongPromptPage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prompt = _TruncatingPromptBox()
+        self.keyboard = _TruncatingKeyboard(self)
 
 
 class _DisconnectedPage:
@@ -133,6 +263,28 @@ def test_wait_streaming_done_waits_for_a_new_assistant_message(monkeypatch) -> N
     asyncio.run(playwright_chat._wait_streaming_done(_FakePage(), 5, previous_assistant_count=2))
 
 
+def test_wait_streaming_clicks_answer_now_once_for_extended_reasoning(monkeypatch) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(playwright_chat, "ANSWER_NOW_DELAY_S", 0)
+    monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
+    page = _AnswerNowPage()
+
+    asyncio.run(playwright_chat._wait_streaming_done(page, 5, previous_assistant_count=2))
+
+    assert page.answer_now.clicks == 1
+
+
+def test_answer_now_falls_back_to_exact_text_locator() -> None:
+    page = _AnswerNowTextPage()
+
+    clicked = asyncio.run(playwright_chat._click_answer_now_if_visible(page))
+
+    assert clicked is True
+    assert page.answer_now_text.clicks == 1
+
+
 def test_wait_conversation_history_stable_before_counting_existing_messages(monkeypatch) -> None:
     async def no_sleep(_seconds: float) -> None:
         return None
@@ -153,6 +305,29 @@ def test_wait_text_stable_returns_the_latest_complete_text(monkeypatch) -> None:
     result = asyncio.run(playwright_chat._wait_text_stable(_FakeTextPage(), timeout_s=5))
 
     assert result == "final"
+
+
+def test_prompt_text_match_rejects_duplicated_prompt() -> None:
+    prompt = "ARC_EVENT_BANK: " + ("event_id s01e01 section " * 200) + "GLOBAL_HOOK_CANDIDATES"
+
+    assert not playwright_chat._prompt_text_matches(prompt + prompt, prompt)
+    assert playwright_chat._prompt_text_matches(prompt, prompt)
+
+
+def test_prompt_text_match_normalizes_prosemirror_blank_lines_but_requires_complete_suffix() -> None:
+    prompt = "BEGIN_MARKER\nARC_EVENT_BANK\nGLOBAL_HOOK_CANDIDATES_COMPLETE"
+    prosemirror_text = "BEGIN_MARKER\n\nARC_EVENT_BANK\n\nGLOBAL_HOOK_CANDIDATES_COMPLETE"
+
+    assert playwright_chat._prompt_text_matches(prosemirror_text, prompt)
+    assert not playwright_chat._prompt_text_matches(prosemirror_text.removesuffix("_COMPLETE"), prompt)
+
+
+def test_clear_prompt_removes_pending_attachment() -> None:
+    page = _AttachmentPage()
+
+    asyncio.run(playwright_chat._clear_prompt_text(page, page.prompt))
+
+    assert page.attachments == []
 
 
 def test_ask_recovers_same_response_without_resending(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -195,6 +370,62 @@ def test_ask_recovers_same_response_without_resending(monkeypatch, tmp_path) -> 
     assert sends == 1
     assert waits == 2
     assert client.last_attempt_count == 2
+
+def test_ask_uses_verified_fill_for_multiline_long_prompt(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    async def fake_send(_page) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+    async def fake_wait(_page, _timeout_s: int, _previous_count: int) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+    async def fake_text(_page) -> str:  # type: ignore[no-untyped-def]
+        return "final response"
+
+    monkeypatch.setattr(playwright_chat, "_click_send", fake_send)
+    monkeypatch.setattr(playwright_chat, "_wait_streaming_done", fake_wait)
+    monkeypatch.setattr(playwright_chat, "_wait_text_stable", fake_text)
+    client = playwright_chat.PlaywrightChatClient(tmp_path / "profile")
+    page = _LongPromptPage()
+    client._page = page
+    suffix = "\nEND_MARKER_GLOBAL_HOOK_CANDIDATES_COMPLETE"
+    body = "ARC_EVENT_BANK event_id s01e01 chronology Vietnamese narration constraints.\n" * 400
+    prompt = ("BEGIN_MARKER\n" + body)[: 12_860 - len(suffix)] + suffix
+
+    result = asyncio.run(client.ask(prompt))
+
+    assert result == "final response"
+    assert page.prompt.fills == ["", prompt]
+    assert "Control+V" not in page.keyboard.presses
+
+
+def test_prompt_verification_failure_never_submits(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    sends = 0
+
+    async def fake_send(_page) -> None:  # type: ignore[no-untyped-def]
+        nonlocal sends
+        sends += 1
+
+    async def immediate_verification(box, prompt: str, timeout_s: int = 30) -> bool:  # type: ignore[no-untyped-def]
+        del timeout_s
+        return playwright_chat._prompt_text_matches(await playwright_chat._read_prompt_text(box), prompt)
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(playwright_chat, "_click_send", fake_send)
+    monkeypatch.setattr(playwright_chat, "_wait_prompt_text_loaded", immediate_verification)
+    monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
+    client = playwright_chat.PlaywrightChatClient(tmp_path / "profile", max_attempts=2)
+    client._page = _TruncatingPage()
+
+    try:
+        asyncio.run(client.ask("BEGIN_MARKER\nARC_EVENT_BANK\nEND_MARKER"))
+    except playwright_chat.PlaywrightChatError as exc:
+        assert exc.code == "prompt_verify_failed"
+        assert exc.attempts == 2
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected PlaywrightChatError")
+    assert sends == 0
 
 
 def test_dispatch_error_recovers_without_second_send(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
