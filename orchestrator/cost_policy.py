@@ -151,13 +151,15 @@ def describe_tts(tts: dict[str, Any]) -> dict[str, Any]:
         )
     except TtsProviderError:
         available_providers = []
+    provider_mode = tts.get("provider_mode", "auto")
+    is_vieneu = provider_mode == "vieneu"
     return {
-        "provider_mode": tts.get("provider_mode", "auto"),
+        "provider_mode": provider_mode,
         "available_providers": available_providers,
         "text_normalization": tts.get("text_normalization", "vi"),
         "pronunciation_suggest_backend": tts.get("pronunciation_suggest_backend", "off"),
-        "backend": "paid_tts_provider",
-        "cost": "paid_audio_cacheable",
+        "backend": "local_vieneu_onnx" if is_vieneu else "paid_tts_provider",
+        "cost": "local_compute" if is_vieneu else "paid_audio_cacheable",
     }
 
 def build_cost_summary(

@@ -896,6 +896,32 @@ def test_tts_auto_preflight_accepts_openai_as_only_available_provider(tmp_path: 
     )
 
 
+def test_vieneu_tts_command_and_preflight_are_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    film = tmp_path / "film.mp4"
+    film.write_bytes(b"film")
+    config = load_config(None)
+    config["tts"].update({
+        "voice_id": "Ngọc Linh",
+        "provider_mode": "vieneu",
+        "vieneu_style": "doc_truyen",
+        "vieneu_backend": "onnx",
+        "vieneu_precision": "int8",
+        "vieneu_model": "local-model",
+        "vieneu_threads": 2,
+    })
+    paths = build_paths(tmp_path / "run")
+    command = build_command("tts", paths, film, config, force=False, python_exe="python")
+    assert command[command.index("--provider-mode") + 1] == "vieneu"
+    assert command[command.index("--vieneu-style") + 1] == "doc_truyen"
+    assert command[command.index("--vieneu-backend") + 1] == "onnx"
+    assert command[command.index("--vieneu-precision") + 1] == "int8"
+    assert command[command.index("--vieneu-model") + 1] == "local-model"
+    assert command[command.index("--vieneu-threads") + 1] == "2"
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("orchestrator.runner.require_vieneu_runtime", lambda: None)
+    preflight(film=film, selected={"tts"}, forced=set(), paths=paths, config=config)
+
+
 def test_production_runtime_preflight_reports_missing_module(monkeypatch: pytest.MonkeyPatch) -> None:
     config = load_config(Path("config.movie.production.yaml"))
     monkeypatch.setattr("orchestrator.runner.runtime_module_available", lambda module: module != "whisperx")

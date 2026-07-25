@@ -10,6 +10,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { App } from "./App";
+import { LocaleProvider } from "./i18n";
 import "./styles/global.css";
 
 const queryClient = new QueryClient({
@@ -21,11 +22,13 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <Tooltip.Provider delayDuration={350}>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
-      </Tooltip.Provider>
+      <LocaleProvider>
+        <Tooltip.Provider delayDuration={350}>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </Tooltip.Provider>
+      </LocaleProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

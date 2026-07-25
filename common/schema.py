@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SegmentType = Literal["speech", "visual"]
-ProviderMode = Literal["auto", "ai33", "genmax", "openai"]
+ProviderMode = Literal["auto", "ai33", "genmax", "openai", "vieneu"]
 AsrProvider = Literal["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"]
 AlignerProvider = Literal["none", "whisperx", "qwen3"]
 TimecodeQuality = Literal["strict", "approximate"]

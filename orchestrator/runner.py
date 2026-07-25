@@ -48,6 +48,7 @@ from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
 from episode_planner.integrity import EPISODE_PLANNER_CACHE_VERSION, episode_planner_config_hash, episode_planner_input_hashes
 from tts.providers import TtsProviderError, resolve_provider_order
+from tts.vieneu_provider import VieneuProviderError, require_vieneu_runtime, validate_vieneu_settings
 from visual_index.integrity import metadata_is_current, validate_visual_index_artifacts, visual_index_config_hash
 from match.version import MATCH_ALGORITHM_VERSION
 from ingest.integrity import INGEST_CACHE_VERSION, ingest_config_hash
@@ -414,7 +415,24 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--headless")
     elif stage == "tts":
         command += ["--review-script", str(paths.review_script), "--output-audio", str(paths.voiceover), "--output-timing", str(paths.beats_timing)]
-        for key in ("voice_id", "provider_mode", "genmax_voice_id", "model", "openai_model", "openai_voice", "speed", "inter_beat_pause", "concurrency", "cost_per_1k_chars", "log_level"):
+        for key in (
+            "voice_id",
+            "provider_mode",
+            "genmax_voice_id",
+            "model",
+            "openai_model",
+            "openai_voice",
+            "vieneu_style",
+            "vieneu_backend",
+            "vieneu_precision",
+            "vieneu_model",
+            "vieneu_threads",
+            "speed",
+            "inter_beat_pause",
+            "concurrency",
+            "cost_per_1k_chars",
+            "log_level",
+        ):
             add_option(command, key, section.get(key))
         add_option(command, "tts_text_normalization", section.get("text_normalization"))
         add_option(command, "tts_pronunciation_lexicon", section.get("pronunciation_lexicon"))
@@ -533,6 +551,17 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
             )
         except TtsProviderError as exc:
             raise OrchestratorError(str(exc)) from exc
+        if tts_config.get("provider_mode") == "vieneu":
+            try:
+                validate_vieneu_settings(
+                    backend=str(tts_config.get("vieneu_backend", "onnx")),
+                    precision=str(tts_config.get("vieneu_precision", "int8")),
+                    style=str(tts_config.get("vieneu_style", "doc_truyen")),
+                    threads=int(tts_config.get("vieneu_threads", 0)),
+                )
+                require_vieneu_runtime()
+            except VieneuProviderError as exc:
+                raise OrchestratorError(str(exc)) from exc
 
 
 def runtime_module_available(module: str) -> bool:
@@ -565,6 +594,9 @@ def validate_runtime_requirements(will_run: set[str], config: dict[str, Any]) ->
     if "match" in will_run and match.get("visual_mode") == "rerank":
         modules.update({"torch", "transformers", "PIL"})
         cuda_required = cuda_required or match.get("visual_device") == "cuda"
+    tts = config.get("tts", {})
+    if "tts" in will_run and tts.get("provider_mode") == "vieneu":
+        modules.update({"vieneu", "onnxruntime", "soundfile"})
     missing = sorted(module for module in modules if not runtime_module_available(module))
     if missing:
         raise OrchestratorError(

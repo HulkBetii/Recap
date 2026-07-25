@@ -29,6 +29,11 @@ ui = [
     "uvicorn>=0.35,<1",
     "psutil>=7,<8",
 ]
+tts-vieneu = [
+    "vieneu==3.2.3",
+    "gradio>=5.49.1,<6",
+    "huggingface-hub>=0.34,<1",
+]
 asr-align = [
     "torch>=2.8",
     "torchaudio>=2.8",

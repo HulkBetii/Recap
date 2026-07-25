@@ -3,16 +3,21 @@ import { useEffect, useRef, useState } from "react";
 import type { JobEvent } from "../types";
 import { normalizeEvent } from "./client";
 
-export function useJobEvents(jobId: string | undefined): { events: JobEvent[]; connected: boolean } {
+export function useJobEvents(jobId: string | undefined, reconnectToken = 0): { events: JobEvent[]; connected: boolean } {
   const [stream, setStream] = useState<{ jobId?: string; events: JobEvent[] }>({ events: [] });
   const [connected, setConnected] = useState(false);
   const latestId = useRef(0);
+  const activeJobId = useRef<string | undefined>(undefined);
   const queryClient = useQueryClient();
 
   useEffect(() => {
     if (!jobId) return undefined;
-    latestId.current = 0;
-    const source = new EventSource(`/api/jobs/${encodeURIComponent(jobId)}/events/stream`);
+    if (activeJobId.current !== jobId) {
+      latestId.current = 0;
+      activeJobId.current = jobId;
+    }
+    const cursor = latestId.current ? `?after_seq=${latestId.current}` : "";
+    const source = new EventSource(`/api/jobs/${encodeURIComponent(jobId)}/events/stream${cursor}`);
     const consume = (event: MessageEvent<string>) => {
       try {
         const parsed = normalizeEvent(JSON.parse(event.data) as Parameters<typeof normalizeEvent>[0]);
@@ -38,7 +43,7 @@ export function useJobEvents(jobId: string | undefined): { events: JobEvent[]; c
     source.onopen = () => setConnected(true);
     source.onerror = () => setConnected(false);
     return () => source.close();
-  }, [jobId, queryClient]);
+  }, [jobId, queryClient, reconnectToken]);
 
   return { events: stream.jobId === jobId ? stream.events : [], connected };
 }

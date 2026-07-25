@@ -12,7 +12,7 @@ describe("RunsPage", () => {
     renderUi(<RunsPage />);
     expect(await screen.findByRole("heading", { name: "Solo Leveling S01" })).toBeInTheDocument();
     expect(screen.getByText("12 eps", { exact: false })).toBeInTheDocument();
-    expect(screen.getByText("0 waiting")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /new run/i })).toHaveAttribute("href", "/runs/new");
+    expect(screen.getByText(/0 (đang chờ|waiting)/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /(run mới|new run)/i })).toHaveAttribute("href", "/runs/new");
   });
 });

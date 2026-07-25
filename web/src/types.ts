@@ -18,6 +18,7 @@ export interface RuntimeCheck {
   label: string;
   status: QaStatus;
   detail?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface HealthResponse {
@@ -36,6 +37,7 @@ export interface Preset {
   token: string;
   kind?: RunKind | "both";
   description?: string;
+  summary?: Record<string, unknown>;
 }
 
 export interface FsRoot {
@@ -49,9 +51,60 @@ export interface FsEntry {
   token: string;
   name: string;
   kind: "file" | "directory";
+  suffix?: string;
   extension?: string;
   size?: number;
   modified_at?: string;
+}
+
+export interface FsLocation {
+  root_id: string;
+  token: string;
+  name: string;
+  parent_token?: string | null;
+  at_root?: boolean;
+}
+
+export interface FsListing {
+  current: FsLocation;
+  entries: FsEntry[];
+}
+
+export interface SingleSourceInspection {
+  kind: "single";
+  source_token: string;
+  source_name: string;
+  display_title: string;
+  suggested_run_name: string;
+  media_valid?: boolean;
+  duration_s?: number | null;
+}
+
+export interface SeriesEpisodeInspection {
+  episode_key: string;
+  episode_number?: number | string | null;
+  title?: string | null;
+  arc?: string | null;
+  source_available: boolean;
+}
+
+export interface SeriesSourceInspection {
+  kind: "series";
+  manifest_token: string;
+  manifest_name: string;
+  series_id: string;
+  display_title: string;
+  suggested_run_name: string;
+  episodes: SeriesEpisodeInspection[];
+  missing_source_count?: number;
+  missing_sources?: string[];
+  duplicate_sources?: string[];
+  duplicate_source_count?: number;
+  duplicate_source_episode_keys?: string[];
+  total_duration_s?: number | null;
+  probed_duration_count?: number;
+  arcs?: string[];
+  arc_preview?: Array<string | { arc?: string; title?: string; episode_keys?: string[] }>;
 }
 
 export interface StageState {
@@ -89,7 +142,11 @@ export interface RunSummary {
   job_id?: string;
   kind: RunKind;
   title: string;
+  display_title?: string;
   run_dir: string;
+  management_mode?: "managed" | "artifact_only";
+  available_actions?: string[];
+  read_only_reason?: string | null;
   status: JobStatus;
   delivery_status?: QaStatus;
   episode_count?: number;
@@ -111,6 +168,8 @@ export interface PlanResponse {
   command: string | string[];
   run_dir: string;
   stages: PlanStage[];
+  checks?: RuntimeCheck[];
+  output_paths?: string[];
   warnings: string[];
   can_start: boolean;
   dry_run_output?: string;
@@ -121,6 +180,8 @@ export interface PreflightResponse {
   can_start: boolean;
   checks: RuntimeCheck[];
   warnings?: string[];
+  plan_id?: string;
+  providers?: Record<string, boolean>;
 }
 
 export interface JobEvent {

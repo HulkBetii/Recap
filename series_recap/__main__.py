@@ -34,6 +34,8 @@ from common.schema import (
 from orchestrator.config import ConfigError, add_option, load_config
 from orchestrator.graph import build_paths as build_episode_paths
 from orchestrator.runner import outputs_valid as episode_outputs_valid
+from tts.providers import TtsProviderError, resolve_provider_order
+from tts.vieneu_provider import VieneuProviderError, require_vieneu_runtime, validate_vieneu_settings
 
 EPISODE_KEY_RE = re.compile(r"(?:s(?P<season>\d{1,2})e(?P<episode>\d{1,3})|e(?P<episode_only>\d{1,3}))", re.IGNORECASE)
 
@@ -446,6 +448,11 @@ def tts_command(*, py: str, paths: SeriesPaths, config: dict[str, Any], force: b
         "model",
         "openai_model",
         "openai_voice",
+        "vieneu_style",
+        "vieneu_backend",
+        "vieneu_precision",
+        "vieneu_model",
+        "vieneu_threads",
         "speed",
         "inter_beat_pause",
         "concurrency",
@@ -739,6 +746,23 @@ def run_series_recap(
                 raise SeriesRecapError(f"episode source file does not exist: {spec.source_path}")
         if not config.get("tts", {}).get("voice_id"):
             raise SeriesRecapError("tts.voice_id must be set in config before final series TTS")
+        tts_config = config.get("tts", {})
+        try:
+            resolve_provider_order(
+                tts_config.get("provider_mode", "auto"),
+                voice_id=str(tts_config.get("voice_id", "")),
+                genmax_voice_id=tts_config.get("genmax_voice_id"),
+            )
+            if tts_config.get("provider_mode") == "vieneu":
+                validate_vieneu_settings(
+                    backend=str(tts_config.get("vieneu_backend", "onnx")),
+                    precision=str(tts_config.get("vieneu_precision", "int8")),
+                    style=str(tts_config.get("vieneu_style", "doc_truyen")),
+                    threads=int(tts_config.get("vieneu_threads", 0)),
+                )
+                require_vieneu_runtime()
+        except (TtsProviderError, VieneuProviderError) as exc:
+            raise SeriesRecapError(str(exc)) from exc
 
     episode_run_dirs: dict[str, Path] = {}
     summaries: list[StepSummary] = []

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -86,6 +86,19 @@ class FilesystemEntry(ApiModel):
     modified_at: datetime | None = None
 
 
+class FilesystemLocation(ApiModel):
+    root_id: str
+    token: str
+    name: str
+    parent_token: str | None = None
+    at_root: bool = False
+
+
+class FilesystemListing(ApiModel):
+    current: FilesystemLocation
+    entries: list[FilesystemEntry]
+
+
 class PlanCheck(ApiModel):
     code: str
     status: DeliveryStatus
@@ -104,12 +117,18 @@ class SinglePlanRequest(ApiModel):
     source_token: str
     run_dir_token: str | None = None
     run_parent_token: str | None = None
-    run_name: str | None = None
+    run_name: str | None = Field(default=None, max_length=80)
+    display_title: str | None = Field(default=None, validation_alias=AliasChoices("display_title", "title"), max_length=120)
     config_token: str
     from_stage: str | None = None
     to_stage: str | None = None
     only: str | None = None
     overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("display_title")
+    @classmethod
+    def normalize_display_title(cls, value: str | None) -> str | None:
+        return _normalize_display_title(value)
 
     @model_validator(mode="after")
     def validate_run_target(self) -> SinglePlanRequest:
@@ -124,10 +143,16 @@ class SeriesPlanRequest(ApiModel):
     manifest_token: str
     run_dir_token: str | None = None
     run_parent_token: str | None = None
-    run_name: str | None = None
+    run_name: str | None = Field(default=None, max_length=80)
+    display_title: str | None = Field(default=None, validation_alias=AliasChoices("display_title", "title"), max_length=120)
     config_token: str
     episodes: str | None = None
     overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("display_title")
+    @classmethod
+    def normalize_display_title(cls, value: str | None) -> str | None:
+        return _normalize_display_title(value)
 
     @model_validator(mode="after")
     def validate_run_target(self) -> SeriesPlanRequest:
@@ -153,6 +178,7 @@ class ExecutionPlan(ApiModel):
     dry_run_output: str = ""
     can_start: bool = True
     command_hash: str
+    display_title: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @property
@@ -170,6 +196,7 @@ class JobRecord(ApiModel):
     run_dir: str
     config_path: str
     config_snapshot: dict[str, Any]
+    display_title: str
     parent_job_id: str | None = None
     attempt: int = 1
     worker_id: str | None = None
@@ -223,6 +250,7 @@ class RegisteredRunRecord(ApiModel):
     id: str
     path: str
     kind: JobKind | None = None
+    display_title: str | None = None
     created_at: datetime
 
 
@@ -242,13 +270,83 @@ class RunRecord(ApiModel):
     id: str
     kind: JobKind
     name: str
+    display_title: str
     path_token: str
     job_id: str | None = None
     episode_keys: list[str] = Field(default_factory=list)
     output_artifact_id: str | None = None
     execution_status: JobStatus | None = None
     delivery_status: DeliveryStatus = DeliveryStatus.UNKNOWN
+    management_mode: Literal["managed", "artifact_only"] = "artifact_only"
+    available_actions: list[str] = Field(default_factory=list)
+    read_only_reason: str | None = None
     modified_at: datetime
+
+
+class SingleSourceInspection(ApiModel):
+    kind: Literal["single"] = "single"
+    source_token: str
+    source_name: str
+    display_title: str
+    suggested_run_name: str
+    media_valid: bool
+    duration_s: float | None = None
+
+
+class SeriesEpisodeInspection(ApiModel):
+    episode_key: str
+    episode_number: int | str | None = None
+    title: str | None = None
+    arc: str | None = None
+    source_available: bool
+    source_name: str | None = None
+    source_duplicate: bool = False
+
+
+class SeriesSourceInspection(ApiModel):
+    kind: Literal["series"] = "series"
+    manifest_token: str
+    manifest_name: str
+    series_id: str
+    display_title: str
+    suggested_run_name: str
+    episodes: list[SeriesEpisodeInspection]
+    missing_source_count: int = 0
+    missing_source_episode_keys: list[str] = Field(default_factory=list)
+    duplicate_source_count: int = 0
+    duplicate_source_episode_keys: list[str] = Field(default_factory=list)
+    total_duration_s: float | None = None
+    arc_preview: list[str] = Field(default_factory=list)
+
+
+class RunRegistrationInspection(ApiModel):
+    path_token: str
+    kind: JobKind
+    recognizable: bool
+    default_title: str
+    output_available: bool
+    artifact_count: int
+
+
+class PresetSummary(ApiModel):
+    id: str
+    name: str
+    token: str
+    kind: Literal["single", "series"]
+    description: str
+    summary: dict[str, Any]
+
+
+class ServerMetadata(ApiModel):
+    origin: str
+    host: str
+    port: int
+    api_base: str = "/api"
+
+
+class SessionResponse(ApiModel):
+    token: str
+    server: ServerMetadata
 
 
 class EpisodeRecord(ApiModel):
@@ -315,3 +413,14 @@ class RerunRequest(ApiModel):
         if self.scope == "all" and not self.confirmed:
             raise ValueError("confirmed=true is required when scope=all")
         return self
+
+
+def _normalize_display_title(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(value.split())
+    if not normalized:
+        return None
+    if any(ord(character) < 32 for character in normalized):
+        raise ValueError("display title contains control characters")
+    return normalized

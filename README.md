@@ -26,6 +26,8 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
+Nếu muốn chọn VieNeu local trong CLI/UI, cài thêm extra: `python -m pip install -e ".[dev,ui,tts-vieneu]"`.
+
 ## Local Web UI
 
 UI local chạy FastAPI + React/Vite trên `127.0.0.1`, điều khiển nguyên các CLI hiện có và không upload video qua browser.
@@ -60,6 +62,18 @@ powershell -ExecutionPolicy Bypass -File scripts/start_recap_ui.ps1 -Dev
 - V1 chạy một pipeline job tại một thời điểm, các job còn lại xếp FIFO. Resume không truyền `--force`.
 - UI chỉ nhận path/artifact token dưới các filesystem root đã cấu hình; API key chỉ hiển thị trạng thái configured/available, không trả giá trị secret.
 - Final delivery QA tách riêng process success với pass/warn/block của translation, timecode, Composer, EDL, source coverage và render media. Với season recap, duration chỉ block khi render thực tế thấp hơn `target_total_min_s`; vượt target max/hard cap vẫn được giao.
+
+### Workflow UX V1.1
+
+- UI mặc định dùng tiếng Việt; nút chuyển sang English được lưu trong trình duyệt. Log và nội dung artifact luôn giữ nguyên ngôn ngữ nguồn.
+- Wizard mới đi theo bốn bước `Nguồn & đầu ra -> Preset -> Preflight -> Xác nhận`. Sau khi chọn source/manifest, UI inspect duration, thứ tự episode, source thiếu/trùng và gợi ý tên trước khi tạo plan.
+- `Tên hiển thị` có thể dùng Unicode và chỉ phục vụ UI. `Tên thư mục run` là slug an toàn dài 1-80 ký tự; hai giá trị không thay thế nhau. Thứ tự fallback tên hiển thị là tên người dùng nhập, `series_title` trong manifest, rồi tên source/thư mục run.
+- Basic giữ nguyên preset và không gửi override. Advanced đóng mặc định, chỉ gửi các field allowlist mà người dùng thật sự thay đổi và có thể reset về preset.
+- Duration dưới `target_total_min_s` là blocker. Vượt preferred max hoặc hard-cap chỉ là cảnh báo planning màu amber và không chặn giao video cuối.
+- Trang Runs tách `managed` job khỏi existing/artifact-only run. Artifact-only được xem QA, artifact, EDL, voiceover và video nhưng không resume/rerun; hãy tạo managed job mới qua wizard nếu cần chạy pipeline.
+- SQLite operational state dùng schema v2; migration từ v1 giữ nguyên job/run cũ và bổ sung `display_title` nullable cho job và registered run.
+- Picker và inspect chỉ dùng opaque path token: `GET /api/fs/listing`, `POST /api/inspect/single`, `POST /api/inspect/series`. UI lấy host/port hiện tại từ browser/server metadata, không hardcode `127.0.0.1:8765`; server production vẫn chỉ bind loopback và kiểm tra same-origin.
+- Các thay đổi UX này không đổi CLI, JSON contract, stage order, cache/resume, FIFO queue hoặc Playwright-first policy.
 
 
 ## Chạy toàn pipeline bằng `run.py`
@@ -127,10 +141,13 @@ Anime recap V1 có hai preset local:
 python run.py --input path\to\anime.mp4 --run-dir runs\anime-series01 --config config.anime.series.yaml
 python run.py --input path\to\anime-movie.mp4 --run-dir runs\anime-movie01 --config config.anime.movie.yaml
 python -m series_recap --manifest examples\anime\series_manifest.example.yaml --config config.anime.series.practical.yaml --episodes 1-12
+python -m series_recap --manifest examples\anime\series_manifest.example.yaml --config config.anime.series.vieneu.yaml --episodes 1-12
 ```
 
 - `config.anime.series.yaml`: `content_type=anime_series`, `source_language=ja`, `translate_mode=ja-en`, `shots.face_detection=off`, `match.w_face=0.0`, `match.w_visual=0.0`, `exclude_non_story=true`, `orchestrator.recap_mode=auto`.
 - `config.anime.series.practical.yaml`: preset season 12 tap thuc dung. OpenAI API chi dung cho JA->EN transcript translation (`translation_required=true`, `translation_min_success_ratio=0.95`), `vision_provider="off"` va `max_vision_frames=0`; review/composer/QA dung ChatGPT Playwright, ASR/shots/match/render local, TTS dung provider configured.
+- `config.anime.series.vieneu.yaml`: bien the cua practical preset dung local VieNeu v3 Turbo ONNX/int8, giong nu Bac `Ngọc Linh`, style `doc_truyen`, speed `0.9`; khong tu fallback sang paid TTS provider.
+- Solo Leveling uses `examples/anime/solo_leveling_vi_pronunciation.yaml` to normalize `Sung Jinwoo`/`Jinwoo` aliases to the Vietnamese TTS form `Sung Chin U`/`Chin U` before synthesis.
 - `config.anime.series.localvision.yaml`: opt-in local Qwen vision (`vision_provider=local_qwen2_5_vl`, `Qwen/Qwen2.5-VL-7B-Instruct`, `max_vision_frames=30`, resize long edge 768). Cai optional deps bang `python -m pip install -e ".[anime-vision]"`; neu local model/deps thieu thi ingest warning va tiep tuc khong co visual gap descriptions.
 - Khong dung Playwright cho batch vision automation; Playwright chi la duong text/review/composer/QA. Batch vision phai la OpenAI API co cap ro rang hoac local model opt-in.
 - `config.anime.movie.yaml`: `content_type=anime_movie`, cùng ingest defaults tiếng Nhật, `hook_mode=setup`, và cùng posture strict OP/ED/preview guard.
@@ -282,6 +299,31 @@ Manifest GĐ2 hash nội dung `film_map`, metadata, story map, video profile, st
 GĐ3 nhận `review_script.json` và tạo `audio/<beat_id>.mp3`, `voiceover.mp3`, `beats_timing.json`, `tts_meta.json`.
 
 Provider mặc định là `auto`: thử AI33.PRO Vivoo V3, sau đó Genmax khi có key + voice riêng, rồi OpenAI `gpt-4o-mini-tts` khi có `OPENAI_API_KEY`. Production preset dùng Genmax voice `VU16byTywsWv5JpI8rbc`; provider thiếu key được bỏ qua, và GĐ3 fail-fast nếu không có provider nào.
+
+VieNeu-TTS 3.2.3 là provider local opt-in cho tiếng Việt. Nó chạy v3 Turbo qua ONNX/int8 trên CPU, không cần API key và không được tự động chèn vào `auto` để giữ nguyên hành vi các preset hiện có. Cài optional extra (extra này pin Gradio/Hugging Face để không xung đột với Transformers của project):
+
+```powershell
+python -m pip install -e ".[tts-vieneu]"
+```
+
+Chạy VieNeu bằng giọng nữ miền Bắc `Ngọc Linh`, style kể chuyện. Lần chạy đầu có thể tải model/voice từ Hugging Face (~285 MiB); preflight chỉ báo runtime, không tự tải model ngầm:
+
+```powershell
+python -m tts `
+  --review-script out\review_script.json `
+  --output-audio out\voiceover.mp3 `
+  --output-timing out\beats_timing.json `
+  --voice-id "Ngọc Linh" `
+  --provider-mode vieneu `
+  --vieneu-style doc_truyen `
+  --vieneu-backend onnx `
+  --vieneu-precision int8 `
+  --vieneu-model pnnbao-ump/VieNeu-TTS-v3-Turbo `
+  --film-meta out\film_map.meta.json `
+  --work-dir work\tts
+```
+
+VieNeu synthesis is serialized within one TTS process, writes a temporary WAV, converts it to a real MP3 with ffmpeg (including `atempo` for non-1.0 speed), and then follows the existing normalization/cache/resume path. The SDK watermark remains enabled. Voice cloning and GPU batching are intentionally out of scope for this integration.
 
 Env vars:
 

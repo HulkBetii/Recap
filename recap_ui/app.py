@@ -16,7 +16,16 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from common.media import MediaError, probe_duration
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
+from orchestrator.config import ConfigError, load_config
 from orchestrator.graph import STAGES
+from tts.vieneu_provider import (
+    DEFAULT_VIENEU_BACKEND,
+    DEFAULT_VIENEU_PRECISION,
+    DEFAULT_VIENEU_STYLE,
+    VieneuProviderError,
+    missing_vieneu_modules,
+    validate_vieneu_settings,
+)
 
 from recap_ui.database import Database
 from recap_ui.health import collect_runtime_health
@@ -30,7 +39,9 @@ from recap_ui.schemas import (
     JobKind,
     JobRecord,
     JobStatus,
+    PresetSummary,
     RerunRequest,
+    ServerMetadata,
     SeriesPlanRequest,
     SinglePlanRequest,
     RuntimeCheck,
@@ -76,6 +87,11 @@ def create_app(
     app.state.planning = planning
     app.state.runs = runs
     app.state.mutation_token = mutation_token
+    app.state.server_metadata = ServerMetadata(
+        origin=f"http://{_format_host_for_url(host)}:{port}",
+        host=host,
+        port=port,
+    )
     app.state.job_creation_lock = threading.Lock()
     bracketed = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
     app.state.allowed_hosts = {
@@ -128,6 +144,10 @@ def create_app(
     def get_session() -> dict[str, str]:
         return {"token": app.state.mutation_token}
 
+    @app.get("/api/meta")
+    def get_server_metadata() -> ServerMetadata:
+        return app.state.server_metadata
+
     @app.get("/api/health")
     def get_health() -> dict[str, Any]:
         report = collect_runtime_health(root, profile_dir=PROFILE_DIR)
@@ -168,16 +188,24 @@ def create_app(
             _release_marker(lock_path, descriptor)
 
     @app.get("/api/presets")
-    def get_presets() -> list[dict[str, Any]]:
-        presets: list[dict[str, Any]] = []
-        for path in sorted(root.glob("config*.yaml")):
+    def get_presets() -> list[PresetSummary]:
+        presets: list[PresetSummary] = []
+        preset_paths = sorted({*root.glob("config*.yaml"), *root.glob("config*.yml")})
+        for path in preset_paths:
+            try:
+                config = load_config(path)
+            except (ConfigError, OSError, ValueError):
+                continue
+            kind = "series" if ".series" in path.name else "single"
             presets.append(
-                {
-                    "id": path.stem,
-                    "name": path.name,
-                    "token": paths.token_for(path),
-                    "kind": "series" if ".series" in path.name else "single",
-                }
+                PresetSummary(
+                    id=path.stem,
+                    name=path.name,
+                    token=paths.token_for(path),
+                    kind=kind,
+                    description=_preset_description(config, kind),
+                    summary=_non_secret_preset_summary(config, kind),
+                )
             )
         return presets
 
@@ -192,6 +220,14 @@ def create_app(
         limit: int = Query(default=500, ge=1, le=2000),
     ) -> list[Any]:
         return paths.list_entries(token, root_id=root_id, limit=limit)
+
+    @app.get("/api/fs/listing")
+    def get_filesystem_listing(
+        token: str | None = None,
+        root_id: str | None = None,
+        limit: int = Query(default=500, ge=1, le=2000),
+    ) -> Any:
+        return paths.listing(token, root_id=root_id, limit=limit)
 
     @app.post("/api/fs/child-token", dependencies=[mutation_guard])
     def create_child_path_token(payload: dict[str, str] = Body(...)) -> dict[str, str]:
@@ -211,6 +247,23 @@ def create_app(
     @app.post("/api/plans/series", dependencies=[mutation_guard])
     def plan_series(request: SeriesPlanRequest) -> ExecutionPlan:
         return planning.plan_series(request)
+
+    @app.post("/api/inspect/single", dependencies=[mutation_guard])
+    def inspect_single(payload: dict[str, Any] = Body(...)) -> Any:
+        source_token = str(payload.get("source_token") or "")
+        if not source_token:
+            raise HTTPException(status_code=422, detail="source_token is required")
+        return planning.inspect_single(source_token)
+
+    @app.post("/api/inspect/series", dependencies=[mutation_guard])
+    def inspect_series(payload: dict[str, Any] = Body(...)) -> Any:
+        manifest_token = str(payload.get("manifest_token") or "")
+        if not manifest_token:
+            raise HTTPException(status_code=422, detail="manifest_token is required")
+        episodes = payload.get("episodes")
+        if episodes is not None and not isinstance(episodes, str):
+            raise HTTPException(status_code=422, detail="episodes must be a selection string")
+        return planning.inspect_series(manifest_token, episodes)
 
     @app.post("/api/preflight", dependencies=[mutation_guard])
     def preflight(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -351,11 +404,24 @@ def create_app(
         return runs.discover_runs()
 
     @app.post("/api/runs/register", dependencies=[mutation_guard])
-    def register_run(payload: dict[str, str] = Body(...)) -> Any:
-        run_path = paths.resolve(payload.get("path_token", ""), expect="directory")
+    def register_run(payload: dict[str, Any] = Body(...)) -> Any:
+        path_token = payload.get("path_token")
+        if not isinstance(path_token, str) or not path_token:
+            raise HTTPException(status_code=422, detail="path_token is required")
+        run_path = paths.resolve(path_token, expect="directory")
         kind_text = payload.get("kind")
-        kind = JobKind(kind_text) if kind_text else None
-        repository.register_run(run_path, kind)
+        try:
+            kind = JobKind(kind_text) if kind_text else None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="kind must be single or series") from exc
+        try:
+            inspection = runs.inspect_registration(run_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if kind is not None and kind != inspection.kind:
+            raise HTTPException(status_code=422, detail="registered run kind does not match its artifacts")
+        display_title = _clean_display_title(payload.get("display_title", payload.get("title")))
+        repository.register_run(run_path, kind or inspection.kind, display_title=display_title)
         for run in runs.discover_runs():
             if paths.resolve(run.path_token, expect="directory") == run_path:
                 return run
@@ -433,10 +499,86 @@ def _provider_checks(
     ai33_ready = bool(providers.get("vivoo") and tts.get("voice_id"))
     genmax_ready = bool(providers.get("genmax") and tts.get("genmax_voice_id"))
     openai_ready = bool(providers.get("openai") and tts.get("openai_voice"))
+    vieneu_missing = missing_vieneu_modules() if mode == "vieneu" else []
+    vieneu_settings = {
+        "backend": tts.get("vieneu_backend", DEFAULT_VIENEU_BACKEND),
+        "precision": tts.get("vieneu_precision", DEFAULT_VIENEU_PRECISION),
+        "style": tts.get("vieneu_style", DEFAULT_VIENEU_STYLE),
+        "threads": tts.get("vieneu_threads", 0),
+    }
+    vieneu_settings_error: str | None = None
+    if mode == "vieneu":
+        try:
+            validate_vieneu_settings(**vieneu_settings)
+        except (TypeError, ValueError, VieneuProviderError) as exc:
+            # Keep invalid provider settings visible to the UI without exposing
+            # model paths, prompts, or any other runtime secret.
+            vieneu_settings_error = str(exc)
+        checks.append(
+            RuntimeCheck(
+                code="vieneu_settings",
+                status=DeliveryStatus.BLOCK if vieneu_settings_error else DeliveryStatus.PASS,
+                message=(
+                    "VieNeu settings are valid"
+                    if vieneu_settings_error is None
+                    else f"VieNeu settings are invalid: {vieneu_settings_error}"
+                ),
+                details={
+                    "valid": vieneu_settings_error is None,
+                    **vieneu_settings,
+                },
+            )
+        )
+    vieneu_ready = bool(tts.get("voice_id")) and not vieneu_missing and vieneu_settings_error is None
+    if mode == "vieneu":
+        checks.append(
+            RuntimeCheck(
+                code="vieneu_runtime",
+                status=DeliveryStatus.PASS if not vieneu_missing else DeliveryStatus.BLOCK,
+                message=(
+                    "VieNeu local ONNX runtime is installed"
+                    if not vieneu_missing
+                    else "VieNeu local runtime is missing: " + ", ".join(vieneu_missing)
+                ),
+                details={
+                    "available": not vieneu_missing,
+                    "missing_modules": vieneu_missing,
+                    "backend": vieneu_settings["backend"],
+                    "precision": vieneu_settings["precision"],
+                    "style": vieneu_settings["style"],
+                    "threads": vieneu_settings["threads"],
+                    "model_cache_status": "not_checked",
+                    "first_run_may_download_model": True,
+                },
+            )
+        )
+        lexicon = tts.get("pronunciation_lexicon")
+        if lexicon:
+            lexicon_path = Path(str(lexicon)).expanduser()
+            if not lexicon_path.is_absolute():
+                lexicon_path = Path(plan.config_path).resolve().parent / lexicon_path
+            lexicon_available = lexicon_path.is_file()
+            checks.append(
+                RuntimeCheck(
+                    code="tts_pronunciation_lexicon",
+                    status=DeliveryStatus.PASS if lexicon_available else DeliveryStatus.BLOCK,
+                    message=(
+                        "TTS pronunciation lexicon is available"
+                        if lexicon_available
+                        else "TTS pronunciation lexicon is configured but the file is missing"
+                    ),
+                    details={
+                        "configured": True,
+                        "available": lexicon_available,
+                        "file_name": lexicon_path.name,
+                    },
+                )
+            )
     ready = {
         "ai33": ai33_ready,
         "genmax": genmax_ready,
         "openai": openai_ready,
+        "vieneu": vieneu_ready,
         "auto": ai33_ready or genmax_ready or openai_ready,
     }.get(mode, False)
     checks.append(
@@ -449,6 +591,7 @@ def _provider_checks(
                 "ai33_ready": ai33_ready,
                 "genmax_ready": genmax_ready,
                 "openai_ready": openai_ready,
+                "vieneu_ready": vieneu_ready,
             },
         )
     )
@@ -664,7 +807,105 @@ def _plan_from_job(job: JobRecord, command: list[str]) -> ExecutionPlan:
         warnings=[],
         can_start=True,
         command_hash=command_hash(command),
+        display_title=job.display_title,
     )
+
+
+def _format_host_for_url(host: str) -> str:
+    normalized = host.strip()
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    return f"[{normalized}]" if ":" in normalized else normalized
+
+
+def _clean_display_title(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail="display_title must be a string")
+    normalized = " ".join(value.split())
+    if len(normalized) > 120:
+        raise HTTPException(status_code=422, detail="display_title is too long")
+    if any(ord(character) < 32 for character in normalized):
+        raise HTTPException(status_code=422, detail="display_title contains control characters")
+    return normalized or None
+
+
+def _preset_description(config: dict[str, Any], kind: str) -> str:
+    story = config.get("storymap", {})
+    content_type = story.get("content_type") or config.get("content_type") or kind
+    source_language = config.get("ingest", {}).get("source_language")
+    translate_mode = config.get("ingest", {}).get("translate_mode")
+    language = f"{source_language}->{translate_mode.split('-', 1)[-1]}" if source_language and translate_mode else source_language
+    return " | ".join(part for part in (kind.title(), str(content_type), language) if part)
+
+
+def _non_secret_preset_summary(config: dict[str, Any], kind: str) -> dict[str, Any]:
+    orchestrator = config.get("orchestrator", {})
+    ingest = config.get("ingest", {})
+    review = config.get("review", {})
+    tts = config.get("tts", {})
+    render = config.get("render", {})
+    summary: dict[str, Any] = {
+        "content_type": config.get("storymap", {}).get("content_type") or review.get("content_type"),
+        "source_language": ingest.get("source_language"),
+        "translate_mode": ingest.get("translate_mode"),
+        "asr_provider": ingest.get("asr_provider"),
+        "aligner": ingest.get("aligner"),
+        "translation_required": bool(ingest.get("translation_required", False)),
+        "vision_provider": ingest.get("vision_provider", "off"),
+        "review_backend": review.get("llm_backend") or config.get("orchestrator", {}).get("text_llm_backend"),
+        "tts_provider_mode": tts.get("provider_mode"),
+        "voice_configured": bool(tts.get("voice_id")),
+        "orchestrator": {
+            "log_level": orchestrator.get("log_level"),
+        },
+        "review": {
+            "target_ratio": review.get("target_ratio"),
+            "backend": review.get("llm_backend") or orchestrator.get("text_llm_backend"),
+            "playwright_max_attempts": review.get("playwright_max_attempts"),
+            "playwright_recovery_timeout_s": review.get("playwright_recovery_timeout_s"),
+        },
+        "tts": {
+            "provider_mode": tts.get("provider_mode"),
+            "voice_id": tts.get("voice_id"),
+            "voice_configured": bool(tts.get("voice_id")),
+            "vieneu_backend": tts.get("vieneu_backend") if tts.get("provider_mode") == "vieneu" else None,
+            "vieneu_precision": tts.get("vieneu_precision") if tts.get("provider_mode") == "vieneu" else None,
+            "vieneu_style": tts.get("vieneu_style") if tts.get("provider_mode") == "vieneu" else None,
+            "pronunciation_lexicon_configured": bool(tts.get("pronunciation_lexicon")),
+            "speed": tts.get("speed"),
+            "concurrency": tts.get("concurrency"),
+        },
+        "render": {
+            "width": render.get("width"),
+            "height": render.get("height"),
+            "fps": render.get("fps"),
+            "crf": render.get("crf"),
+            "preset": render.get("preset"),
+            "concurrency": render.get("concurrency"),
+        },
+        "locked_policy": {
+            "playwright_first": True,
+            "profile_configured": bool(review.get("chatgpt_profile_dir") or config.get("series_recap", {}).get("chatgpt_profile_dir")),
+            "paid_text_fallback": bool(review.get("openai_fallback_model")),
+        },
+    }
+    if kind == "series":
+        series = config.get("series_recap", {})
+        summary["series"] = {
+            "format": series.get("format"),
+            "detail_level": series.get("detail_level"),
+            "target_total_min_s": series.get("target_total_min_s"),
+            "target_total_max_s": series.get("target_total_max_s"),
+            "target_total_hard_cap_s": series.get("target_total_hard_cap_s"),
+            "arc_size": series.get("arc_size"),
+            "backend": series.get("llm_backend"),
+            "reply_timeout_s": series.get("reply_timeout_s"),
+            "playwright_max_attempts": series.get("playwright_max_attempts"),
+            "playwright_recovery_timeout_s": series.get("playwright_recovery_timeout_s"),
+        }
+    return summary
 
 
 def _mount_frontend(app: FastAPI, token: str) -> None:

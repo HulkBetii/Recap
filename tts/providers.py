@@ -12,9 +12,17 @@ import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-ProviderMode = Literal["auto", "ai33", "genmax", "openai"]
+from tts.vieneu_provider import (
+    DEFAULT_VIENEU_BACKEND,
+    DEFAULT_VIENEU_MODEL,
+    DEFAULT_VIENEU_PRECISION,
+    DEFAULT_VIENEU_STYLE,
+    VieneuSynthesizer,
+)
+
+ProviderMode = Literal["auto", "ai33", "genmax", "openai", "vieneu"]
 
 AI33_BASE_URL = "https://api.ai33.pro"
 GENMAX_BASE_URL = "https://api.genmax.io"
@@ -61,8 +69,10 @@ def resolve_provider_order(
     environ: Mapping[str, str] | None = None,
 ) -> list[str]:
     env = environ if environ is not None else os.environ
-    if provider_mode not in {"auto", "ai33", "genmax", "openai"}:
+    if provider_mode not in {"auto", "ai33", "genmax", "openai", "vieneu"}:
         raise TtsProviderError(f"unsupported provider_mode: {provider_mode}")
+    if provider_mode == "vieneu":
+        return ["vieneu"]
     if provider_mode == "ai33":
         if not env.get("VIVOO_API_KEY", "").strip():
             raise TtsProviderError("VIVOO_API_KEY env var is required for provider_mode=ai33")
@@ -100,6 +110,11 @@ class TtsProviderClient:
         model: str,
         openai_model: str = DEFAULT_OPENAI_MODEL,
         openai_voice: str = DEFAULT_OPENAI_VOICE,
+        vieneu_style: str = DEFAULT_VIENEU_STYLE,
+        vieneu_backend: str = DEFAULT_VIENEU_BACKEND,
+        vieneu_precision: str = DEFAULT_VIENEU_PRECISION,
+        vieneu_model: str = DEFAULT_VIENEU_MODEL,
+        vieneu_threads: int = 0,
         speed: float,
         provider_mode: ProviderMode,
         output_path: Path,
@@ -120,6 +135,19 @@ class TtsProviderClient:
                 elif provider == "genmax":
                     result = await self._synthesize_genmax(text, genmax_voice_id or voice_id, model, output_path)
                     actual_model = result.model or model
+                elif provider == "vieneu":
+                    result = await self._synthesize_vieneu(
+                        text,
+                        voice_id,
+                        vieneu_style,
+                        vieneu_backend,
+                        vieneu_precision,
+                        vieneu_model,
+                        vieneu_threads,
+                        speed,
+                        output_path,
+                    )
+                    actual_model = result.model or vieneu_model
                 else:
                     result = await self._synthesize_openai(
                         text,
@@ -157,6 +185,36 @@ class TtsProviderClient:
     ) -> ProviderResult:
         await asyncio.to_thread(synthesize_openai, text, voice_id, model, speed, output_path)
         return ProviderResult(provider="openai", voice_id=voice_id, audio_url="openai://audio/speech", model=model)
+
+    async def _synthesize_vieneu(
+        self,
+        text: str,
+        voice_id: str,
+        style: str,
+        backend: str,
+        precision: str,
+        model: str,
+        threads: int,
+        speed: float,
+        output_path: Path,
+    ) -> ProviderResult:
+        synthesizer: Any = getattr(self, "_vieneu_synthesizer", None)
+        if synthesizer is None:
+            synthesizer = VieneuSynthesizer()
+            self._vieneu_synthesizer = synthesizer
+        await asyncio.to_thread(
+            synthesizer.synthesize,
+            text=text,
+            voice_id=voice_id,
+            style=style,
+            backend=backend,
+            precision=precision,
+            model=model,
+            threads=threads,
+            speed=speed,
+            output_path=output_path,
+        )
+        return ProviderResult(provider="vieneu", voice_id=voice_id, audio_url="vieneu://local", model=model)
 
 
 def synthesize_openai(text: str, voice_id: str, model: str, speed: float, output_path: Path) -> None:

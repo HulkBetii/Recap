@@ -94,7 +94,15 @@ def test_planning_supports_safe_new_run_child_and_rejects_unsafe_override(tmp_pa
         run_parent_token=registry.token_for(runs),
         run_name="episode-01",
         config_token=registry.token_for(config),
-        overrides={"render": {"crf": 22}, "tts": {"speed": 1.1}},
+        overrides={
+            "render": {"crf": 22},
+            "tts": {
+                "provider_mode": "vieneu",
+                "voice_id": "Ngọc Linh",
+                "vieneu_style": "doc_truyen",
+                "speed": 1.1,
+            },
+        },
     )
     plan = service.plan_single(request)
 
@@ -102,6 +110,7 @@ def test_planning_supports_safe_new_run_child_and_rejects_unsafe_override(tmp_pa
     assert Path(plan.run_dir) == (runs / "episode-01").resolve()
     assert Path(plan.config_path).is_file()
     assert plan.config_snapshot["render"]["crf"] == 22
+    assert plan.config_snapshot["tts"]["provider_mode"] == "vieneu"
     assert service.get_plan(plan.plan_id) == plan
 
     bad = request.model_copy(update={"overrides": {"review": {"llm_backend": "openai_api"}}})
@@ -173,6 +182,78 @@ def test_runtime_preflight_checks_tts_provider_and_media_duration(tmp_path: Path
     media = _media_duration_checks(plan)[0]
     assert media.status == DeliveryStatus.PASS
     assert media.details["sources"] == [{"name": "episode.mp4", "duration_s": 123.456}]
+
+
+def test_runtime_preflight_checks_local_vieneu_without_api_keys(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    source = tmp_path / "episode.mp4"
+    source.write_bytes(b"video")
+    lexicon = tmp_path / "pronunciation.yaml"
+    lexicon.write_text("replacements: {}\n", encoding="utf-8")
+    plan = ExecutionPlan(
+        plan_id="local-preflight",
+        kind=JobKind.SINGLE,
+        command=["python", "run.py"],
+        dry_run_command=["python", "run.py", "--dry-run"],
+        run_dir=str(tmp_path / "run"),
+        config_path=str(tmp_path / "config.json"),
+        config_snapshot={},
+        dag=[PlanDagNode(key="tts", label="TTS", status="planned")],
+        command_hash="hash",
+    )
+    config = {
+        "tts": {
+            "provider_mode": "vieneu",
+            "voice_id": "Ngọc Linh",
+            "vieneu_backend": "onnx",
+            "vieneu_precision": "int8",
+            "vieneu_style": "doc_truyen",
+            "vieneu_threads": 0,
+            "pronunciation_lexicon": lexicon.name,
+        }
+    }
+    monkeypatch.setattr("recap_ui.app.missing_vieneu_modules", lambda: [])
+    checks = _provider_checks(config, {"openai": False, "vivoo": False, "genmax": False}, plan)
+    assert next(check for check in checks if check.code == "vieneu_settings").status == DeliveryStatus.PASS
+    assert next(check for check in checks if check.code == "vieneu_runtime").status == DeliveryStatus.PASS
+    assert next(check for check in checks if check.code == "tts_pronunciation_lexicon").status == DeliveryStatus.PASS
+    assert next(check for check in checks if check.code == "tts_provider_ready").status == DeliveryStatus.PASS
+
+    lexicon.unlink()
+    missing_checks = _provider_checks(config, {"openai": False, "vivoo": False, "genmax": False}, plan)
+    assert next(check for check in missing_checks if check.code == "tts_pronunciation_lexicon").status == DeliveryStatus.BLOCK
+
+
+def test_runtime_preflight_blocks_invalid_vieneu_settings(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    plan = ExecutionPlan(
+        plan_id="invalid-vieneu-preflight",
+        kind=JobKind.SINGLE,
+        command=["python", "run.py"],
+        dry_run_command=["python", "run.py", "--dry-run"],
+        run_dir=str(tmp_path / "run"),
+        config_path=str(tmp_path / "config.json"),
+        config_snapshot={},
+        dag=[PlanDagNode(key="tts", label="TTS", status="planned")],
+        command_hash="hash",
+    )
+    config = {
+        "tts": {
+            "provider_mode": "vieneu",
+            "voice_id": "Ngá»c Linh",
+            "vieneu_backend": "torch",
+            "vieneu_precision": "bf16",
+            "vieneu_style": "unknown",
+            "vieneu_threads": -1,
+        }
+    }
+    monkeypatch.setattr("recap_ui.app.missing_vieneu_modules", lambda: [])
+
+    checks = _provider_checks(config, {"openai": False, "vivoo": False, "genmax": False}, plan)
+
+    settings = next(check for check in checks if check.code == "vieneu_settings")
+    assert settings.status == DeliveryStatus.BLOCK
+    assert settings.details["backend"] == "torch"
+    assert "invalid" in settings.message.lower()
+    assert next(check for check in checks if check.code == "tts_provider_ready").status == DeliveryStatus.BLOCK
 
 
 def test_series_delivery_qa_accepts_actual_duration_over_hard_cap(tmp_path: Path) -> None:

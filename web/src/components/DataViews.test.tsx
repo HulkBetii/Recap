@@ -9,15 +9,15 @@ describe("quality views", () => {
     expect(screen.getByText("44:10")).toBeInTheDocument();
     expect(screen.getAllByText("55:59")).toHaveLength(2);
     expect(screen.getByText("50:00")).toBeInTheDocument();
-    expect(screen.getByText("Required minimum")).toBeInTheDocument();
-    expect(screen.getByText("Planning reference")).toBeInTheDocument();
-    expect(screen.getByText("Render actual").parentElement).toHaveAttribute("data-duration-tone", "neutral");
+    expect(screen.getByText("Tối thiểu bắt buộc")).toBeInTheDocument();
+    expect(screen.getByText("Mốc kế hoạch")).toBeInTheDocument();
+    expect(screen.getByText("Render thực tế").parentElement).toHaveAttribute("data-duration-tone", "neutral");
     expect(screen.getByText("1920x1080")).toBeInTheDocument();
   });
 
   it("blocks only when rendered duration is below the required minimum", () => {
     renderUi(<QaPanel qa={{ status: "block", metrics: [], durations: { render_s: 1800, minimum_s: 2100, hard_cap_s: 3000 } }} />);
-    expect(screen.getByText("Render actual").parentElement).toHaveAttribute("data-duration-tone", "block");
+    expect(screen.getByText("Render thực tế").parentElement).toHaveAttribute("data-duration-tone", "block");
     expect(screen.getByText("30:00")).toBeInTheDocument();
     expect(screen.getByText("35:00")).toBeInTheDocument();
   });

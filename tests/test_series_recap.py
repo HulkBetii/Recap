@@ -112,6 +112,19 @@ def test_practical_anime_series_preset_uses_translation_only_openai() -> None:
     assert config["series_recap"]["target_total_min_s"] == 2100
     assert config["series_recap"]["target_total_max_s"] == 2700
 
+def test_vieneu_anime_series_preset_uses_local_storytelling_voice() -> None:
+    config = load_config(Path("config.anime.series.vieneu.yaml"))
+
+    assert config["tts"]["provider_mode"] == "vieneu"
+    assert config["tts"]["voice_id"] == "Ngọc Linh"
+    assert config["tts"]["vieneu_style"] == "doc_truyen"
+    assert config["tts"]["vieneu_backend"] == "onnx"
+    assert config["tts"]["vieneu_precision"] == "int8"
+    assert config["tts"]["speed"] == 0.9
+    assert config["tts"]["pronunciation_lexicon"] == "examples/anime/solo_leveling_vi_pronunciation.yaml"
+    assert config["ingest"]["translation_required"] is True
+    assert config["series_recap"]["format"] == "episode_arc_chaptered"
+
 def test_localvision_anime_series_preset_is_optional_and_capped() -> None:
     config = load_config(Path("config.anime.series.localvision.yaml"))
 

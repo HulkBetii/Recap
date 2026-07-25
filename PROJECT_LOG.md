@@ -1,5 +1,32 @@
 # PROJECT_LOG.md
 
+## 2026-07-25 - VieNeu UI/backend synchronization
+
+- Preset cards now show the configured VieNeu provider, voice (`Ngọc Linh`), style, speed and pronunciation-lexicon state without exposing model paths or secrets.
+- Preflight details are preserved through the API and UI, including first-run model-download guidance and the safe lexicon filename; invalid locked VieNeu settings or missing lexicons block enqueue before the worker starts.
+- The wizard requires a non-empty voice for VieNeu and removes auto-filled local voice/style overrides when switching back to the preset's provider, preventing stale provider fields from entering the CLI payload.
+- Updated frontend unit coverage, backend preflight coverage and production static assets; public CLI/schema/cache contracts remain unchanged.
+
+## 2026-07-24 - Optional VieNeu local TTS provider
+
+- Integrated the Apache-2.0 `vieneu==3.2.3` SDK as an explicit `provider_mode=vieneu` option in GĐ3; existing `auto` ordering (AI33 -> Genmax -> OpenAI) is unchanged.
+- VieNeu V1 is pinned to v3 Turbo ONNX on CPU (int8 default, fp32 opt-in), uses the female storytelling preset `Ngọc Linh`, keeps the SDK watermark enabled, serializes one model instance per TTS process, and converts temporary WAV output to valid MP3 before the existing normalization/cache path.
+- Added the `tts-vieneu` optional dependency with `gradio<6` and `huggingface-hub<1` constraints because Gradio 6 conflicts with the Transformers runtime already used by Recap.
+- Added CLI/orchestrator/series forwarding, cache identity fields, local cost/preflight reporting, UI provider/style overrides, and mocked concurrency/audio conversion tests. VieNeu is not auto-selected and voice cloning/GPU batching remain deferred.
+- Added `config.anime.series.vieneu.yaml` as the opt-in season preset using the approved `Ngọc Linh` female northern storytelling voice with `doc_truyen`, ONNX/int8 CPU and `speed=0.9`; the existing practical preset remains unchanged.
+- Added a Solo Leveling pronunciation lexicon for `Sung Jinwoo`/`Jinwoo` aliases and wired it into the VieNeu season preset; the normalized spoken form is `Sung Chin U`/`Chin U`, selected from VieNeu/sea-g2p phoneme output, and further character entries require their own short smoke validation.
+- Fixed exact pronunciation lexicon matching before sentence punctuation; dotted identifiers/domains remain protected, while names such as `Jin Woo.` now normalize correctly before TTS.
+
+## 2026-07-24 - Local web UI UX V1.1
+
+- Migrated the UI operational database to schema v2 with additive nullable `display_title` fields for jobs and registered runs; existing v1 rows remain intact.
+- Separated Unicode display titles from validated run-directory slugs and propagated titles through planning, jobs, registration, resume/rerun and run discovery with deterministic fallback precedence.
+- Added Vietnamese-default UI chrome with a persistent English toggle, guided source inspection, a four-step wizard, dirty-only Advanced overrides, filesystem breadcrumbs/current-folder selection and grouped season dry-run output.
+- Added opaque-token `POST /api/inspect/single`, `POST /api/inspect/series` and `GET /api/fs/listing`, plus non-secret preset/server metadata used by the guided workflow and dynamic loopback host display.
+- Split run capabilities into managed and artifact-only modes. Imported artifact-only runs remain read-only for QA/artifacts/EDL/audio/video and cannot resume or rerun without creating a new managed job.
+- Improved run operations, Delivery Summary, duration diagnostics, log filtering/follow-latest behavior, responsive controls and accessibility while preserving public CLIs, pipeline JSON contracts, cache/resume, FIFO execution and Playwright-first policy.
+- Kept duration delivery policy minimum-only: measured output below `target_total_min_s` blocks; output above preferred max or hard-cap references is accepted with a planning warning.
+
 ## 2026-07-24 - Delivery duration minimum policy
 
 - Changed UI-only season Delivery QA so the measured final render blocks only when shorter than `target_total_min_s`.

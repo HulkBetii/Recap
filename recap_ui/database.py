@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Database:
@@ -21,6 +21,9 @@ class Database:
                 raise RuntimeError(f"recap UI database version {current} is newer than supported {SCHEMA_VERSION}")
             if current == 0:
                 connection.executescript(_SCHEMA_V1)
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            elif current == 1:
+                connection.executescript(_MIGRATION_V1_TO_V2)
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.commit()
 
@@ -48,6 +51,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     run_dir TEXT NOT NULL,
     config_path TEXT NOT NULL,
     config_snapshot_json TEXT NOT NULL,
+    display_title TEXT,
     parent_job_id TEXT REFERENCES jobs(id),
     attempt INTEGER NOT NULL DEFAULT 1,
     worker_id TEXT,
@@ -101,6 +105,13 @@ CREATE TABLE IF NOT EXISTS registered_runs (
     id TEXT PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
     kind TEXT,
+    display_title TEXT,
     created_at TEXT NOT NULL
 );
+"""
+
+
+_MIGRATION_V1_TO_V2 = """
+ALTER TABLE jobs ADD COLUMN display_title TEXT;
+ALTER TABLE registered_runs ADD COLUMN display_title TEXT;
 """

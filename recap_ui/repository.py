@@ -83,14 +83,15 @@ class Repository:
         resolved_config = str(snapshot_path.resolve())
         argv = _replace_option(plan.command, "--config", resolved_config)
         command_hash = _command_hash(argv)
+        display_title = plan.display_title or Path(plan.run_dir).name or f"Run {job_id[:8]}"
         with self.database.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 INSERT INTO jobs (
                     id, plan_id, kind, status, argv_json, command_hash, run_dir,
-                    config_path, config_snapshot_json, parent_job_id, attempt, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    config_path, config_snapshot_json, display_title, parent_job_id, attempt, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -102,6 +103,7 @@ class Repository:
                     str(Path(plan.run_dir).expanduser().resolve()),
                     resolved_config,
                     _json(plan.config_snapshot),
+                    display_title,
                     parent_job_id,
                     attempt,
                     created_at.isoformat(),
@@ -206,6 +208,7 @@ class Repository:
             "finished_at",
             "argv",
             "config_path",
+            "display_title",
         }
         unknown = set(fields) - allowed
         if unknown:
@@ -401,7 +404,12 @@ class Repository:
             connection.commit()
         return int(result.rowcount)
 
-    def register_run(self, path: Path | str, kind: JobKind | str | None = None) -> RegisteredRunRecord:
+    def register_run(
+        self,
+        path: Path | str,
+        kind: JobKind | str | None = None,
+        display_title: str | None = None,
+    ) -> RegisteredRunRecord:
         resolved = str(Path(path).expanduser().resolve())
         run_id = uuid.uuid5(uuid.NAMESPACE_URL, f"recap-run:{resolved.casefold()}").hex
         kind_value = kind.value if isinstance(kind, JobKind) else kind
@@ -409,10 +417,12 @@ class Repository:
         with self.database.connection() as connection:
             connection.execute(
                 """
-                INSERT INTO registered_runs (id, path, kind, created_at) VALUES (?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET kind=COALESCE(excluded.kind, registered_runs.kind)
+                INSERT INTO registered_runs (id, path, kind, display_title, created_at) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    kind=COALESCE(excluded.kind, registered_runs.kind),
+                    display_title=COALESCE(excluded.display_title, registered_runs.display_title)
                 """,
-                (run_id, resolved, kind_value, created_at.isoformat()),
+                (run_id, resolved, kind_value, display_title, created_at.isoformat()),
             )
             connection.commit()
             row = connection.execute("SELECT * FROM registered_runs WHERE path = ?", (resolved,)).fetchone()
@@ -421,6 +431,7 @@ class Repository:
             id=row["id"],
             path=row["path"],
             kind=JobKind(row["kind"]) if row["kind"] else None,
+            display_title=row["display_title"],
             created_at=datetime.fromisoformat(row["created_at"]),
         )
 
@@ -432,6 +443,7 @@ class Repository:
                 id=row["id"],
                 path=row["path"],
                 kind=JobKind(row["kind"]) if row["kind"] else None,
+                display_title=row["display_title"],
                 created_at=datetime.fromisoformat(row["created_at"]),
             )
             for row in rows
@@ -449,6 +461,7 @@ class Repository:
             run_dir=row["run_dir"],
             config_path=row["config_path"],
             config_snapshot=json.loads(row["config_snapshot_json"]),
+            display_title=row["display_title"] or Path(row["run_dir"]).name or f"Run {str(row['id'])[:8]}",
             parent_job_id=row["parent_job_id"],
             attempt=row["attempt"],
             worker_id=row["worker_id"],

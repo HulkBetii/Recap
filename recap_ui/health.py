@@ -38,10 +38,13 @@ def collect_runtime_health(
     if config is not None:
         tts = config.get("tts", {})
         mode = str(tts.get("provider_mode") or "auto")
+        if mode == "vieneu":
+            checks.extend([_module_check("vieneu"), _module_check("onnxruntime"), _module_check("soundfile")])
         configured = {
             "ai33": bool(tts.get("voice_id")),
             "genmax": bool(tts.get("genmax_voice_id")),
             "openai": bool(tts.get("openai_voice")),
+            "vieneu": bool(tts.get("voice_id")),
             "auto": bool(tts.get("voice_id") or tts.get("genmax_voice_id") or tts.get("openai_voice")),
         }.get(mode, False)
         checks.append(

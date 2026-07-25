@@ -31,6 +31,17 @@ def test_tts_cost_policy_lists_only_available_auto_providers(monkeypatch) -> Non
     assert policy.stages["tts"]["available_providers"] == ["ai33", "openai"]
 
 
+def test_vieneu_cost_policy_is_local() -> None:
+    config = load_config(None)
+    config["tts"].update({"provider_mode": "vieneu", "voice_id": "Ngọc Linh"})
+
+    _resolved, policy = resolve_cost_policy(config)
+
+    assert policy.stages["tts"]["available_providers"] == ["vieneu"]
+    assert policy.stages["tts"]["backend"] == "local_vieneu_onnx"
+    assert policy.stages["tts"]["cost"] == "local_compute"
+
+
 def test_low_cost_policy_uses_local_asr_and_disables_vision() -> None:
     config = load_config(None)
     config["orchestrator"]["quality_mode"] = "low_cost"
@@ -116,6 +127,7 @@ def test_direct_review_backend_is_rejected(backend: str) -> None:
         "config.vi.low_openai.yaml",
         "config.vi.balanced.auto.yaml",
         "config.anime.series.practical.yaml",
+        "config.anime.series.vieneu.yaml",
         "config.anime.series.localvision.yaml",
     ],
 )

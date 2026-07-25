@@ -245,7 +245,9 @@ def apply_exact_lexicon(text: str, lexicon: dict[str, str]) -> tuple[str, list[s
     rules: list[str] = []
     for token in sorted(lexicon, key=len, reverse=True):
         replacement = lexicon[token]
-        pattern = re.compile(rf"(?<![\w.]){re.escape(token)}(?![\w.])", re.UNICODE)
+        # Allow ordinary sentence punctuation after a token, while avoiding
+        # matches inside dotted identifiers such as domains or abbreviations.
+        pattern = re.compile(rf"(?<![\w.]){re.escape(token)}(?!\w)(?!\.\w)", re.UNICODE)
         result, count = pattern.subn(replacement, result)
         if count:
             rules.append(f"lexicon:{token}")

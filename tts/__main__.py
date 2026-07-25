@@ -27,6 +27,14 @@ from tts.providers import (
 from tts.pronunciation_qa import analyze_pronunciation_risks
 from tts.sanitize import normalize_tts_script
 from tts.timing import build_timings
+from tts.vieneu_provider import (
+    DEFAULT_VIENEU_BACKEND,
+    DEFAULT_VIENEU_MODEL,
+    DEFAULT_VIENEU_PRECISION,
+    DEFAULT_VIENEU_STYLE,
+    validate_vieneu_settings,
+    vieneu_package_version,
+)
 
 DEFAULT_MODEL = "eleven_multilingual_v2"
 DEFAULT_PROVIDER_MODE: ProviderMode = "auto"
@@ -46,11 +54,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-audio", required=True, type=Path)
     parser.add_argument("--output-timing", required=True, type=Path)
     parser.add_argument("--voice-id", required=True)
-    parser.add_argument("--provider-mode", choices=["auto", "ai33", "genmax", "openai"], default=DEFAULT_PROVIDER_MODE)
+    parser.add_argument(
+        "--provider-mode",
+        choices=["auto", "ai33", "genmax", "openai", "vieneu"],
+        default=DEFAULT_PROVIDER_MODE,
+    )
     parser.add_argument("--genmax-voice-id", default=None)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--openai-model", default=DEFAULT_OPENAI_MODEL)
     parser.add_argument("--openai-voice", default=DEFAULT_OPENAI_VOICE)
+    parser.add_argument("--vieneu-style", choices=["tu_nhien", "tin_tuc", "doc_truyen"], default=DEFAULT_VIENEU_STYLE)
+    parser.add_argument("--vieneu-backend", choices=["onnx"], default=DEFAULT_VIENEU_BACKEND)
+    parser.add_argument("--vieneu-precision", choices=["int8", "fp32"], default=DEFAULT_VIENEU_PRECISION)
+    parser.add_argument("--vieneu-model", default=DEFAULT_VIENEU_MODEL)
+    parser.add_argument("--vieneu-threads", default=0, type=int)
     parser.add_argument("--speed", default=DEFAULT_SPEED, type=float)
     parser.add_argument("--inter-beat-pause", default=DEFAULT_INTER_BEAT_PAUSE, type=float)
     parser.add_argument("--concurrency", default=DEFAULT_CONCURRENCY, type=int)
@@ -129,6 +146,11 @@ async def synthesize_one(
     model: str,
     openai_model: str,
     openai_voice: str,
+    vieneu_style: str,
+    vieneu_backend: str,
+    vieneu_precision: str,
+    vieneu_model: str,
+    vieneu_threads: int,
     provider_config: dict[str, object],
     speed: float,
     normalize: bool,
@@ -157,6 +179,11 @@ async def synthesize_one(
             model=model,
             openai_model=openai_model,
             openai_voice=openai_voice,
+            vieneu_style=vieneu_style,
+            vieneu_backend=vieneu_backend,
+            vieneu_precision=vieneu_precision,
+            vieneu_model=vieneu_model,
+            vieneu_threads=vieneu_threads,
             speed=speed,
             provider_mode=provider_mode,
             output_path=raw_path,
@@ -203,6 +230,18 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
 
     openai_model = getattr(args, "openai_model", DEFAULT_OPENAI_MODEL)
     openai_voice = getattr(args, "openai_voice", DEFAULT_OPENAI_VOICE)
+    vieneu_style = getattr(args, "vieneu_style", DEFAULT_VIENEU_STYLE)
+    vieneu_backend = getattr(args, "vieneu_backend", DEFAULT_VIENEU_BACKEND)
+    vieneu_precision = getattr(args, "vieneu_precision", DEFAULT_VIENEU_PRECISION)
+    vieneu_model = getattr(args, "vieneu_model", DEFAULT_VIENEU_MODEL)
+    vieneu_threads = int(getattr(args, "vieneu_threads", 0))
+    if args.provider_mode == "vieneu":
+        validate_vieneu_settings(
+            backend=vieneu_backend,
+            precision=vieneu_precision,
+            style=vieneu_style,
+            threads=vieneu_threads,
+        )
     provider_order = resolve_provider_order(
         args.provider_mode,
         voice_id=args.voice_id,
@@ -217,6 +256,19 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         "openai_model": openai_model,
         "openai_voice": openai_voice,
     }
+    if args.provider_mode == "vieneu":
+        provider_config["vieneu"] = {
+            "package_version": vieneu_package_version(),
+            "mode": "v3turbo",
+            "backend": vieneu_backend,
+            "precision": vieneu_precision,
+            "model": vieneu_model,
+            "voice_id": args.voice_id,
+            "style": vieneu_style,
+            "threads": vieneu_threads,
+            "apply_watermark": True,
+            "speed_method": "ffmpeg_atempo",
+        }
 
     require_ffmpeg()
     beats = load_review_script(review_script)
@@ -287,6 +339,11 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
             model=args.model,
             openai_model=openai_model,
             openai_voice=openai_voice,
+            vieneu_style=vieneu_style,
+            vieneu_backend=vieneu_backend,
+            vieneu_precision=vieneu_precision,
+            vieneu_model=vieneu_model,
+            vieneu_threads=vieneu_threads,
             provider_config=provider_config,
             speed=args.speed,
             normalize=normalize,
@@ -338,6 +395,9 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
     elif primary_provider == "genmax":
         primary_voice_id = args.genmax_voice_id or args.voice_id
         primary_model = args.model
+    elif primary_provider == "vieneu":
+        primary_voice_id = args.voice_id
+        primary_model = vieneu_model
     else:
         primary_voice_id = args.voice_id
         primary_model = args.model

@@ -17,6 +17,7 @@ from recap_ui.schemas import (
     JobKind,
     JobStatus,
     RunRecord,
+    RunRegistrationInspection,
     StageStatus,
 )
 from recap_ui.security import PathAccessError, PathRegistry
@@ -85,6 +86,29 @@ class RunService:
             if run.id == run_id:
                 return run
         raise RunNotFoundError(run_id)
+
+    def inspect_registration(self, path: Path) -> RunRegistrationInspection:
+        resolved = path.expanduser().resolve()
+        recognizable = resolved.is_dir() and self._looks_like_run(resolved)
+        if not recognizable:
+            raise ValueError("directory does not contain a recognizable run")
+        kind = JobKind.SERIES if (resolved / "series_recap").is_dir() else JobKind.SINGLE
+        output = resolved / "series_recap" / "series_recap.mp4" if kind == JobKind.SERIES else resolved / "recap.mp4"
+        artifact_count = sum(
+            1
+            for candidate in resolved.rglob("*")
+            if candidate.is_file()
+            and candidate.suffix.lower() in ALLOWED_SUFFIXES
+            and not any(part in SKIP_DIRECTORY_NAMES for part in candidate.relative_to(resolved).parts)
+        )
+        return RunRegistrationInspection(
+            path_token=self.path_registry.token_for(resolved),
+            kind=kind,
+            recognizable=True,
+            default_title=_artifact_display_title(resolved, kind) or resolved.name,
+            output_available=output.is_file(),
+            artifact_count=artifact_count,
+        )
 
     def list_artifacts(self, run_id: str, *, limit: int = 5000) -> list[ArtifactRecord]:
         run_path = self._path_for_run(run_id)
@@ -209,7 +233,11 @@ class RunService:
         run_id = _run_id(path)
         kind = JobKind.SERIES if (path / "series_recap").is_dir() else JobKind.SINGLE
         artifacts = self._output_artifacts(path, run_id, kind)
-        jobs = [job for job in self.repository.list_jobs(limit=1000) if Path(job.run_dir) == path]
+        jobs = [job for job in self.repository.list_jobs(limit=1000) if _same_path(Path(job.run_dir), path)]
+        registered = next(
+            (item for item in self.repository.list_registered_runs() if _same_path(Path(item.path), path)),
+            None,
+        )
         execution_status = jobs[0].status if jobs else self._inferred_execution_status(path, kind)
         qa = build_delivery_qa(path, kind, run_id=run_id, media_probe=_metadata_media_probe)
         episode_keys = [item.name for item in path.iterdir() if item.is_dir() and EPISODE_DIR_RE.match(item.name)]
@@ -222,16 +250,50 @@ class RunService:
         else:
             candidate_paths.extend(path / name for name in ("recap.mp4", "summary.json", "render.meta.json", "run.log"))
         modified_timestamp = max(candidate.stat().st_mtime for candidate in candidate_paths if candidate.exists())
+        artifact_title = _artifact_display_title(path, kind)
+        display_title = (
+            ((jobs[0].display_title if jobs else None) or (registered.display_title if registered else None))
+            if jobs
+            else ((registered.display_title if registered else None) or artifact_title or path.name)
+        )
+        management_mode = "managed" if jobs else "artifact_only"
+        if management_mode == "managed":
+            if jobs[0].status in {
+                JobStatus.QUEUED,
+                JobStatus.STARTING,
+                JobStatus.RUNNING,
+                JobStatus.CANCEL_REQUESTED,
+            }:
+                available_actions = ["view", "cancel"]
+            elif jobs[0].status == JobStatus.SUCCEEDED:
+                available_actions = ["view", "rerun"]
+            elif jobs[0].status in {
+                JobStatus.FAILED,
+                JobStatus.INTERRUPTED,
+                JobStatus.CANCELLED,
+                JobStatus.BLOCKED,
+            }:
+                available_actions = ["view", "resume"]
+            else:
+                available_actions = ["view"]
+            read_only_reason = None
+        else:
+            available_actions = ["view"]
+            read_only_reason = "This run was discovered from artifacts and has no managed job record."
         return RunRecord(
             id=run_id,
             kind=kind,
             name=path.name,
+            display_title=display_title,
             path_token=self.path_registry.token_for(path),
             job_id=jobs[0].id if jobs else None,
             episode_keys=sorted(episode_keys),
             output_artifact_id=artifacts[0].id if artifacts else None,
             execution_status=execution_status,
             delivery_status=qa.status,
+            management_mode=management_mode,
+            available_actions=available_actions,
+            read_only_reason=read_only_reason,
             modified_at=datetime.fromtimestamp(modified_timestamp, tz=timezone.utc),
         )
 
@@ -313,6 +375,23 @@ def _artifact_type(path: Path) -> tuple[ArtifactKind, str]:
 
 def _run_id(path: Path) -> str:
     return hashlib.sha256(str(path.resolve()).casefold().encode("utf-8")).hexdigest()[:24]
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return str(left.expanduser().resolve()).casefold() == str(right.expanduser().resolve()).casefold()
+
+
+def _artifact_display_title(path: Path, kind: JobKind) -> str | None:
+    candidates = [path / "series_recap" / "summary.json", path / "summary.json"] if kind == JobKind.SERIES else [path / "summary.json"]
+    for candidate in candidates:
+        payload = _read_json(candidate)
+        if not isinstance(payload, dict):
+            continue
+        for key in ("display_title", "title", "series_title"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())
+    return None
 
 
 def _artifact_id(run_id: str, relative_path: str) -> str:

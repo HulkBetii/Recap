@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from recap_ui.schemas import FilesystemEntry, FilesystemRoot
+from recap_ui.schemas import FilesystemEntry, FilesystemListing, FilesystemLocation, FilesystemRoot
 
 
 class PathAccessError(ValueError):
@@ -151,12 +151,22 @@ class PathRegistry:
         root_id: str | None = None,
         limit: int = 500,
     ) -> list[FilesystemEntry]:
+        return self.listing(token, root_id=root_id, limit=limit).entries
+
+    def listing(
+        self,
+        token: str | None = None,
+        *,
+        root_id: str | None = None,
+        limit: int = 500,
+    ) -> FilesystemListing:
         if token is not None:
             directory = self.resolve(token, expect="directory")
         elif root_id is not None and root_id in self._roots:
             directory = self._roots[root_id][1]
         else:
             raise PathAccessError("directory token or root id is required")
+        current_root_id, root_label, root = self._root_for(directory)
         entries: list[FilesystemEntry] = []
         try:
             children = sorted(directory.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold()))
@@ -179,4 +189,27 @@ class PathRegistry:
                     modified_at=stat.st_mtime,
                 )
             )
-        return entries
+        at_root = directory == root
+        return FilesystemListing(
+            current=FilesystemLocation(
+                root_id=current_root_id,
+                token=self.token_for(directory),
+                name=root_label if at_root else directory.name,
+                parent_token=None if at_root else self.token_for(directory.parent),
+                at_root=at_root,
+            ),
+            entries=entries,
+        )
+
+    def _root_for(self, path: Path) -> tuple[str, str, Path]:
+        candidates: list[tuple[int, str, str, Path]] = []
+        for root_id, (label, root) in self._roots.items():
+            try:
+                path.relative_to(root)
+            except ValueError:
+                continue
+            candidates.append((len(root.parts), root_id, label, root))
+        if not candidates:
+            raise PathAccessError("path is outside configured filesystem roots")
+        _, root_id, label, root = max(candidates)
+        return root_id, label, root

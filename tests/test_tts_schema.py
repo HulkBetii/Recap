@@ -39,3 +39,21 @@ def test_legacy_tts_meta_defaults_provider_diagnostics() -> None:
     assert meta.providers_used == []
     assert meta.provider_counts == {}
     assert meta.fallback_count == 0
+
+
+def test_vieneu_tts_meta_provider_mode_is_valid() -> None:
+    meta = TtsMeta.model_validate({
+        "voice_id": "Ngọc Linh",
+        "provider_mode": "vieneu",
+        "model": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+        "speed": 1.0,
+        "inter_beat_pause_s": 0.15,
+        "total_duration_s": 1.0,
+        "total_chars": 10,
+        "est_cost": 0.0,
+        "created_at": "2026-07-24T00:00:00Z",
+        "providers_used": ["vieneu"],
+        "provider_counts": {"vieneu": 1},
+    })
+
+    assert meta.provider_mode == "vieneu"

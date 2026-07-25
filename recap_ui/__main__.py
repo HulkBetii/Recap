@@ -59,7 +59,10 @@ def main() -> int:
         worker.start()
 
         if args.open_browser:
-            url = f"http://{args.host}:{args.port}/runs"
+            browser_host = args.host
+            if ":" in browser_host and not browser_host.startswith("["):
+                browser_host = f"[{browser_host}]"
+            url = f"http://{browser_host}:{args.port}/runs"
             threading.Timer(1.0, webbrowser.open, args=(url,)).start()
 
         application = create_app(

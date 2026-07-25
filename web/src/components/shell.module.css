@@ -18,6 +18,9 @@
 .topbar { position: sticky; z-index: 20; top: 0; display: flex; height: 64px; align-items: center; justify-content: space-between; padding: 0 28px; border-bottom: 1px solid var(--line-soft); background: rgba(16,18,20,.86); backdrop-filter: blur(15px); }
 .crumbs { display: flex; align-items: center; gap: 8px; color: var(--bone-muted); font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
 .topActions { display: flex; align-items: center; gap: 9px; }
+.localeToggle { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 999px; background: #111416; }
+.localeToggle button { min-width: 40px; min-height: 40px; padding: 0 8px; border: 0; border-radius: 999px; color: var(--bone-muted); background: transparent; cursor: pointer; font-family: "IBM Plex Mono", monospace; font-size: 10px; }
+.localeToggle button[aria-pressed="true"] { color: var(--ink); background: var(--cyan); }
 .clock { color: var(--bone-muted); font-family: "IBM Plex Mono", monospace; font-size: 10px; }
 .main { width: 100%; max-width: 1600px; margin: 0 auto; padding: 28px; }
 .pageHead { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
