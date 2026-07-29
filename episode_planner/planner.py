@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from common.episodes import numeric_episode
 from common.integrity import file_hash, media_identity_hash
 from common.inputs import load_anime_context, load_series_manifest
 from common.schema import (
@@ -152,14 +153,6 @@ def load_video_profile(path: Path | None) -> VideoProfile | None:
 def normalize_key(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
     return normalized or "episode"
-
-def numeric_episode(value: int | str | None) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    match = re.search(r"\d+", str(value))
-    return int(match.group(0)) if match else None
 
 def parse_episode_from_filename(path: Path) -> tuple[str | None, int | None]:
     match = EPISODE_RE.search(path.stem)

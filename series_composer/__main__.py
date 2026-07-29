@@ -27,6 +27,11 @@ from series_composer.builder import (
     compose_with_client,
     to_tts_review_script,
 )
+from series_composer.cache import (
+    commit_composer_cache,
+    composer_cache_current,
+    composer_input_fingerprint,
+)
 
 
 class SeriesComposerError(RuntimeError):
@@ -116,8 +121,8 @@ def profile_dir(path: Path) -> Path:
     return resolved
 
 
-def outputs_current(args: argparse.Namespace) -> bool:
-    paths = [
+def output_paths(args: argparse.Namespace) -> list[Path]:
+    return [
         args.output_event_bank,
         args.output,
         args.output_tts_script,
@@ -126,6 +131,10 @@ def outputs_current(args: argparse.Namespace) -> bool:
         args.output_qa or args.output.with_name("series_composer.qa.json"),
         args.output_meta or args.output.with_name("series_review_script.meta.json"),
     ]
+
+
+def outputs_valid(args: argparse.Namespace) -> bool:
+    paths = output_paths(args)
     if not all(path.is_file() for path in paths):
         return False
     SeriesEventBank.model_validate_json(args.output_event_bank.read_text(encoding="utf-8"))
@@ -136,6 +145,29 @@ def outputs_current(args: argparse.Namespace) -> bool:
     SeriesComposerQa.model_validate_json(paths[5].read_text(encoding="utf-8"))
     SeriesReviewMeta.model_validate_json(paths[-1].read_text(encoding="utf-8"))
     return True
+
+
+def composer_settings(args: argparse.Namespace, mode_target_ratios: dict[str, float]) -> dict[str, object]:
+    return {
+        "format": args.format,
+        "detail_level": args.detail_level,
+        "tts_cps": args.tts_cps,
+        "target_total_min_s": args.target_total_min_s,
+        "target_total_max_s": args.target_total_max_s,
+        "target_total_hard_cap_s": args.target_total_hard_cap_s,
+        "episode_min_s": args.episode_min_s,
+        "episode_normal_s": args.episode_normal_s,
+        "episode_high_s": args.episode_high_s,
+        "arc_size": args.arc_size,
+        "mode_target_ratios": mode_target_ratios,
+        "llm_backend": args.llm_backend,
+        "chatgpt_profile_dir": str(args.chatgpt_profile_dir.expanduser().resolve()),
+        "reply_timeout_s": args.reply_timeout_s,
+        "playwright_max_attempts": args.playwright_max_attempts,
+        "playwright_recovery_timeout_s": args.playwright_recovery_timeout_s,
+        "qa_max_revisions": args.qa_max_revisions,
+        "headless": args.headless,
+    }
 
 
 async def run_composer_async(args: argparse.Namespace) -> int:
@@ -152,16 +184,29 @@ async def run_composer_async(args: argparse.Namespace) -> int:
     args.output_arc_plan = (args.output_arc_plan or args.output.with_name("series_arc_plan.json")).expanduser().resolve()
     args.output_qa = (args.output_qa or args.output.with_name("series_composer.qa.json")).expanduser().resolve()
     args.output_meta = (args.output_meta or args.output.with_name("series_review_script.meta.json")).expanduser().resolve()
-    if not args.force and outputs_current(args):
+    args.work_dir = args.work_dir.expanduser().resolve()
+    episode_run_dirs = parse_episode_run_dirs(args.episode_run_dir)
+    mode_target_ratios = parse_mode_target_ratios(args.mode_target_ratio)
+    input_fingerprint = composer_input_fingerprint(
+        manifest_path=args.manifest.expanduser().resolve(),
+        episode_run_dirs=episode_run_dirs,
+        settings=composer_settings(args, mode_target_ratios),
+    )
+    cache_manifest = args.work_dir / "cache_manifest.json"
+    if not args.force and composer_cache_current(
+        manifest_path=cache_manifest,
+        input_fingerprint=input_fingerprint,
+        outputs=output_paths(args),
+        validate=lambda: outputs_valid(args),
+    ):
         logging.info("Using existing series composer outputs")
         return 0
 
-    episode_run_dirs = parse_episode_run_dirs(args.episode_run_dir)
     bank = build_event_bank(
         manifest_path=args.manifest.expanduser().resolve(),
         episode_run_dirs=episode_run_dirs,
         tts_cps=args.tts_cps,
-        mode_target_ratios=parse_mode_target_ratios(args.mode_target_ratio),
+        mode_target_ratios=mode_target_ratios,
         recap_format=args.format,
         detail_level=args.detail_level,
         target_total_min_s=args.target_total_min_s,
@@ -201,6 +246,13 @@ async def run_composer_async(args: argparse.Namespace) -> int:
     write_json(args.output_arc_plan, build_series_arc_plan(bank))
     write_json(args.output_qa, build_series_composer_qa(bank=bank, meta=meta, tts_cps=args.tts_cps))
     write_json(args.output_meta, meta)
+    if not outputs_valid(args):
+        raise SeriesComposerError("series composer outputs failed validation")
+    commit_composer_cache(
+        manifest_path=cache_manifest,
+        input_fingerprint=input_fingerprint,
+        outputs=output_paths(args),
+    )
     return 0
 
 

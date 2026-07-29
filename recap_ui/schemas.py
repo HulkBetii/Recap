@@ -186,6 +186,28 @@ class ExecutionPlan(ApiModel):
         return list(self.command)
 
 
+class PlanDagNodeResponse(ApiModel):
+    key: str
+    label: str
+    status: str = "planned"
+    outputs: list[str] = Field(default_factory=list)
+
+
+class ExecutionPlanResponse(ApiModel):
+    plan_id: str
+    kind: JobKind
+    title: str
+    run_name: str
+    command_preview: list[str]
+    dag: list[PlanDagNodeResponse]
+    output_names: list[str] = Field(default_factory=list)
+    checks: list[PlanCheck] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    dry_run_summary: str = ""
+    can_start: bool = True
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class JobRecord(ApiModel):
     id: str
     plan_id: str
@@ -216,6 +238,22 @@ class JobRecord(ApiModel):
         return list(self.argv)
 
 
+class JobResponse(ApiModel):
+    id: str
+    kind: JobKind
+    status: JobStatus
+    title: str
+    run_name: str
+    attempt: int = 1
+    heartbeat_at: datetime | None = None
+    exit_code: int | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
 class JobStageRecord(ApiModel):
     job_id: str
     stage_key: str
@@ -229,9 +267,34 @@ class JobStageRecord(ApiModel):
     error: str | None = None
 
 
+class JobStageResponse(ApiModel):
+    stage_key: str
+    episode_key: str = ""
+    attempt: int = 1
+    status: StageStatus = StageStatus.PENDING
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error: str | None = None
+
+
+class JobDetailResponse(ApiModel):
+    job: JobResponse
+    stages: list[JobStageResponse] = Field(default_factory=list)
+
+
 class JobEvent(ApiModel):
     seq: int
     job_id: str
+    timestamp: datetime
+    event_type: EventType
+    level: str = "INFO"
+    stage: str | None = None
+    message: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class JobEventResponse(ApiModel):
+    seq: int
     timestamp: datetime
     event_type: EventType
     level: str = "INFO"
@@ -397,7 +460,7 @@ class RuntimeHealth(ApiModel):
     status: DeliveryStatus
     runtime: list[RuntimeCheck]
     providers: dict[str, bool] = Field(default_factory=dict)
-    active_job: JobRecord | None = None
+    active_job_id: str | None = None
     generated_at: datetime = Field(default_factory=utc_now)
 
 

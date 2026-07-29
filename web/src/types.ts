@@ -123,7 +123,7 @@ export interface Job {
   run_id?: string;
   kind: RunKind;
   title?: string;
-  run_dir: string;
+  run_name: string;
   status: JobStatus;
   current_stage?: string | null;
   created_at: string;
@@ -160,19 +160,21 @@ export interface PlanStage {
   label: string;
   episode_key?: string;
   status?: StageStatus;
+  outputs?: string[];
 }
 
 export interface PlanResponse {
   plan_id: string;
   kind: RunKind;
-  command: string | string[];
-  run_dir: string;
+  title: string;
+  run_name: string;
+  command_preview: string[];
   stages: PlanStage[];
   checks?: RuntimeCheck[];
-  output_paths?: string[];
+  output_names?: string[];
   warnings: string[];
   can_start: boolean;
-  dry_run_output?: string;
+  dry_run_summary?: string;
   expires_at?: string;
 }
 

@@ -5,6 +5,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from common.media import MediaError, extract_audio, probe_duration, require_ffmpeg
 from common.integrity import file_hash, media_identity_hash, stable_hash
@@ -36,7 +37,7 @@ from ingest.llm import OpenAIIngestClient
 from ingest.llm import TRANSLATION_UNAVAILABLE
 from ingest.local_vision import LocalQwenVisionClient, LocalVisionError
 from ingest.transcribe import transcribe_korean, transcribe_openai_chunked, transcribe_openai_gpt4o
-from ingest.vision import describe_gaps
+from ingest.vision import VisionClient, describe_gaps
 
 DEFAULT_TRANSLATE_MODEL = "gpt-4.1-mini"
 DEFAULT_VISION_MODEL = "gpt-4.1-mini"
@@ -317,7 +318,7 @@ def build_vision_client(
     args: argparse.Namespace,
     openai_client: OpenAIIngestClient | None,
     logger: logging.Logger,
-):
+) -> VisionClient | None:
     if args.max_vision_frames <= 0 or args.vision_provider == "off":
         return None
     if args.vision_provider == "openai":
@@ -345,8 +346,9 @@ def load_vision(
     gap_threshold: float,
     max_vision_frames: int,
     max_visual_gap_s: float,
-    client: OpenAIIngestClient | None,
+    client: VisionClient | None,
     logger: logging.Logger,
+    client_factory: Callable[[], VisionClient | None] | None = None,
     vision_provider: str = "openai",
     drop_visual_before_s: float = 0.0,
     video_profile: VideoProfile | None = None,
@@ -370,6 +372,8 @@ def load_vision(
         logger.info("[5/6] Vision provider is off; writing empty vision.json")
         cache.write_json("vision.json", [])
         return [], 0
+    if client is None and client_factory is not None:
+        client = client_factory()
     if client is None:
         if vision_provider == "local_qwen2_5_vl":
             logger.warning("local vision client is unavailable; writing empty vision.json")
@@ -476,8 +480,6 @@ def run_ingest(args: argparse.Namespace) -> int:
         if needs_openai_translate or needs_openai_vision
         else None
     )
-    vision_client = build_vision_client(args=args, openai_client=openai_client, logger=logger)
-
     logger.info("[0/6] Probing input video")
     duration = probe_duration(input_path)
     input_hash = media_identity_hash(input_path)
@@ -547,7 +549,12 @@ def run_ingest(args: argparse.Namespace) -> int:
         gap_threshold=args.gap_threshold,
         max_vision_frames=args.max_vision_frames,
         max_visual_gap_s=args.max_visual_gap_s,
-        client=vision_client,
+        client=openai_client if args.vision_provider == "openai" else None,
+        client_factory=(
+            lambda: build_vision_client(args=args, openai_client=openai_client, logger=logger)
+        )
+        if args.vision_provider == "local_qwen2_5_vl"
+        else None,
         logger=logger,
         vision_provider=args.vision_provider,
         drop_visual_before_s=args.drop_visual_before_s,

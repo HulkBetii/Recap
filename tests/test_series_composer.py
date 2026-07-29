@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import series_composer.__main__ as composer_cli
 from common.schema import SeriesReviewBeat
 from series_composer.builder import (
     SeasonTargetSettings,
@@ -283,6 +284,77 @@ def test_event_bank_preserves_episode_source_and_mode_target_length(tmp_path: Pa
     assert bank.events[0].source_path.endswith("Grand_Blue.S03E01.mp4")
     assert bank.events[0].entity_hooks == ["Iori", "Chisa"]
     assert bank.events[1].recap_mode == "quick"
+
+
+def test_composer_cli_cache_reuses_outputs_until_identity_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_one = tmp_path / "Grand_Blue.S03E01.mp4"
+    source_two = tmp_path / "Grand_Blue.S03E02.mp4"
+    manifest = tmp_path / "series_manifest.json"
+    write_manifest(manifest, source_one, source_two)
+    run_dirs = {"s03e01": tmp_path / "s03e01", "s03e02": tmp_path / "s03e02"}
+    write_episode_artifacts(
+        run_dirs["s03e01"],
+        episode_key="s03e01",
+        source_path=source_one,
+        recap_mode="quick",
+        importance_score=0.5,
+        section_type="setup",
+        section_summary="Episode one starts the story.",
+    )
+    write_episode_artifacts(
+        run_dirs["s03e02"],
+        episode_key="s03e02",
+        source_path=source_two,
+        recap_mode="quick",
+        importance_score=0.5,
+        section_type="ending",
+        section_summary="Episode two closes the story.",
+    )
+    output_dir = tmp_path / "final"
+    args = composer_cli.build_parser().parse_args(
+        [
+            "--manifest",
+            str(manifest),
+            "--episode-run-dir",
+            f"s03e01={run_dirs['s03e01']}",
+            "--episode-run-dir",
+            f"s03e02={run_dirs['s03e02']}",
+            "--output-event-bank",
+            str(output_dir / "series_event_bank.json"),
+            "--output",
+            str(output_dir / "series_review_script.json"),
+            "--output-tts-script",
+            str(output_dir / "series_tts_script.json"),
+            "--work-dir",
+            str(output_dir / "work"),
+            "--llm-backend",
+            "deterministic",
+        ]
+    )
+    calls = 0
+    original = composer_cli.compose_deterministic_fallback
+
+    def counted_fallback(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(composer_cli, "compose_deterministic_fallback", counted_fallback)
+
+    assert asyncio.run(composer_cli.run_composer_async(args)) == 0
+    run_dirs["s03e01"].joinpath("shots.json").write_text('[{"changed":true}]', encoding="utf-8")
+    assert asyncio.run(composer_cli.run_composer_async(args)) == 0
+    assert calls == 1
+
+    story_map_path = run_dirs["s03e01"] / "story_map.json"
+    story_map = json.loads(story_map_path.read_text(encoding="utf-8"))
+    story_map[0]["summary"] = "Episode one now has changed story content."
+    story_map_path.write_text(json.dumps(story_map), encoding="utf-8")
+    assert asyncio.run(composer_cli.run_composer_async(args)) == 0
+    assert calls == 2
 
 class FakeChatClient:
     async def ask(self, prompt: str) -> str:

@@ -98,7 +98,7 @@ export function RunDetailPage() {
   </>;
 }
 
-function jobToRun(job: Job, id: string): RunSummary { return { id, job_id: job.id, kind: job.kind, title: job.title ?? `Run ${id.slice(0, 8)}`, run_dir: job.run_dir, status: job.status, delivery_status: job.delivery_status, current_stage: job.current_stage }; }
+function jobToRun(job: Job, id: string): RunSummary { return { id, job_id: job.id, kind: job.kind, title: job.title ?? `Run ${id.slice(0, 8)}`, run_dir: job.run_name, status: job.status, delivery_status: job.delivery_status, current_stage: job.current_stage }; }
 function HeroStat({ label, value }: { label: string; value: string }) { return <div className={styles.heroStat}><span>{label}</span><strong>{value}</strong></div>; }
 
 function StageRail({ stages, kind, executionStatus, deliveryStatus }: { stages: StageState[]; kind: "single" | "series"; executionStatus: string; deliveryStatus?: string }) {

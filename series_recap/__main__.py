@@ -12,28 +12,34 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from common.integrity import file_hash
+from common.episodes import numeric_episode
+from common.integrity import file_hash, media_identity_hash, stable_hash
 from common.inputs import load_series_manifest
 from common.schema import (
     BeatTiming,
+    EdlMeta,
     EdlPlacement,
     EdlSourceMap,
     RenderMeta,
     SeasonTargetPlan,
     SeriesChapter,
     SeriesComposerQa,
+    SeriesEventBank,
     SeriesManifest,
     SeriesManifestEpisode,
     SeriesReviewBeat,
+    SeriesReviewMeta,
     TtsMeta,
     validate_beats_timing,
     validate_edl,
     validate_series_review_script,
     write_json,
 )
+from common.series_identity import composer_input_fingerprint
 from orchestrator.config import ConfigError, add_option, load_config
 from orchestrator.graph import build_paths as build_episode_paths
 from orchestrator.runner import outputs_valid as episode_outputs_valid
+from series_recap.cache import SeriesStageCache
 from tts.providers import TtsProviderError, resolve_provider_order
 from tts.vieneu_provider import VieneuProviderError, require_vieneu_runtime, validate_vieneu_settings
 
@@ -57,6 +63,7 @@ class SeriesPaths:
     final_dir: Path
     config_dir: Path
     work_dir: Path
+    stage_manifest: Path
     log_path: Path
     summary: Path
     event_bank: Path
@@ -109,14 +116,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
-
-def numeric_episode(value: int | str | None) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    match = re.search(r"\d+", str(value))
-    return int(match.group(0)) if match else None
 
 def normalize_key(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
@@ -203,13 +202,7 @@ def manifest_episode_specs(manifest_path: Path) -> tuple[SeriesManifest, list[Ep
     return manifest, specs
 
 def selector_episode_number(token: str) -> int | None:
-    if token.isdigit():
-        return int(token)
-    match = EPISODE_KEY_RE.fullmatch(token.lower())
-    if not match:
-        return None
-    episode = match.group("episode") or match.group("episode_only")
-    return int(episode) if episode else None
+    return numeric_episode(token)
 
 def select_one_episode(token: str, specs: list[EpisodeSpec]) -> EpisodeSpec:
     normalized = token.strip().lower()
@@ -255,6 +248,7 @@ def build_paths(root_dir: Path) -> SeriesPaths:
         final_dir=final_dir,
         config_dir=work_dir / "episode_configs",
         work_dir=work_dir,
+        stage_manifest=work_dir / "stage_manifest.json",
         log_path=final_dir / "series_recap.log",
         summary=final_dir / "summary.json",
         event_bank=final_dir / "series_event_bank.json",
@@ -544,6 +538,156 @@ def run_subprocess(command: list[str], log_path: Path) -> None:
 def files_exist(paths: list[Path]) -> bool:
     return all(path.is_file() for path in paths)
 
+def config_values(section: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    return {key: section.get(key) for key in keys}
+
+def composer_stage_fingerprint(
+    *,
+    manifest_path: Path,
+    episode_run_dirs: dict[str, Path],
+    config: dict[str, Any],
+) -> str:
+    section = config.get("series_recap", {})
+    settings = config_values(
+        section,
+        (
+            "format",
+            "detail_level",
+            "tts_cps",
+            "target_total_min_s",
+            "target_total_max_s",
+            "target_total_hard_cap_s",
+            "episode_min_s",
+            "episode_normal_s",
+            "episode_high_s",
+            "arc_size",
+            "mode_target_ratios",
+            "llm_backend",
+            "chatgpt_profile_dir",
+            "reply_timeout_s",
+            "playwright_max_attempts",
+            "playwright_recovery_timeout_s",
+            "qa_max_revisions",
+            "headless",
+        ),
+    )
+    return composer_input_fingerprint(
+        manifest_path=manifest_path,
+        episode_run_dirs=episode_run_dirs,
+        settings=settings,
+    )
+
+def configured_file_hash(value: object) -> dict[str, str | None] | None:
+    if value is None or not str(value).strip():
+        return None
+    path = Path(str(value)).expanduser().resolve()
+    return {"path": str(path), "hash": file_hash(path)}
+
+def tts_stage_fingerprint(paths: SeriesPaths, config: dict[str, Any]) -> str:
+    section = config.get("tts", {})
+    settings = config_values(
+        section,
+        (
+            "voice_id",
+            "provider_mode",
+            "genmax_voice_id",
+            "model",
+            "openai_model",
+            "openai_voice",
+            "vieneu_style",
+            "vieneu_backend",
+            "vieneu_precision",
+            "vieneu_model",
+            "vieneu_threads",
+            "speed",
+            "inter_beat_pause",
+            "concurrency",
+            "normalize",
+            "cost_per_1k_chars",
+            "text_normalization",
+            "normalized_script_output",
+            "normalization_report",
+            "pronunciation_qa",
+            "pronunciation_qa_output",
+            "pronunciation_suggest_backend",
+            "lexicon_candidates_output",
+        ),
+    )
+    settings["pronunciation_lexicon"] = configured_file_hash(section.get("pronunciation_lexicon"))
+    return stable_hash(
+        {
+            "stage_version": "series-tts-v1",
+            "review_script_hash": file_hash(paths.series_tts_script),
+            "settings": settings,
+        }
+    )
+
+def chapters_stage_fingerprint(paths: SeriesPaths) -> str:
+    return stable_hash(
+        {
+            "stage_version": "series-chapters-v1",
+            "chapters_hash": file_hash(paths.series_chapters),
+            "beats_timing_hash": file_hash(paths.beats_timing),
+        }
+    )
+
+def match_stage_fingerprint(
+    *,
+    paths: SeriesPaths,
+    episode_run_dirs: dict[str, Path],
+    config: dict[str, Any],
+) -> str:
+    section = config.get("series_recap", {})
+    shots = [
+        {
+            "episode_key": episode_key,
+            "path": str((run_dir / "shots.json").resolve()),
+            "hash": file_hash(run_dir / "shots.json"),
+        }
+        for episode_key, run_dir in episode_run_dirs.items()
+    ]
+    return stable_hash(
+        {
+            "stage_version": "series-match-v2",
+            "review_script_hash": file_hash(paths.series_review_script),
+            "beats_timing_hash": file_hash(paths.beats_timing),
+            "shots": shots,
+            "settings": config_values(section, ("min_clip", "max_clip", "min_visual_clip")),
+        }
+    )
+
+def source_media_identities(source_map_path: Path) -> list[dict[str, str | None]]:
+    if not source_map_path.is_file():
+        return []
+    source_map = EdlSourceMap.model_validate(load_json(source_map_path))
+    identities: list[dict[str, str | None]] = []
+    for source_key, raw_path in sorted(source_map.sources.items()):
+        source_path = Path(raw_path).expanduser().resolve()
+        identities.append(
+            {
+                "source_key": source_key,
+                "path": str(source_path),
+                "identity": media_identity_hash(source_path) if source_path.is_file() else None,
+            }
+        )
+    return identities
+
+def render_stage_fingerprint(paths: SeriesPaths, config: dict[str, Any]) -> str:
+    section = config.get("render", {})
+    return stable_hash(
+        {
+            "stage_version": "series-render-v1",
+            "edl_hash": file_hash(paths.edl),
+            "source_map_hash": file_hash(paths.source_map),
+            "voiceover_hash": file_hash(paths.voiceover),
+            "sources": source_media_identities(paths.source_map),
+            "settings": config_values(
+                section,
+                ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s"),
+            ),
+        }
+    )
+
 def episode_stage_valid(stage_name: str, run_dir: Path, film: Path, config: dict[str, Any]) -> bool:
     run_paths = build_episode_paths(run_dir)
     if stage_name == "episode_planner":
@@ -571,11 +715,13 @@ def composer_outputs_valid(paths: SeriesPaths) -> bool:
         ]
     ):
         return False
+    SeriesEventBank.model_validate(load_json(paths.event_bank))
     beats = [SeriesReviewBeat.model_validate(item) for item in load_json(paths.series_review_script)]
     validate_series_review_script(beats)
     [SeriesChapter.model_validate(item) for item in load_json(paths.series_chapters)]
     SeasonTargetPlan.model_validate(load_json(paths.series_arc_plan))
     composer_qa = SeriesComposerQa.model_validate(load_json(paths.series_composer_qa))
+    SeriesReviewMeta.model_validate(load_json(paths.series_review_meta))
     if any(
         item.get("level") == "error" or item.get("code") == "deterministic_composer_fallback"
         for item in composer_qa.qa_report
@@ -629,14 +775,22 @@ def youtube_chapters_outputs_valid(paths: SeriesPaths) -> bool:
 def run_youtube_chapters_step(
     *,
     paths: SeriesPaths,
+    cache: SeriesStageCache,
+    input_fingerprint: str,
     force: bool,
     dry_run: bool,
 ) -> StepSummary:
     command = ["internal", "youtube_chapters"]
-    outputs = [str(paths.youtube_chapters)]
+    output_paths = [paths.youtube_chapters]
+    outputs = [str(path) for path in output_paths]
     if not force:
         try:
-            if youtube_chapters_outputs_valid(paths):
+            if cache.is_current(
+                stage="youtube_chapters",
+                input_fingerprint=input_fingerprint,
+                outputs=output_paths,
+                validate=lambda: youtube_chapters_outputs_valid(paths),
+            ):
                 return StepSummary(
                     stage="youtube_chapters",
                     status="skipped",
@@ -654,6 +808,13 @@ def run_youtube_chapters_step(
         beats_timing_path=paths.beats_timing,
         output_path=paths.youtube_chapters,
     )
+    if not youtube_chapters_outputs_valid(paths):
+        raise SeriesRecapError("youtube_chapters outputs failed validation")
+    cache.commit(
+        stage="youtube_chapters",
+        input_fingerprint=input_fingerprint,
+        outputs=output_paths,
+    )
     return StepSummary(
         stage="youtube_chapters",
         status="ran",
@@ -669,6 +830,9 @@ def series_match_outputs_valid(paths: SeriesPaths) -> bool:
     total_duration = timings[-1].tl_end if timings else None
     validate_edl([EdlPlacement.model_validate(item) for item in load_json(paths.edl)], total_duration=total_duration)
     EdlSourceMap.model_validate(load_json(paths.source_map))
+    EdlMeta.model_validate(load_json(paths.edl_meta))
+    if not isinstance(load_json(paths.edl_qa), dict):
+        return False
     return True
 
 def render_outputs_valid(paths: SeriesPaths) -> bool:
@@ -712,6 +876,49 @@ def run_step(
         outputs=output_text,
     )
 
+def run_cached_step(
+    *,
+    stage: str,
+    command: list[str],
+    outputs: list[Path],
+    valid: Callable[[], bool],
+    cache: SeriesStageCache,
+    input_fingerprint: str,
+    log_path: Path,
+    force: bool,
+    dry_run: bool,
+    executor: Callable[[list[str], Path], None],
+) -> StepSummary:
+    output_text = [str(path) for path in outputs]
+    if not force:
+        try:
+            if cache.is_current(
+                stage=stage,
+                input_fingerprint=input_fingerprint,
+                outputs=outputs,
+                validate=valid,
+            ):
+                return StepSummary(stage=stage, status="skipped", duration_s=0.0, command=command, outputs=output_text)
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    if dry_run:
+        return StepSummary(stage=stage, status="planned", duration_s=0.0, command=command, outputs=output_text)
+    started = time.perf_counter()
+    executor(command, log_path)
+    try:
+        if not valid():
+            raise SeriesRecapError(f"{stage} outputs failed validation")
+        cache.commit(stage=stage, input_fingerprint=input_fingerprint, outputs=outputs)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise SeriesRecapError(f"{stage} outputs failed validation: {exc}") from exc
+    return StepSummary(
+        stage=stage,
+        status="ran",
+        duration_s=round(time.perf_counter() - started, 3),
+        command=command,
+        outputs=output_text,
+    )
+
 def print_plan(summaries: list[StepSummary]) -> None:
     for summary in summaries:
         print(f"[{summary.status}] {summary.stage}")
@@ -739,6 +946,7 @@ def run_series_recap(
     if not args.dry_run:
         paths.final_dir.mkdir(parents=True, exist_ok=True)
         paths.work_dir.mkdir(parents=True, exist_ok=True)
+    stage_cache = SeriesStageCache(paths.stage_manifest)
 
     if not args.dry_run:
         for spec in specs:
@@ -830,7 +1038,7 @@ def run_series_recap(
             )
         )
 
-    composer = run_step(
+    composer = run_cached_step(
         stage="series_composer",
         command=composer_command(
             py=py,
@@ -850,55 +1058,70 @@ def run_series_recap(
             paths.series_chapters,
         ],
         valid=lambda: composer_outputs_valid(paths),
+        cache=stage_cache,
+        input_fingerprint=composer_stage_fingerprint(
+            manifest_path=manifest_path,
+            episode_run_dirs=episode_run_dirs,
+            config=config,
+        ),
         log_path=paths.log_path,
         force=force_final,
         dry_run=args.dry_run,
         executor=runner,
     )
     summaries.append(composer)
-    downstream_force = force_final or composer.status == "ran"
 
-    tts = run_step(
+    tts = run_cached_step(
         stage="tts",
-        command=tts_command(py=py, paths=paths, config=config, force=downstream_force),
+        command=tts_command(py=py, paths=paths, config=config, force=force_final),
         outputs=[paths.voiceover, paths.beats_timing, paths.tts_meta],
         valid=lambda: tts_outputs_valid(paths),
+        cache=stage_cache,
+        input_fingerprint=tts_stage_fingerprint(paths, config),
         log_path=paths.log_path,
-        force=downstream_force,
+        force=force_final,
         dry_run=args.dry_run,
         executor=runner,
     )
     summaries.append(tts)
-    downstream_force = downstream_force or tts.status == "ran"
 
     youtube_chapters = run_youtube_chapters_step(
         paths=paths,
-        force=downstream_force,
+        cache=stage_cache,
+        input_fingerprint=chapters_stage_fingerprint(paths),
+        force=force_final,
         dry_run=args.dry_run,
     )
     summaries.append(youtube_chapters)
 
-    match = run_step(
+    match = run_cached_step(
         stage="series_match",
         command=series_match_command(py=py, episode_run_dirs=episode_run_dirs, paths=paths, config=config),
         outputs=[paths.edl, paths.source_map, paths.edl_meta, paths.edl_qa],
         valid=lambda: series_match_outputs_valid(paths),
+        cache=stage_cache,
+        input_fingerprint=match_stage_fingerprint(
+            paths=paths,
+            episode_run_dirs=episode_run_dirs,
+            config=config,
+        ),
         log_path=paths.log_path,
-        force=downstream_force,
+        force=force_final,
         dry_run=args.dry_run,
         executor=runner,
     )
     summaries.append(match)
-    downstream_force = downstream_force or match.status == "ran"
 
     summaries.append(
-        run_step(
+        run_cached_step(
             stage="render",
-            command=render_command(py=py, paths=paths, config=config, force=downstream_force),
+            command=render_command(py=py, paths=paths, config=config, force=force_final),
             outputs=[paths.output_video, paths.render_meta],
             valid=lambda: render_outputs_valid(paths),
+            cache=stage_cache,
+            input_fingerprint=render_stage_fingerprint(paths, config),
             log_path=paths.log_path,
-            force=downstream_force,
+            force=force_final,
             dry_run=args.dry_run,
             executor=runner,
         )

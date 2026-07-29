@@ -618,3 +618,25 @@ repo/
 - UI preflight also validates the locked VieNeu backend/precision/style/thread settings and checks a configured pronunciation lexicon before enqueue; it exposes only safe runtime details such as the lexicon filename and first-run model-download notice.
 - `config.anime.series.vieneu.yaml` is the dedicated season preset for the selected production voice: exact voice ID `Ngọc Linh`, `style=doc_truyen`, ONNX/int8 CPU, and `speed=0.9`. It inherits the practical season policy while leaving `config.anime.series.practical.yaml` unchanged.
 - The VieNeu Solo Leveling preset loads `examples/anime/solo_leveling_vi_pronunciation.yaml`; current validated aliases normalize `Sung Jinwoo`/`Jinwoo` spellings to `Sung Chin U`/`Chin U` before cache identity and synthesis. VieNeu/sea-g2p maps `Chin U` closer to Korean `진우` than `Jin U`, which introduces a "you" glide. Add other character names only after a short pronunciation smoke test.
+
+## 47. SERIES FINAL-STAGE CACHE IDENTITY
+
+- `series_recap` stores a versioned Pydantic manifest at `series_recap/work/stage_manifest.json`. Composer, TTS, YouTube chapters, series match, and render skip only when their direct-input fingerprint, output signatures, and schema validation all match.
+- Composer identity includes the manifest, ordered selected episode keys, `episode_meta.json`, `episode_memory.json`, `film_map.json`, `film_map.meta.json`, `story_map.json`, optional `video_profile.json`, and content-affecting Composer settings. It intentionally excludes `shots.json`.
+- TTS identity includes `series_tts_script.json`, provider/voice/model/speed/pause/normalization settings, and pronunciation-lexicon content. Chapter identity includes `series_chapters.json` and `beats_timing.json`. Match identity includes review/timing artifacts, ordered `shots.json`, clip settings, and matcher version. Render identity includes EDL/source map/voiceover, source-media identities, and render settings.
+- Automatic invalidation evaluates final stages independently and does not add `--force`; unchanged downstream content can remain cached and TTS beat/render temp-clip caches stay reusable. Explicit `--force` and `--force-final` retain their existing hard-force behavior.
+- `series_composer/work/cache_manifest.json` uses the same content identity rather than structure-only reuse. Legacy artifacts without the relevant manifest rebuild once; cache records are committed atomically only after successful execution and output validation.
+
+## 48. SERIES MATCHER V2 AND EPISODE IDENTITY
+
+- Series matcher algorithm `series-v2` keeps a candidate pool per `source_ref`, allocates capacity-aware fair quotas in event order, tries strict source windows before same-episode fallback, and fails with `beat_id`/`event_id` when every referenced event cannot be represented.
+- Clip settings must satisfy `0 < min_visual_clip <= min_clip <= max_clip`. `min_clip` is the preferred normal clip length; candidates below it are used only when normal capacity is insufficient and must still meet the `min_visual_clip` hard floor. Multi-event beats shorter than `N * min_visual_clip` fail instead of dropping events.
+- `edl.json` and `edl.source_map.json` are unchanged. `edl.qa.json` additively records requested, covered, fallback, and missing event IDs plus quotas and short-fallback diagnostics.
+- `common.episodes.numeric_episode` is the shared parser for the series orchestrator and episode planner. It recognizes `s01e12`, `S1E12`, `1x12`, `e12`, `ep12`, `episode 12`, and numeric values; legacy fallback is used only when the text contains one unambiguous numeric group.
+
+## 49. LAZY LOCAL VISION AND OPAQUE UI RESPONSES
+
+- Local Qwen vision is created through a factory only after the vision cache misses, eligible visual gaps exist, and the provider is not `off`. The factory is called at most once per pass. Missing local runtime remains best-effort: warn, write empty `vision.json`, and never switch to OpenAI implicitly.
+- `ExecutionPlan` and `JobRecord` remain internal persistence/execution models. Browser DTOs expose safe IDs/status/title, basename-only `run_name`, placeholder `command_preview`, logical DAG/output names, sanitized errors/checks/dry-run summaries, and timestamps.
+- Browser plan/job/stage/health responses must not expose raw argv, command hashes, config paths/snapshots, absolute run paths, validator payloads, PID/worker/process metadata, raw dry-run stderr, or executable paths. Health exposes only `active_job_id`; resume/rerun accept job IDs and recover internal execution data from the repository.
+- `tach.toml` declares `tts` as a direct dependency of `recap_ui` and `series_recap`. `series_composer` must remain independent from `tts`.

@@ -1,5 +1,13 @@
 # PROJECT_LOG.md
 
+## 2026-07-29 - Anime recap review fixes
+
+- Added versioned per-stage cache identity for series Composer, TTS, chapters, match and render, with atomic manifests, output signatures, schema validation and selective invalidation that preserves beat/TTS and temp-clip caches. Composer identity tracks ordered episode content artifacts and excludes `shots.json`.
+- Reworked series matching to `series-v2`: source-ref candidate pools, fair capacity-aware quotas, strict-window then same-episode fallback, explicit impossible-event failures, preferred `min_clip` with `min_visual_clip` hard floor, and additive event/short-fallback QA diagnostics.
+- Centralized episode-number parsing in `common.episodes`, made local Qwen vision construction lazy/best-effort, and added the release-boundary `tts` dependencies for `recap_ui` and `series_recap` without coupling `series_composer` to TTS.
+- Replaced browser execution-model responses with opaque plan/job/stage/event/health DTOs and placeholder previews; absolute paths, argv/config internals, process metadata, validator payloads and raw dry-run output stay server-side. Frontend wire types and fixtures use the sanitized fields.
+- Validation: Python suite `572 passed`, frontend typecheck/lint/tests/build passed, Ruff/Tach/diff-check passed, and offline release gate passed with media smoke skipped.
+
 ## 2026-07-25 - VieNeu UI/backend synchronization
 
 - Preset cards now show the configured VieNeu provider, voice (`Ngọc Linh`), style, speed and pronunciation-lexicon state without exposing model paths or secrets.

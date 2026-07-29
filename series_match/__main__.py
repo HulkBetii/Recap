@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,8 @@ from common.schema import (
     write_json,
 )
 
+ALGORITHM_VERSION = "series-v2"
+
 
 class SeriesMatchError(RuntimeError):
     pass
@@ -35,6 +38,15 @@ class ClipCandidate:
     shot: Shot
     start: float
     end: float
+
+
+@dataclass(frozen=True)
+class SelectedClip:
+    candidate: ClipCandidate
+    start: float
+    duration: float
+    reused: bool = False
+    fallback: bool = False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -154,17 +166,20 @@ def add_clip(
     tl_cursor: float,
     duration: float,
     candidate: ClipCandidate,
+    src_start: float | None = None,
+    reused: bool = False,
 ) -> None:
+    source_start = candidate.start if src_start is None else src_start
     placements.append(
         EdlPlacement(
             tl_start=round(tl_cursor, 3),
             tl_end=round(tl_cursor + duration, 3),
             src=candidate.src_key,
-            src_in=round(candidate.start, 3),
-            src_out=round(candidate.start + duration, 3),
+            src_in=round(source_start, 3),
+            src_out=round(source_start + duration, 3),
             beat_id=beat_id,
             shot_index=candidate.shot.index,
-            reused=False,
+            reused=reused,
             speed=1.0,
         )
     )
@@ -176,9 +191,24 @@ def choose_clip_duration(
     remaining: float,
     max_clip: float,
     min_visual_clip: float,
+    min_clip: float | None = None,
 ) -> float:
     duration = min(max_clip, available, remaining)
+    if min_clip is not None:
+        preferred_count = max(1, math.ceil((remaining - 1e-6) / max_clip))
+        if remaining + 1e-6 >= preferred_count * min_clip:
+            balanced_duration = remaining / preferred_count
+            if available + 1e-6 >= balanced_duration:
+                duration = min(balanced_duration, available)
     tail_after = remaining - duration
+    if (
+        min_clip is not None
+        and remaining >= 2 * min_clip - 1e-6
+        and 1e-6 < tail_after < min_clip
+        and duration - (min_clip - tail_after) >= min_clip
+    ):
+        duration -= min_clip - tail_after
+        tail_after = remaining - duration
     if 1e-6 < tail_after < min_visual_clip:
         shrink_by = min_visual_clip - tail_after
         if duration - shrink_by >= min_visual_clip:
@@ -189,6 +219,238 @@ def choose_clip_duration(
             return 0.0
     return duration
 
+
+def _merge_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(intervals):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1] + 1e-6:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _available_parts(
+    candidate: ClipCandidate,
+    used_intervals: dict[str, list[tuple[float, float]]],
+    *,
+    allow_reuse: bool,
+) -> list[tuple[float, float]]:
+    if allow_reuse:
+        return [(candidate.start, candidate.end)]
+    cursor = candidate.start
+    parts: list[tuple[float, float]] = []
+    for used_start, used_end in _merge_intervals(used_intervals.get(candidate.src_key, [])):
+        if used_end <= cursor + 1e-6:
+            continue
+        if used_start >= candidate.end - 1e-6:
+            break
+        if used_start > cursor + 1e-6:
+            parts.append((cursor, min(used_start, candidate.end)))
+        cursor = max(cursor, used_end)
+        if cursor >= candidate.end - 1e-6:
+            break
+    if cursor < candidate.end - 1e-6:
+        parts.append((cursor, candidate.end))
+    return parts
+
+
+def _dedupe_candidates(candidates: list[ClipCandidate]) -> list[ClipCandidate]:
+    unique: dict[tuple[str, int, float, float], ClipCandidate] = {}
+    for candidate in candidates:
+        key = (candidate.src_key, candidate.shot.index, candidate.start, candidate.end)
+        unique.setdefault(key, candidate)
+    return sorted(unique.values(), key=lambda item: (item.start, item.end, item.shot.index))
+
+
+def _candidate_capacity(candidates: list[ClipCandidate], min_visual_clip: float) -> float:
+    # Keep shot boundaries distinct: two adjacent sub-floor shots cannot be
+    # joined into one placement without violating the visual hard floor.
+    return sum(
+        candidate.end - candidate.start
+        for candidate in _dedupe_candidates(candidates)
+        if candidate.end - candidate.start >= min_visual_clip - 1e-6
+    )
+
+
+def _allocate_ref_quotas(
+    *,
+    beat_id: int,
+    event_ids: list[str],
+    duration: float,
+    capacities: list[float],
+    min_clip: float,
+    min_visual_clip: float,
+) -> list[float]:
+    count = len(event_ids)
+    if duration + 1e-6 < count * min_visual_clip:
+        raise SeriesMatchError(
+            f"beat {beat_id} duration {duration:.3f}s cannot represent {count} source refs "
+            f"at --min-visual-clip {min_visual_clip:.3f}s"
+        )
+    floor = min_clip if duration + 1e-6 >= count * min_clip else min_visual_clip
+    for event_id, capacity in zip(event_ids, capacities, strict=True):
+        if capacity + 1e-6 < floor:
+            raise SeriesMatchError(
+                f"beat {beat_id} event {event_id} has only {capacity:.3f}s usable story footage; "
+                f"requires at least {floor:.3f}s"
+            )
+
+    quotas = [min(duration / count, capacity) for capacity in capacities]
+    remaining = duration - sum(quotas)
+    while remaining > 1e-6:
+        eligible = [index for index, capacity in enumerate(capacities) if capacity - quotas[index] > 1e-6]
+        if not eligible:
+            raise SeriesMatchError(
+                f"beat {beat_id} cannot fill source refs {', '.join(event_ids)} with usable story footage"
+            )
+        share = remaining / len(eligible)
+        distributed = 0.0
+        for index in eligible:
+            addition = min(share, capacities[index] - quotas[index])
+            quotas[index] += addition
+            distributed += addition
+        if distributed <= 1e-6:
+            raise SeriesMatchError(
+                f"beat {beat_id} cannot allocate footage across source refs {', '.join(event_ids)}"
+            )
+        remaining -= distributed
+    return quotas
+
+
+def _select_clips(
+    *,
+    candidates: list[ClipCandidate],
+    target: float,
+    used_intervals: dict[str, list[tuple[float, float]]],
+    min_clip: float,
+    max_clip: float,
+    min_visual_clip: float,
+    fallback: bool,
+    allow_reuse: bool = False,
+    allow_short_clips: bool = True,
+) -> tuple[list[SelectedClip], float]:
+    candidates = _dedupe_candidates(candidates)
+    parts: list[tuple[ClipCandidate, float, float]] = []
+    for candidate in candidates:
+        for start, end in _available_parts(candidate, used_intervals, allow_reuse=allow_reuse):
+            if end - start >= min_visual_clip - 1e-6:
+                parts.append((candidate, start, end))
+
+    normal_capacity = sum(end - start for _, start, end in parts if end - start >= min_clip - 1e-6)
+    if not allow_short_clips or normal_capacity + 1e-6 >= target:
+        parts = [part for part in parts if part[2] - part[1] >= min_clip - 1e-6]
+
+    selected: list[SelectedClip] = []
+    remaining = target
+    selection_floor = min_visual_clip if allow_short_clips else min_clip
+    for candidate, part_start, part_end in parts:
+        cursor = part_start
+        while remaining > 1e-6 and part_end - cursor >= selection_floor - 1e-6:
+            duration = choose_clip_duration(
+                available=part_end - cursor,
+                remaining=remaining,
+                max_clip=max_clip,
+                min_visual_clip=min_visual_clip,
+                min_clip=min_clip,
+            )
+            if duration + 1e-6 < selection_floor:
+                break
+            selected.append(
+                SelectedClip(
+                    candidate=candidate,
+                    start=cursor,
+                    duration=duration,
+                    reused=allow_reuse,
+                    fallback=fallback,
+                )
+            )
+            used_intervals.setdefault(candidate.src_key, []).append((cursor, cursor + duration))
+            cursor += duration
+            remaining -= duration
+        if remaining <= 1e-6:
+            break
+    return selected, max(0.0, remaining)
+
+
+def _ref_plan(
+    *,
+    beat_id: int,
+    ref: SeriesSourceRef,
+    shots: list[Shot],
+    quota: float,
+    used_intervals: dict[str, list[tuple[float, float]]],
+    min_clip: float,
+    max_clip: float,
+    min_visual_clip: float,
+) -> list[SelectedClip]:
+    strict = ref_candidates(ref, shots)
+    fallback = fallback_candidates(ref, shots)
+    selected, remaining = _select_clips(
+        candidates=strict,
+        target=quota,
+        used_intervals=used_intervals,
+        min_clip=min_clip,
+        max_clip=max_clip,
+        min_visual_clip=min_visual_clip,
+        fallback=False,
+        allow_short_clips=False,
+    )
+    if remaining > 1e-6:
+        extra, remaining = _select_clips(
+            candidates=fallback,
+            target=remaining,
+            used_intervals=used_intervals,
+            min_clip=min_clip,
+            max_clip=max_clip,
+            min_visual_clip=min_visual_clip,
+            fallback=True,
+            allow_short_clips=False,
+        )
+        selected.extend(extra)
+    if remaining > 1e-6:
+        extra, remaining = _select_clips(
+            candidates=strict,
+            target=remaining,
+            used_intervals=used_intervals,
+            min_clip=min_clip,
+            max_clip=max_clip,
+            min_visual_clip=min_visual_clip,
+            fallback=False,
+        )
+        selected.extend(extra)
+    if remaining > 1e-6:
+        extra, remaining = _select_clips(
+            candidates=fallback,
+            target=remaining,
+            used_intervals=used_intervals,
+            min_clip=min_clip,
+            max_clip=max_clip,
+            min_visual_clip=min_visual_clip,
+            fallback=True,
+        )
+        selected.extend(extra)
+    if remaining > 1e-6:
+        extra, remaining = _select_clips(
+            candidates=fallback,
+            target=remaining,
+            used_intervals=used_intervals,
+            min_clip=min_clip,
+            max_clip=max_clip,
+            min_visual_clip=min_visual_clip,
+            fallback=True,
+            allow_reuse=True,
+        )
+        selected.extend(extra)
+    if remaining > 1e-6:
+        raise SeriesMatchError(
+            f"beat {beat_id} event {ref.event_id} cannot fill its {quota:.3f}s quota with usable story footage"
+        )
+    return sorted(selected, key=lambda item: (item.start, item.candidate.shot.index))
+
+
 def build_edl(
     *,
     beats: list[SeriesReviewBeat],
@@ -196,7 +458,11 @@ def build_edl(
     shots_by_episode: dict[str, list[Shot]],
     min_visual_clip: float,
     max_clip: float,
+    min_clip: float = 3.0,
+    qa_beats: list[dict[str, object]] | None = None,
 ) -> tuple[list[EdlPlacement], list[str]]:
+    if not (0 < min_visual_clip <= min_clip <= max_clip):
+        raise SeriesMatchError("clip lengths must satisfy 0 < min_visual_clip <= min_clip <= max_clip")
     windows = timing_windows(timings)
     placements: list[EdlPlacement] = []
     warnings: list[str] = []
@@ -204,76 +470,97 @@ def build_edl(
         if beat.beat_id not in windows:
             raise SeriesMatchError(f"missing timing for beat {beat.beat_id}")
         tl_cursor, tl_end = windows[beat.beat_id]
-        remaining = tl_end - tl_cursor
-        candidate_pool: list[ClipCandidate] = []
+        beat_duration = tl_end - tl_cursor
+        refs_with_shots: list[tuple[SeriesSourceRef, list[Shot]]] = []
+        capacities: list[float] = []
         for ref in beat.source_refs:
             episode_shots = shots_by_episode.get(ref.episode_key)
             if episode_shots is None:
                 raise SeriesMatchError(f"missing shots for episode {ref.episode_key}")
-            candidate_pool.extend(ref_candidates(ref, episode_shots))
-        if not candidate_pool:
-            for ref in beat.source_refs:
-                candidate_pool.extend(fallback_candidates(ref, shots_by_episode[ref.episode_key]))
-            warnings.append(f"beat {beat.beat_id}: used episode-level fallback candidates")
-        used_any = False
-        used_shots: set[tuple[str, int]] = set()
-        for candidate in candidate_pool:
-            if remaining <= 1e-6:
-                break
-            available = candidate.end - candidate.start
-            if available <= 0:
-                continue
-            duration = choose_clip_duration(
-                available=available,
-                remaining=remaining,
+            refs_with_shots.append((ref, episode_shots))
+            capacities.append(_candidate_capacity(fallback_candidates(ref, episode_shots), min_visual_clip))
+        quotas = _allocate_ref_quotas(
+            beat_id=beat.beat_id,
+            event_ids=[ref.event_id for ref in beat.source_refs],
+            duration=beat_duration,
+            capacities=capacities,
+            min_clip=min_clip,
+            min_visual_clip=min_visual_clip,
+        )
+        used_intervals: dict[str, list[tuple[float, float]]] = {}
+        fallback_event_ids: list[str] = []
+        short_fallbacks: list[dict[str, object]] = []
+        for (ref, episode_shots), quota in zip(refs_with_shots, quotas, strict=True):
+            selected = _ref_plan(
+                beat_id=beat.beat_id,
+                ref=ref,
+                shots=episode_shots,
+                quota=quota,
+                used_intervals=used_intervals,
+                min_clip=min_clip,
                 max_clip=max_clip,
                 min_visual_clip=min_visual_clip,
             )
-            if duration + 1e-6 < min_visual_clip:
-                continue
-            add_clip(placements, beat_id=beat.beat_id, tl_cursor=tl_cursor, duration=duration, candidate=candidate)
-            used_shots.add((candidate.src_key, candidate.shot.index))
-            tl_cursor += duration
-            remaining = tl_end - tl_cursor
-            used_any = True
-        if remaining > 0.05:
-            fallback_pool: list[ClipCandidate] = []
-            for ref in beat.source_refs:
-                fallback_pool.extend(fallback_candidates(ref, shots_by_episode[ref.episode_key]))
-            fallback_pool = sorted(
-                fallback_pool,
-                key=lambda item: ((item.src_key, item.shot.index) in used_shots, item.start, -candidate_score(item.shot)),
-            )
-            for candidate in fallback_pool:
-                if remaining <= 1e-6:
-                    break
-                available = candidate.end - candidate.start
-                if available <= 0:
-                    continue
-                duration = choose_clip_duration(
-                    available=available,
-                    remaining=remaining,
-                    max_clip=max_clip,
-                    min_visual_clip=min_visual_clip,
+            if any(item.fallback for item in selected):
+                fallback_event_ids.append(ref.event_id)
+            for item in selected:
+                add_clip(
+                    placements,
+                    beat_id=beat.beat_id,
+                    tl_cursor=tl_cursor,
+                    duration=item.duration,
+                    candidate=item.candidate,
+                    src_start=item.start,
+                    reused=item.reused,
                 )
-                if duration + 1e-6 < min_visual_clip:
-                    continue
-                add_clip(placements, beat_id=beat.beat_id, tl_cursor=tl_cursor, duration=duration, candidate=candidate)
-                used_shots.add((candidate.src_key, candidate.shot.index))
-                tl_cursor += duration
-                remaining = tl_end - tl_cursor
-                used_any = True
-            if remaining > 0.05 or not used_any:
-                raise SeriesMatchError(f"beat {beat.beat_id} cannot be filled with usable story footage")
-            warnings.append(f"beat {beat.beat_id}: used extra fallback footage to fill timing")
+                if item.duration + 1e-6 < min_clip:
+                    candidate_duration = item.candidate.end - item.candidate.start
+                    short_fallbacks.append(
+                        {
+                            "event_id": ref.event_id,
+                            "episode_key": ref.episode_key,
+                            "shot_index": item.candidate.shot.index,
+                            "duration_s": round(item.duration, 3),
+                            "reason": (
+                                "candidate_below_min_clip"
+                                if candidate_duration + 1e-6 < min_clip
+                                else "quota_or_tail_below_min_clip"
+                            ),
+                            "episode_fallback": item.fallback,
+                            "reused": item.reused,
+                        }
+                    )
+                tl_cursor += item.duration
+        if fallback_event_ids:
+            warnings.append(
+                f"beat {beat.beat_id}: used episode-level fallback for " + ", ".join(dict.fromkeys(fallback_event_ids))
+            )
+        if short_fallbacks:
+            warnings.append(f"beat {beat.beat_id}: used {len(short_fallbacks)} clips shorter than --min-clip")
+        if qa_beats is not None:
+            requested = list(dict.fromkeys(ref.event_id for ref in beat.source_refs))
+            qa_beats.append(
+                {
+                    "beat_id": beat.beat_id,
+                    "requested_event_ids": requested,
+                    "covered_event_ids": requested,
+                    "fallback_event_ids": list(dict.fromkeys(fallback_event_ids)),
+                    "missing_event_ids": [],
+                    "quotas_s": {
+                        ref.event_id: round(quota, 3)
+                        for ref, quota in zip(beat.source_refs, quotas, strict=True)
+                    },
+                    "short_fallbacks": short_fallbacks,
+                    "short_fallback_diagnostics": short_fallbacks,
+                }
+            )
     return validate_edl(placements), warnings
 
 
 def run_series_match(args: argparse.Namespace) -> int:
-    if args.max_clip <= 0 or args.min_visual_clip <= 0:
-        raise SeriesMatchError("clip lengths must be > 0")
-    if args.max_clip < args.min_visual_clip:
-        raise SeriesMatchError("--max-clip must be >= --min-visual-clip")
+    min_clip = float(getattr(args, "min_clip", 3.0))
+    if not (0 < args.min_visual_clip <= min_clip <= args.max_clip):
+        raise SeriesMatchError("clip lengths must satisfy 0 < min_visual_clip <= min_clip <= max_clip")
     episode_run_dirs = parse_episode_run_dirs(args.episode_run_dir)
     beats = load_series_beats(args.series_review_script.expanduser().resolve())
     timings = load_timings(args.beats_timing.expanduser().resolve())
@@ -281,12 +568,15 @@ def run_series_match(args: argparse.Namespace) -> int:
         episode_key: load_shots(run_dir / "shots.json")
         for episode_key, run_dir in episode_run_dirs.items()
     }
+    qa_beats: list[dict[str, object]] = []
     placements, warnings = build_edl(
         beats=beats,
         timings=timings,
         shots_by_episode=shots_by_episode,
         min_visual_clip=args.min_visual_clip,
         max_clip=args.max_clip,
+        min_clip=min_clip,
+        qa_beats=qa_beats,
     )
     source_map = source_map_from_beats(beats)
     write_json(args.output.expanduser().resolve(), placements)
@@ -296,7 +586,7 @@ def run_series_match(args: argparse.Namespace) -> int:
         total_duration_s=round(placements[-1].tl_end if placements else 0.0, 3),
         n_placements=len(placements),
         n_beats_widened=0,
-        n_reused=0,
+        n_reused=sum(1 for placement in placements if placement.reused),
         n_speedfit=0,
         n_intro_excluded=0,
         n_empty_beats=0,
@@ -313,7 +603,7 @@ def run_series_match(args: argparse.Namespace) -> int:
         seed=0,
         created_at=datetime.now(timezone.utc),
         cache_hits=[],
-        algorithm_version="series-v1",
+        algorithm_version=ALGORITHM_VERSION,
     )
     write_json(args.output.expanduser().resolve().with_name("edl.meta.json"), meta)
     qa_path = args.output_qa.expanduser().resolve() if args.output_qa else args.output.expanduser().resolve().with_name("edl.qa.json")
@@ -324,6 +614,8 @@ def run_series_match(args: argparse.Namespace) -> int:
             "n_beats": len(beats),
             "n_placements": len(placements),
             "source_count": len(source_map.sources),
+            "algorithm_version": ALGORITHM_VERSION,
+            "beats": qa_beats,
             "warnings": warnings,
         },
     )

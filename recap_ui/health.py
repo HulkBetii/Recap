@@ -64,7 +64,7 @@ def collect_runtime_health(
             "vivoo": bool(os.getenv("VIVOO_API_KEY")),
             "genmax": bool(os.getenv("GENMAX_API_KEY")),
         },
-        active_job=active_job,
+        active_job_id=active_job.id if active_job is not None else None,
     )
 
 
@@ -73,7 +73,8 @@ def _binary_check(code: str, path: str | None) -> RuntimeCheck:
         code=code,
         status=DeliveryStatus.PASS if path else DeliveryStatus.BLOCK,
         message=f"{code} is available" if path else f"{code} was not found",
-        details={"available": bool(path), "path": path},
+        # Executable paths are useful internally but must not cross the browser boundary.
+        details={"available": bool(path)},
     )
 
 

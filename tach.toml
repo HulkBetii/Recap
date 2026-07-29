@@ -26,7 +26,7 @@ depends_on = ["common"]
 
 [[modules]]
 path = "recap_ui"
-depends_on = ["common", "orchestrator", "series_recap"]
+depends_on = ["common", "orchestrator", "series_recap", "tts"]
 
 [[modules]]
 path = "ingest"
@@ -74,7 +74,7 @@ depends_on = ["common"]
 
 [[modules]]
 path = "series_recap"
-depends_on = ["common", "orchestrator"]
+depends_on = ["common", "orchestrator", "tts"]
 
 [[modules]]
 path = "orchestrator"

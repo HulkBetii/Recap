@@ -214,6 +214,155 @@ def test_load_vision_no_selected_gaps_does_not_need_openai_client(tmp_path: Path
     assert warnings == 0
     assert cache.has("vision.json")
 
+def test_load_vision_cache_hit_does_not_build_client(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / "work", force=False)
+    cache.prepare()
+    cache.write_json("vision.json", [])
+    factory_calls = 0
+
+    def client_factory():  # type: ignore[no-untyped-def]
+        nonlocal factory_calls
+        factory_calls += 1
+        return object()
+
+    class Logger:
+        def info(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+    vision, warnings = load_vision(
+        cache=cache,
+        input_path=tmp_path / "film.mp4",
+        translated=[],
+        duration=10,
+        gap_threshold=4,
+        max_vision_frames=1,
+        max_visual_gap_s=20,
+        client=None,
+        client_factory=client_factory,
+        logger=Logger(),
+        vision_provider="local_qwen2_5_vl",
+    )
+
+    assert vision == []
+    assert warnings == 0
+    assert factory_calls == 0
+
+def test_load_vision_no_selected_gaps_does_not_build_client(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / "work", force=False)
+    cache.prepare()
+    translated = [TranslatedSegment(id=0, tc_start=0, tc_end=10, ko="こんにちは", en="Hello")]
+    factory_calls = 0
+
+    def client_factory():  # type: ignore[no-untyped-def]
+        nonlocal factory_calls
+        factory_calls += 1
+        return object()
+
+    class Logger:
+        def info(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+    vision, warnings = load_vision(
+        cache=cache,
+        input_path=tmp_path / "film.mp4",
+        translated=translated,
+        duration=10,
+        gap_threshold=4,
+        max_vision_frames=1,
+        max_visual_gap_s=20,
+        client=None,
+        client_factory=client_factory,
+        logger=Logger(),
+        vision_provider="local_qwen2_5_vl",
+    )
+
+    assert vision == []
+    assert warnings == 0
+    assert factory_calls == 0
+
+def test_load_vision_builds_local_client_once_after_gap_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache = StageCache(tmp_path / "work", force=False)
+    cache.prepare()
+    translated = [TranslatedSegment(id=0, tc_start=10, tc_end=20, ko="こんにちは", en="Hello")]
+    client = object()
+    factory_calls = 0
+
+    def client_factory():  # type: ignore[no-untyped-def]
+        nonlocal factory_calls
+        factory_calls += 1
+        return client
+
+    def fake_describe_gaps(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["client"] is client
+        return [
+            VisionSegment(gap_id=gap.id, tc_start=gap.tc_start, tc_end=gap.tc_end, scene_desc="Story visual.")
+            for gap in kwargs["gaps"]
+        ], 0
+
+    class Logger:
+        def info(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+    monkeypatch.setattr("ingest.__main__.describe_gaps", fake_describe_gaps)
+    vision, warnings = load_vision(
+        cache=cache,
+        input_path=tmp_path / "film.mp4",
+        translated=translated,
+        duration=35,
+        gap_threshold=4,
+        max_vision_frames=1,
+        max_visual_gap_s=20,
+        client=None,
+        client_factory=client_factory,
+        logger=Logger(),
+        vision_provider="local_qwen2_5_vl",
+    )
+
+    assert warnings == 0
+    assert vision
+    assert factory_calls == 1
+
+
+def test_load_vision_unavailable_local_client_writes_empty_artifact(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / "work", force=False)
+    cache.prepare()
+    translated = [TranslatedSegment(id=0, tc_start=10, tc_end=20, ko="こんにちは", en="Hello")]
+    factory_calls = 0
+
+    def client_factory():  # type: ignore[no-untyped-def]
+        nonlocal factory_calls
+        factory_calls += 1
+        return None
+
+    class Logger:
+        def info(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+        def warning(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            pass
+
+    vision, warnings = load_vision(
+        cache=cache,
+        input_path=tmp_path / "film.mp4",
+        translated=translated,
+        duration=35,
+        gap_threshold=4,
+        max_vision_frames=1,
+        max_visual_gap_s=20,
+        client=None,
+        client_factory=client_factory,
+        logger=Logger(),
+        vision_provider="local_qwen2_5_vl",
+    )
+
+    assert vision == []
+    assert warnings == 1
+    assert factory_calls == 1
+    assert cache.read_json("vision.json") == []
+
 def test_load_vision_excludes_manual_non_story_gaps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cache = StageCache(tmp_path / "work", force=False)
     cache.prepare()

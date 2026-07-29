@@ -36,9 +36,18 @@ from recap_ui.runs import RunService
 from recap_ui.schemas import (
     DeliveryStatus,
     ExecutionPlan,
+    ExecutionPlanResponse,
+    JobDetailResponse,
+    JobEvent,
+    JobEventResponse,
     JobKind,
     JobRecord,
+    JobResponse,
+    JobStageRecord,
+    JobStageResponse,
     JobStatus,
+    PlanCheck,
+    PlanDagNodeResponse,
     PresetSummary,
     RerunRequest,
     ServerMetadata,
@@ -58,6 +67,8 @@ TERMINAL_JOB_STATUSES = {
 }
 PROFILE_DIR = CHATGPT_PLAYWRIGHT_PROFILE_DIR
 RUN_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+ABSOLUTE_PATH_FRAGMENT_RE = re.compile(r"(?i)(?<![A-Za-z0-9])[A-Z]:[\\/][^\s\"'<>|]+")
+POSIX_ABSOLUTE_PATH_FRAGMENT_RE = re.compile(r"(?<![A-Za-z0-9])/(?:[^/\s]+/)+[^\s\"'<>|]+")
 
 
 def create_app(
@@ -130,11 +141,11 @@ def create_app(
 
     @app.exception_handler(PathAccessError)
     async def path_access_error_handler(_request: Request, exc: PathAccessError) -> JSONResponse:
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        return JSONResponse(status_code=403, content={"detail": _sanitize_browser_text(str(exc))})
 
     @app.exception_handler(PlanningError)
     async def planning_error_handler(_request: Request, exc: PlanningError) -> JSONResponse:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return JSONResponse(status_code=422, content={"detail": _sanitize_browser_text(str(exc))})
 
     @app.exception_handler(subprocess.TimeoutExpired)
     async def planning_timeout_handler(_request: Request, _exc: subprocess.TimeoutExpired) -> JSONResponse:
@@ -150,13 +161,14 @@ def create_app(
 
     @app.get("/api/health")
     def get_health() -> dict[str, Any]:
-        report = collect_runtime_health(root, profile_dir=PROFILE_DIR)
+        active_job = repository.active_job()
+        report = collect_runtime_health(root, profile_dir=PROFILE_DIR, active_job=active_job)
         return {
-            "runtime": report.runtime,
+            "runtime": [_public_check(check) for check in report.runtime],
             "providers": report.providers,
             "status": report.status,
             "generated_at": report.generated_at,
-            "active_job": repository.active_job(),
+            "active_job_id": report.active_job_id,
         }
 
     @app.post("/api/health/chatgpt-profile", dependencies=[mutation_guard])
@@ -170,7 +182,10 @@ def create_app(
                 raise HTTPException(status_code=409, detail="a pipeline job started before the profile test")
             users = _processes_using_profile(PROFILE_DIR)
             if users:
-                raise HTTPException(status_code=409, detail={"message": "the ChatGPT profile is already in use", "pids": users})
+                raise HTTPException(
+                    status_code=409,
+                    detail={"message": "the ChatGPT profile is already in use", "process_count": len(users)},
+                )
             try:
                 url = await _test_profile_no_send(PROFILE_DIR)
                 return {"status": "pass", "composer_available": True, "url": url, "sent": False}
@@ -178,7 +193,7 @@ def create_app(
                 raise HTTPException(
                     status_code=503,
                     detail={
-                        "message": str(exc),
+                        "message": _sanitize_browser_text(str(exc), sensitive_values=[str(PROFILE_DIR)]),
                         "code": "profile_smoke_failed",
                         "composer_available": False,
                         "sent": False,
@@ -241,12 +256,12 @@ def create_app(
         return {"token": paths.token_for(child), "name": name}
 
     @app.post("/api/plans/single", dependencies=[mutation_guard])
-    def plan_single(request: SinglePlanRequest) -> ExecutionPlan:
-        return planning.plan_single(request)
+    def plan_single(request: SinglePlanRequest) -> ExecutionPlanResponse:
+        return _public_plan(planning.plan_single(request))
 
     @app.post("/api/plans/series", dependencies=[mutation_guard])
-    def plan_series(request: SeriesPlanRequest) -> ExecutionPlan:
-        return planning.plan_series(request)
+    def plan_series(request: SeriesPlanRequest) -> ExecutionPlanResponse:
+        return _public_plan(planning.plan_series(request))
 
     @app.post("/api/inspect/single", dependencies=[mutation_guard])
     def inspect_single(payload: dict[str, Any] = Body(...)) -> Any:
@@ -286,19 +301,19 @@ def create_app(
         checks.extend(_media_duration_checks(plan))
         can_start = plan.can_start and not any(check.status.value == "block" for check in checks)
         return {
-            "checks": checks,
-            "warnings": plan.warnings,
+            "checks": [_public_check(check) for check in checks],
+            "warnings": [_sanitize_browser_text(warning) for warning in plan.warnings],
             "providers": health.providers,
             "can_start": can_start,
             "plan_id": plan.plan_id,
         }
 
     @app.get("/api/jobs")
-    def list_jobs(limit: int = Query(default=100, ge=1, le=1000)) -> list[JobRecord]:
-        return repository.list_jobs(limit=limit)
+    def list_jobs(limit: int = Query(default=100, ge=1, le=1000)) -> list[JobResponse]:
+        return [_public_job(job) for job in repository.list_jobs(limit=limit)]
 
     @app.post("/api/jobs", dependencies=[mutation_guard])
-    def create_job(payload: dict[str, str] = Body(...)) -> JobRecord:
+    def create_job(payload: dict[str, str] = Body(...)) -> JobResponse:
         plan_id = payload.get("plan_id", "")
         plan = planning.get_plan(plan_id)
         if plan is None:
@@ -316,20 +331,23 @@ def create_app(
                 raise HTTPException(status_code=409, detail={"message": "runtime preflight is blocked", "checks": blockers})
         with app.state.job_creation_lock:
             _ensure_run_not_pending(repository, plan.run_dir)
-            return repository.create_job(plan, config_path=plan.config_path)
+            return _public_job(repository.create_job(plan, config_path=plan.config_path))
 
     @app.get("/api/jobs/{job_id}")
-    def get_job(job_id: str) -> dict[str, Any]:
+    def get_job(job_id: str) -> JobDetailResponse:
         job = _require_job(repository, job_id)
-        return {"job": job, "stages": repository.list_stages(job_id)}
+        return JobDetailResponse(
+            job=_public_job(job),
+            stages=[_public_stage(stage) for stage in repository.list_stages(job_id)],
+        )
 
     @app.post("/api/jobs/{job_id}/cancel", dependencies=[mutation_guard])
-    def cancel_job(job_id: str) -> JobRecord:
+    def cancel_job(job_id: str) -> JobResponse:
         _require_job(repository, job_id)
-        return repository.request_cancel(job_id)
+        return _public_job(repository.request_cancel(job_id))
 
     @app.post("/api/jobs/{job_id}/resume", dependencies=[mutation_guard])
-    def resume_job(job_id: str) -> JobRecord:
+    def resume_job(job_id: str) -> JobResponse:
         job = _require_job(repository, job_id)
         if job.status not in {JobStatus.FAILED, JobStatus.INTERRUPTED, JobStatus.CANCELLED, JobStatus.BLOCKED}:
             raise HTTPException(status_code=409, detail="job is not resumable")
@@ -337,10 +355,10 @@ def create_app(
         plan = _plan_from_job(job, command)
         with app.state.job_creation_lock:
             _ensure_run_not_pending(repository, job.run_dir, exclude_job_id=job.id)
-            return repository.create_job(plan, config_path=job.config_path, parent_job_id=job.id)
+            return _public_job(repository.create_job(plan, config_path=job.config_path, parent_job_id=job.id))
 
     @app.post("/api/jobs/{job_id}/rerun", dependencies=[mutation_guard])
-    def rerun_job(job_id: str, request: RerunRequest) -> JobRecord:
+    def rerun_job(job_id: str, request: RerunRequest) -> JobResponse:
         job = _require_job(repository, job_id)
         command = _without_force_flags(job.argv)
         if job.kind == JobKind.SINGLE:
@@ -358,20 +376,23 @@ def create_app(
         plan = _plan_from_job(job, command)
         with app.state.job_creation_lock:
             _ensure_run_not_pending(repository, job.run_dir, exclude_job_id=job.id)
-            return repository.create_job(plan, config_path=job.config_path, parent_job_id=job.id)
+            return _public_job(repository.create_job(plan, config_path=job.config_path, parent_job_id=job.id))
 
     @app.get("/api/jobs/{job_id}/events")
     def get_events(
         job_id: str,
         after_seq: int = Query(default=0, ge=0),
         limit: int = Query(default=1000, ge=1, le=5000),
-    ) -> list[Any]:
-        _require_job(repository, job_id)
-        return repository.list_events(job_id, after_seq=after_seq, limit=limit)
+    ) -> list[JobEventResponse]:
+        job = _require_job(repository, job_id)
+        return [
+            _public_event(event, job)
+            for event in repository.list_events(job_id, after_seq=after_seq, limit=limit)
+        ]
 
     @app.get("/api/jobs/{job_id}/events/stream")
     async def stream_events(request: Request, job_id: str, after_seq: int = Query(default=0, ge=0)) -> StreamingResponse:
-        _require_job(repository, job_id)
+        job = _require_job(repository, job_id)
         header_cursor = request.headers.get("last-event-id")
         if header_cursor and header_cursor.isdigit():
             after_seq = max(after_seq, int(header_cursor))
@@ -385,7 +406,11 @@ def create_app(
                     idle_ticks = 0
                     for event in events:
                         cursor = event.seq
-                        payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":"))
+                        payload = json.dumps(
+                            _public_event(event, job).model_dump(mode="json"),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
                         yield f"id: {event.seq}\nevent: {event.event_type.value}\ndata: {payload}\n\n"
                 else:
                     idle_ticks += 1
@@ -475,6 +500,177 @@ def _require_job(repository: Repository, job_id: str) -> JobRecord:
     if job is None:
         raise HTTPException(status_code=404, detail="job does not exist")
     return job
+
+
+def _public_plan(plan: ExecutionPlan) -> ExecutionPlanResponse:
+    run_name = Path(plan.run_dir).name
+    sensitive_values = [plan.run_dir, plan.config_path, *plan.command]
+    return ExecutionPlanResponse(
+        plan_id=plan.plan_id,
+        kind=plan.kind,
+        title=plan.display_title or run_name,
+        run_name=run_name,
+        command_preview=_command_preview(plan.command),
+        dag=[
+            PlanDagNodeResponse(
+                key=node.key,
+                label=node.label,
+                status=node.status,
+                outputs=[Path(output).name for output in node.outputs],
+            )
+            for node in plan.dag
+        ],
+        output_names=[Path(output).name for output in plan.output_paths],
+        checks=[_public_check(check, sensitive_values=sensitive_values) for check in plan.checks],
+        warnings=[_sanitize_browser_text(warning, sensitive_values=sensitive_values) for warning in plan.warnings],
+        dry_run_summary=_dry_run_summary(plan),
+        can_start=plan.can_start,
+        created_at=plan.created_at,
+    )
+
+
+def _public_job(job: JobRecord) -> JobResponse:
+    return JobResponse(
+        id=job.id,
+        kind=job.kind,
+        status=job.status,
+        title=job.display_title,
+        run_name=Path(job.run_dir).name,
+        attempt=job.attempt,
+        heartbeat_at=job.heartbeat_at,
+        exit_code=job.exit_code,
+        error_code=job.error_code,
+        error_message=_sanitize_browser_text(
+            job.error_message,
+            sensitive_values=[job.run_dir, job.config_path, *job.argv],
+        ),
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+    )
+
+
+def _public_stage(stage: JobStageRecord) -> JobStageResponse:
+    return JobStageResponse(
+        stage_key=stage.stage_key,
+        episode_key=stage.episode_key,
+        attempt=stage.attempt,
+        status=stage.status,
+        started_at=stage.started_at,
+        finished_at=stage.finished_at,
+        error=_sanitize_browser_text(stage.error),
+    )
+
+
+def _public_event(event: JobEvent, job: JobRecord) -> JobEventResponse:
+    sensitive_values = [job.run_dir, job.config_path, *job.argv]
+    return JobEventResponse(
+        seq=event.seq,
+        timestamp=event.timestamp,
+        event_type=event.event_type,
+        level=event.level,
+        stage=event.stage,
+        message=_sanitize_browser_text(event.message, sensitive_values=sensitive_values) or "",
+        payload=_sanitize_event_payload(event.payload, sensitive_values=sensitive_values),
+    )
+
+
+def _sanitize_event_payload(value: dict[str, Any], *, sensitive_values: list[str]) -> dict[str, Any]:
+    forbidden = {
+        "argv",
+        "command",
+        "command_hash",
+        "config_path",
+        "config_snapshot",
+        "pid",
+        "process_create_time",
+        "run_dir",
+        "validator_result",
+        "worker_id",
+    }
+    def sanitize(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {key: sanitize(child) for key, child in item.items() if key not in forbidden}
+        if isinstance(item, list):
+            return [sanitize(child) for child in item]
+        return _sanitize_browser_value(item, sensitive_values=sensitive_values)
+
+    return sanitize(value)
+
+
+def _public_check(
+    check: PlanCheck | RuntimeCheck,
+    *,
+    sensitive_values: list[str] | None = None,
+) -> PlanCheck | RuntimeCheck:
+    values = sensitive_values or []
+    details = _sanitize_browser_value(check.details, sensitive_values=values)
+    return check.model_copy(
+        update={
+            "message": _sanitize_browser_text(check.message, sensitive_values=values),
+            "details": details,
+        }
+    )
+
+
+def _sanitize_browser_value(value: Any, *, sensitive_values: list[str]) -> Any:
+    if isinstance(value, dict):
+        return {key: _sanitize_browser_value(item, sensitive_values=sensitive_values) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_browser_value(item, sensitive_values=sensitive_values) for item in value]
+    if isinstance(value, str):
+        try:
+            if Path(value).is_absolute():
+                return Path(value).name or "<path>"
+        except (OSError, ValueError):
+            pass
+        return _sanitize_browser_text(value, sensitive_values=sensitive_values)
+    return value
+
+
+def _sanitize_browser_text(value: str | None, *, sensitive_values: list[str] | None = None) -> str | None:
+    if value is None:
+        return None
+    sanitized = value
+    for sensitive in sorted(set(sensitive_values or []), key=len, reverse=True):
+        if sensitive and Path(sensitive).is_absolute():
+            sanitized = sanitized.replace(sensitive, "<path>")
+    sanitized = ABSOLUTE_PATH_FRAGMENT_RE.sub("<path>", sanitized)
+    return POSIX_ABSOLUTE_PATH_FRAGMENT_RE.sub("<path>", sanitized)
+
+
+def _command_preview(command: list[str]) -> list[str]:
+    placeholders = {
+        "--input": "<source>",
+        "--manifest": "<manifest>",
+        "--config": "<config>",
+        "--run-dir": "<run-dir>",
+    }
+    preview: list[str] = []
+    replace_next: str | None = None
+    for index, item in enumerate(command):
+        if replace_next is not None:
+            preview.append(replace_next)
+            replace_next = None
+            continue
+        if item in placeholders:
+            preview.append(item)
+            replace_next = placeholders[item]
+            continue
+        if index == 0:
+            preview.append("python")
+            continue
+        try:
+            preview.append(Path(item).name if Path(item).is_absolute() else item)
+        except (OSError, ValueError):
+            preview.append(item)
+    return preview
+
+
+def _dry_run_summary(plan: ExecutionPlan) -> str:
+    if plan.dag:
+        return "\n".join(f"[{node.status}] {node.label}" for node in plan.dag)
+    return "Dry-run completed" if plan.can_start else "Dry-run reported blocking checks"
 
 
 def _provider_checks(

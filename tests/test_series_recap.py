@@ -6,8 +6,17 @@ from pathlib import Path
 
 import pytest
 
+import series_recap.__main__ as recap_cli
 from orchestrator.config import load_config
+from series_composer.cache import composer_input_fingerprint
+from series_recap.cache import SeriesStageCache
 from series_recap.__main__ import (
+    build_paths,
+    chapters_stage_fingerprint,
+    match_stage_fingerprint,
+    render_stage_fingerprint,
+    run_cached_step,
+    tts_stage_fingerprint,
     episode_config_for,
     manifest_episode_specs,
     run_series_recap,
@@ -83,6 +92,38 @@ def test_manifest_selection_supports_episode_range(tmp_path: Path) -> None:
     selected = select_episodes(specs, "s03e01-s03e02")
 
     assert [spec.episode_key for spec in selected] == ["s03e01", "s03e02"]
+
+
+@pytest.mark.parametrize("selector", ["2", "s03e02", "3x2", "e2", "ep2", "episode 2"])
+def test_manifest_selection_uses_shared_episode_patterns(tmp_path: Path, selector: str) -> None:
+    manifest_path = tmp_path / "series_manifest.json"
+    write_manifest(manifest_path, tmp_path / "e01.mp4", tmp_path / "e02.mp4")
+
+    _manifest, specs = manifest_episode_specs(manifest_path)
+
+    assert [spec.episode_key for spec in select_episodes(specs, selector)] == ["s03e02"]
+
+
+def test_manifest_derives_missing_episode_number_from_episode_key(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "series_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "series_id": "show",
+                "episodes": [
+                    {
+                        "episode_key": "s01e12",
+                        "source_path": str(tmp_path / "episode-12.mp4"),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _manifest, specs = manifest_episode_specs(manifest_path)
+
+    assert specs[0].episode_number == 12
 
 def test_anime_series_preset_defaults_to_detailed_episode_arc_chaptered() -> None:
     config = load_config(Path("config.anime.series.yaml"))
@@ -297,3 +338,242 @@ def test_write_youtube_chapters_from_series_chapters_and_timings(tmp_path: Path)
         "00:05 Tap 1",
         "02:00 Tap 2",
     ]
+
+
+def test_series_stage_cache_requires_matching_fingerprint_and_output_signature(tmp_path: Path) -> None:
+    cache = SeriesStageCache(tmp_path / "stage_manifest.json")
+    output = tmp_path / "artifact.json"
+    calls: list[list[str]] = []
+
+    def executor(command: list[str], _log_path: Path) -> None:
+        calls.append(command)
+        output.write_text("{}", encoding="utf-8")
+
+    first = run_cached_step(
+        stage="example",
+        command=["example"],
+        outputs=[output],
+        valid=lambda: output.read_text(encoding="utf-8") == "{}",
+        cache=cache,
+        input_fingerprint="one",
+        log_path=tmp_path / "run.log",
+        force=False,
+        dry_run=False,
+        executor=executor,
+    )
+    second = run_cached_step(
+        stage="example",
+        command=["example"],
+        outputs=[output],
+        valid=lambda: output.read_text(encoding="utf-8") == "{}",
+        cache=cache,
+        input_fingerprint="one",
+        log_path=tmp_path / "run.log",
+        force=False,
+        dry_run=False,
+        executor=executor,
+    )
+    assert first.status == "ran"
+    assert second.status == "skipped"
+    output.write_text("tampered", encoding="utf-8")
+    tampered = run_cached_step(
+        stage="example",
+        command=["example"],
+        outputs=[output],
+        valid=lambda: output.read_text(encoding="utf-8") == "{}",
+        cache=cache,
+        input_fingerprint="one",
+        log_path=tmp_path / "run.log",
+        force=False,
+        dry_run=False,
+        executor=executor,
+    )
+    assert tampered.status == "ran"
+    changed = run_cached_step(
+        stage="example",
+        command=["example"],
+        outputs=[output],
+        valid=lambda: output.read_text(encoding="utf-8") == "{}",
+        cache=cache,
+        input_fingerprint="two",
+        log_path=tmp_path / "run.log",
+        force=False,
+        dry_run=False,
+        executor=executor,
+    )
+    assert changed.status == "ran"
+    assert len(calls) == 3
+
+
+def test_series_recap_automatic_invalidation_does_not_force_unchanged_downstream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = tmp_path / "series_manifest.json"
+    config_path = tmp_path / "config.json"
+    run_dir = tmp_path / "run"
+    source_one = tmp_path / "e01.mp4"
+    source_two = tmp_path / "e02.mp4"
+    source_one.write_bytes(b"episode-one")
+    source_two.write_bytes(b"episode-two")
+    write_manifest(manifest_path, source_one, source_two)
+    write_config(config_path)
+    for episode_key in ("s03e01", "s03e02"):
+        episode_dir = run_dir / episode_key
+        episode_dir.mkdir(parents=True)
+        for name in (
+            "episode_meta.json",
+            "episode_memory.json",
+            "film_map.json",
+            "film_map.meta.json",
+            "story_map.json",
+            "shots.json",
+        ):
+            (episode_dir / name).write_text(f"{episode_key}:{name}", encoding="utf-8")
+
+    monkeypatch.setattr(recap_cli, "episode_stage_valid", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(recap_cli, "composer_outputs_valid", lambda _paths: True)
+    monkeypatch.setattr(recap_cli, "tts_outputs_valid", lambda _paths: True)
+    monkeypatch.setattr(recap_cli, "series_match_outputs_valid", lambda _paths: True)
+    monkeypatch.setattr(recap_cli, "render_outputs_valid", lambda _paths: True)
+    monkeypatch.setattr(recap_cli, "resolve_provider_order", lambda *_args, **_kwargs: ["ai33"])
+    calls: list[list[str]] = []
+
+    def option(command: list[str], name: str) -> Path:
+        return Path(command[command.index(name) + 1])
+
+    def executor(command: list[str], _log_path: Path) -> None:
+        calls.append(command)
+        module = command[command.index("-m") + 1]
+        if module == "series_composer":
+            option(command, "--output-event-bank").write_text("{}", encoding="utf-8")
+            option(command, "--output").write_text("[]", encoding="utf-8")
+            option(command, "--output-tts-script").write_text("[]", encoding="utf-8")
+            option(command, "--output-chapters").write_text(
+                '[{"title":"Start","start_beat_id":0,"episode_key":null}]',
+                encoding="utf-8",
+            )
+            option(command, "--output-arc-plan").write_text("{}", encoding="utf-8")
+            option(command, "--output-qa").write_text("{}", encoding="utf-8")
+            option(command, "--output-meta").write_text("{}", encoding="utf-8")
+        elif module == "tts":
+            option(command, "--output-audio").write_bytes(b"voiceover")
+            option(command, "--output-timing").write_text(
+                '[{"beat_id":0,"audio_path":"audio/0.mp3","tl_start":0.0,"tl_end":1.0,"duration":1.0}]',
+                encoding="utf-8",
+            )
+            option(command, "--output-timing").with_name("tts_meta.json").write_text("{}", encoding="utf-8")
+        elif module == "series_match":
+            output = option(command, "--output")
+            output.write_text("[]", encoding="utf-8")
+            option(command, "--output-source-map").write_text(
+                json.dumps({"version": 1, "sources": {"episode": str(source_one)}, "created_at": None}),
+                encoding="utf-8",
+            )
+            option(command, "--output-qa").write_text("{}", encoding="utf-8")
+            output.with_name("edl.meta.json").write_text("{}", encoding="utf-8")
+        elif module == "render":
+            option(command, "--output").write_bytes(b"video")
+            option(command, "--output").with_name("render.meta.json").write_text("{}", encoding="utf-8")
+
+    args = argparse.Namespace(
+        manifest=manifest_path,
+        config=config_path,
+        episodes="1-2",
+        run_dir=run_dir,
+        python="python",
+        dry_run=False,
+        force=False,
+        force_final=False,
+        log_level="ERROR",
+    )
+    assert run_series_recap(args, executor=executor) == 0
+    calls.clear()
+    (run_dir / "s03e01" / "story_map.json").write_text("changed-story", encoding="utf-8")
+
+    assert run_series_recap(args, executor=executor) == 0
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("-m") + 1] == "series_composer"
+    assert "--force" not in calls[0]
+
+
+def test_composer_identity_excludes_shots_but_tracks_story_artifacts(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"series_id":"demo"}', encoding="utf-8")
+    run_dir = tmp_path / "e01"
+    run_dir.mkdir()
+    for name in ("episode_meta.json", "episode_memory.json", "film_map.json", "film_map.meta.json", "story_map.json"):
+        (run_dir / name).write_text(name, encoding="utf-8")
+    shots = run_dir / "shots.json"
+    shots.write_text("before", encoding="utf-8")
+
+    first = composer_input_fingerprint(
+        manifest_path=manifest,
+        episode_run_dirs={"e01": run_dir},
+        settings={"format": "compact"},
+    )
+    shots.write_text("after", encoding="utf-8")
+    assert composer_input_fingerprint(
+        manifest_path=manifest,
+        episode_run_dirs={"e01": run_dir},
+        settings={"format": "compact"},
+    ) == first
+
+    (run_dir / "story_map.json").write_text("changed", encoding="utf-8")
+    assert composer_input_fingerprint(
+        manifest_path=manifest,
+        episode_run_dirs={"e01": run_dir},
+        settings={"format": "compact"},
+    ) != first
+
+
+def test_match_identity_tracks_ordered_shot_artifacts(tmp_path: Path) -> None:
+    paths = build_paths(tmp_path / "run")
+    paths.final_dir.mkdir(parents=True)
+    paths.series_review_script.write_text("[]", encoding="utf-8")
+    paths.beats_timing.write_text("[]", encoding="utf-8")
+    episode = tmp_path / "episode"
+    episode.mkdir()
+    shots = episode / "shots.json"
+    shots.write_text("first", encoding="utf-8")
+    first = match_stage_fingerprint(
+        paths=paths,
+        episode_run_dirs={"e01": episode},
+        config={"series_recap": {"min_clip": 3.0, "max_clip": 5.0, "min_visual_clip": 0.6}},
+    )
+    shots.write_text("second", encoding="utf-8")
+    assert match_stage_fingerprint(
+        paths=paths,
+        episode_run_dirs={"e01": episode},
+        config={"series_recap": {"min_clip": 3.0, "max_clip": 5.0, "min_visual_clip": 0.6}},
+    ) != first
+
+
+def test_final_stage_fingerprints_track_their_direct_inputs(tmp_path: Path) -> None:
+    paths = build_paths(tmp_path / "run")
+    paths.final_dir.mkdir(parents=True)
+    paths.series_tts_script.write_text("[]", encoding="utf-8")
+    lexicon = tmp_path / "lexicon.json"
+    lexicon.write_text("{}", encoding="utf-8")
+    tts_config = {"tts": {"voice_id": "voice", "pronunciation_lexicon": str(lexicon)}}
+    tts_first = tts_stage_fingerprint(paths, tts_config)
+    lexicon.write_text('{"Jinwoo":"Chin U"}', encoding="utf-8")
+    assert tts_stage_fingerprint(paths, tts_config) != tts_first
+
+    paths.series_chapters.write_text("[]", encoding="utf-8")
+    paths.beats_timing.write_text("[]", encoding="utf-8")
+    chapters_first = chapters_stage_fingerprint(paths)
+    paths.beats_timing.write_text('[{"changed":true}]', encoding="utf-8")
+    assert chapters_stage_fingerprint(paths) != chapters_first
+
+    source = tmp_path / "episode.mp4"
+    source.write_bytes(b"video-one")
+    paths.edl.write_text("[]", encoding="utf-8")
+    paths.voiceover.write_bytes(b"voice")
+    paths.source_map.write_text(
+        json.dumps({"version": 1, "sources": {"episode": str(source)}, "created_at": None}),
+        encoding="utf-8",
+    )
+    render_first = render_stage_fingerprint(paths, {"render": {"width": 1920, "height": 1080}})
+    source.write_bytes(b"video-two-with-different-size")
+    assert render_stage_fingerprint(paths, {"render": {"width": 1920, "height": 1080}}) != render_first

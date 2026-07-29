@@ -2,10 +2,15 @@
 
 import logging
 from pathlib import Path
+from typing import Protocol
 
 from common.media import extract_frame
 from common.schema import SilentGap, VisionSegment
-from ingest.llm import VISION_UNAVAILABLE, OpenAIIngestClient
+from ingest.llm import VISION_UNAVAILABLE
+
+
+class VisionClient(Protocol):
+    def describe_frame(self, frame_path: Path) -> str: ...
 
 
 def describe_gaps(
@@ -13,7 +18,7 @@ def describe_gaps(
     input_path: Path,
     gaps: list[SilentGap],
     frames_dir: Path,
-    client: OpenAIIngestClient,
+    client: VisionClient,
     logger: logging.Logger,
 ) -> tuple[list[VisionSegment], int]:
     frames_dir.mkdir(parents=True, exist_ok=True)
