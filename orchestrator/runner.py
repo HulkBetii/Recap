@@ -12,7 +12,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Callable
 
-from common.integrity import file_hash, media_identity_hash
+from common.integrity import file_hash, media_identity_hash, stable_hash
 from common.media import require_ffmpeg
 from common.schema import (
     BeatTiming,
@@ -55,7 +55,7 @@ from ingest.integrity import INGEST_CACHE_VERSION, ingest_config_hash
 from preflight.integrity import PREFLIGHT_CACHE_VERSION, preflight_identity
 from review.integrity import REVIEW_CACHE_VERSION, build_review_identity
 from review.style import DEFAULT_STYLE_SAMPLE
-from storymap.cache import stable_hash as storymap_stable_hash
+from storymap.cache import STORYMAP_CACHE_VERSION, stable_hash as storymap_stable_hash
 
 class OrchestratorError(RuntimeError):
     pass
@@ -78,6 +78,25 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "match": StageSpec("match", ("edl", "edl_meta", "edl_qa", "edl_sync_qa", "edl_visual_qa", "edl_review_html"), "edl_meta"),
     "render": StageSpec("render", ("recap", "render_meta"), "render_meta"),
 }
+
+NO_VIDEO_PROFILE_HASH = "no-video-profile"
+SHOTS_FEATURE_CONFIG_KEYS = (
+    "sample_frames",
+    "frame_sampling",
+    "face_detection",
+    "min_brightness",
+    "min_shot_len",
+    "end_credit_guard",
+    "end_credit_tail_s",
+    "end_credit_threshold",
+    "skip_intro",
+    "skip_outro",
+    "downscale",
+    "scene_threshold",
+    "scene_scale_width",
+    "scene_min_gap",
+    "max_shot_len",
+)
 
 
 def load_json(path: Path) -> Any:
@@ -123,6 +142,70 @@ def effective_review_section(paths: RunPaths, config: dict[str, Any]) -> dict[st
 
 def all_outputs_exist(paths: RunPaths, stage: str) -> bool:
     return all(path.is_file() for path in output_paths(paths, stage))
+
+
+def shots_video_profile_hash(paths: RunPaths, config: dict[str, Any]) -> str:
+    profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) else None
+    if profile_path is None or not profile_path.is_file():
+        return NO_VIDEO_PROFILE_HASH
+    return stable_hash(profile_path.read_text(encoding="utf-8"))
+
+
+def shots_non_profile_identity_current(
+    paths: RunPaths,
+    film: Path,
+    config: dict[str, Any],
+    meta: ShotsMeta,
+    *,
+    require_cache: bool,
+) -> bool:
+    section = config.get("shots", {})
+    try:
+        if Path(meta.src).expanduser().resolve() != film.expanduser().resolve():
+            return False
+    except OSError:
+        return False
+    if meta.detector != str(section.get("detector", "adaptive")):
+        return False
+    expected = {
+        "sample_frames": int(section.get("sample_frames", 5)),
+        "frame_sampling": str(section.get("frame_sampling", "per-shot")),
+        "face_detection": str(section.get("face_detection", "on")),
+        "min_brightness": float(section.get("min_brightness", 0.06)),
+        "min_shot_len": float(section.get("min_shot_len", 0.4)),
+        "end_credit_guard": bool(section.get("end_credit_guard", False)),
+        "end_credit_tail_s": float(section.get("end_credit_tail_s", 600.0)),
+        "end_credit_threshold": float(section.get("end_credit_threshold", 0.60)),
+        "skip_intro": float(section.get("skip_intro", 0.0)),
+        "skip_outro": float(section.get("skip_outro", 0.0)),
+        "downscale": str(section.get("downscale", "auto")),
+        "scene_threshold": float(section.get("scene_threshold", 0.3)),
+        "scene_scale_width": int(section.get("scene_scale_width", 640)),
+        "scene_min_gap": float(section.get("scene_min_gap", 0.3)),
+        "max_shot_len": float(section.get("max_shot_len", 0.0)),
+    }
+    if any(meta.feature_config.get(key) != expected[key] for key in SHOTS_FEATURE_CONFIG_KEYS):
+        return False
+    if not require_cache:
+        return True
+    required_cache = [paths.work_dir / "shots" / "detection.json", paths.work_dir / "shots" / "features.json"]
+    if expected["end_credit_guard"]:
+        required_cache.append(paths.work_dir / "shots" / "end_credit_marking.json")
+    return all(path.is_file() for path in required_cache)
+
+
+def shots_profile_only_needed(paths: RunPaths, film: Path, config: dict[str, Any]) -> bool:
+    if not all_outputs_exist(paths, "shots"):
+        return False
+    try:
+        validate_stage(paths, "shots")
+        meta = ShotsMeta.model_validate(load_json(paths.shots_meta))
+    except (OrchestratorError, OSError, ValueError):
+        return False
+    return (
+        meta.video_profile_hash != shots_video_profile_hash(paths, config)
+        and shots_non_profile_identity_current(paths, film, config, meta, require_cache=True)
+    )
 
 
 def validate_stage(paths: RunPaths, stage: str) -> None:
@@ -223,6 +306,7 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
             profile_payload = VideoProfile.model_validate(load_json(profile_path)).model_dump(mode="json") if profile_path else None
             expected_config = storymap_stable_hash(
                 {
+                    "cache_version": STORYMAP_CACHE_VERSION,
                     "film_map": storymap_stable_hash(load_json(paths.film_map)),
                     "video_profile": storymap_stable_hash(profile_payload),
                     "content_type": section.get("content_type", "movie"),
@@ -231,7 +315,7 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
             )
             meta = StoryMapMeta.model_validate(load_json(paths.story_map_meta))
             if (
-                meta.cache_version != "storymap-v1"
+                meta.cache_version != STORYMAP_CACHE_VERSION
                 or meta.film_map_hash != file_hash(paths.film_map)
                 or meta.video_profile_hash != file_hash(profile_path)
                 or meta.config_hash != expected_config
@@ -296,17 +380,12 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
                 or meta.config_hash != identity.config_hash
             ):
                 return False
-        if stage == "shots" and config is not None:
-            section = config.get("shots", {})
+        if stage == "shots" and film is not None and config is not None:
             meta = ShotsMeta.model_validate(load_json(paths.shots_meta))
-            expected_guard = bool(section.get("end_credit_guard", False))
-            if bool(meta.feature_config.get("end_credit_guard", False)) != expected_guard:
+            if not shots_non_profile_identity_current(paths, film, config, meta, require_cache=False):
                 return False
-            if expected_guard:
-                if float(meta.feature_config.get("end_credit_tail_s", 0.0)) != float(section.get("end_credit_tail_s", 600.0)):
-                    return False
-                if float(meta.feature_config.get("end_credit_threshold", 0.0)) != float(section.get("end_credit_threshold", 0.60)):
-                    return False
+            if meta.video_profile_hash != shots_video_profile_hash(paths, config):
+                return False
         if stage == "visual_index" and film is not None and config is not None:
             section = config.get("visual_index", {})
             config_hash = visual_index_config_hash(
@@ -343,8 +422,10 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--classifier", "heuristic"]
     elif stage == "ingest":
         command += ["--input", str(film), "--output", str(paths.film_map)]
-        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "translation_min_success_ratio", "source_language", "translate_mode", "vision_provider", "vision_model", "vision_resize_long_edge", "vision_batch_size", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
+        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "translation_provider", "translation_batch_size", "translation_batch_max_attempts", "translation_chatgpt_profile_dir", "translation_chatgpt_session_file", "translation_reply_timeout_s", "translation_playwright_max_attempts", "translation_playwright_recovery_timeout_s", "translation_min_success_ratio", "source_language", "translate_mode", "vision_provider", "vision_model", "vision_resize_long_edge", "vision_batch_size", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
             add_option(command, key, section.get(key))
+        if section.get("translation_headless", False):
+            command.append("--translation-headless")
         if section.get("translation_required", False):
             command.append("--translation-required")
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file():
@@ -533,6 +614,16 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
     ingest_needs_openai = bool(ingest_policy.get("openai_uses")) if ingest_policy else True
     if "ingest" in will_run and ingest_needs_openai and not os.getenv("OPENAI_API_KEY") and not dry_run:
         raise OrchestratorError("OPENAI_API_KEY is required to run ingest")
+    ingest_config = config.get("ingest", {})
+    if (
+        "ingest" in will_run
+        and not dry_run
+        and ingest_config.get("translate_mode") not in {"none", "off", None}
+        and ingest_config.get("translation_provider") == "chatgpt_playwright"
+    ):
+        profile = Path(str(ingest_config.get("translation_chatgpt_profile_dir"))).expanduser()
+        if not profile.exists():
+            raise OrchestratorError(f"ChatGPT profile dir does not exist for ingest translation: {profile}")
     recap_mode = str(config.get("orchestrator", {}).get("recap_mode", "off"))
     defer_episode_downstream = "episode_planner" in selected and recap_mode in {"auto", "merge", "skip"}
     if "review" in will_run and not dry_run and not defer_episode_downstream:
@@ -629,6 +720,8 @@ def run_stage(
     executor: Callable[[list[str], Path], None] = run_subprocess,
 ) -> StageSummary:
     command = build_command(stage, paths, film, config, force, python_exe=python_exe)
+    if stage == "shots" and not force and shots_profile_only_needed(paths, film, config):
+        command.append("--profile-only")
     outputs = [str(path) for path in output_paths(paths, stage)]
     if not force and not run_anyway and outputs_valid(paths, stage, film=film, config=config):
         return StageSummary(stage=stage, status="skipped", duration_s=0.0, command=command, outputs=outputs)

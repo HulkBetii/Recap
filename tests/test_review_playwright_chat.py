@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-import review.playwright_chat as playwright_chat
+import common.playwright_chat as playwright_chat
 
 
 class _CountLocator:
@@ -14,6 +14,13 @@ class _CountLocator:
         value = self.values[min(self.index, len(self.values) - 1)]
         self.index += 1
         return value
+
+    def nth(self, _index: int) -> "_CountLocator":
+        return self
+
+    async def evaluate(self, _expression: str, timeout: int) -> str:
+        assert timeout == 10_000
+        return ""
 
 
 class _HistoryPage:
@@ -107,6 +114,41 @@ class _FakeTextPage:
     def locator(self, selector: str) -> _TextLocator:
         assert selector == playwright_chat.ASSISTANT_MSG_SEL
         return self.assistant
+
+
+class _VirtualizedAssistantLocator:
+    def __init__(self, values: list[str], count: int = 2) -> None:
+        self.values = values
+        self.fixed_count = count
+        self.index = 0
+
+    async def count(self) -> int:
+        return self.fixed_count
+
+    def nth(self, _index: int) -> "_VirtualizedAssistantLocator":
+        return self
+
+    async def evaluate(self, _expression: str, timeout: int) -> str:
+        assert timeout == 10_000
+        value = self.values[min(self.index, len(self.values) - 1)]
+        self.index += 1
+        return value
+
+
+class _VirtualizedResponsePage:
+    def __init__(self, assistant_values: list[str], stop_values: list[int]) -> None:
+        self.assistant = _VirtualizedAssistantLocator(assistant_values)
+        self.stop = _CountLocator(stop_values)
+        self.answer_now = _AnswerNowLocator(visible=False)
+
+    def locator(self, selector: str):  # type: ignore[no-untyped-def]
+        if selector == playwright_chat.ASSISTANT_MSG_SEL:
+            return self.assistant
+        if selector == playwright_chat.STOP_BUTTON_SEL:
+            return self.stop
+        if selector in playwright_chat.ANSWER_NOW_SELS:
+            return self.answer_now
+        raise AssertionError(selector)
 
 
 class _PromptBox:
@@ -261,6 +303,40 @@ def test_wait_streaming_done_waits_for_a_new_assistant_message(monkeypatch) -> N
 
     monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
     asyncio.run(playwright_chat._wait_streaming_done(_FakePage(), 5, previous_assistant_count=2))
+
+
+def test_wait_streaming_done_detects_virtualized_assistant_text_change(monkeypatch) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
+    page = _VirtualizedResponsePage(["new response"], [0])
+
+    asyncio.run(
+        playwright_chat._wait_streaming_done(
+            page,
+            5,
+            previous_assistant_count=2,
+            previous_assistant_text="previous response",
+        )
+    )
+
+
+def test_wait_streaming_done_detects_stop_button_with_stable_virtualized_count(monkeypatch) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(playwright_chat.asyncio, "sleep", no_sleep)
+    page = _VirtualizedResponsePage(["previous response"], [1, 0])
+
+    asyncio.run(
+        playwright_chat._wait_streaming_done(
+            page,
+            5,
+            previous_assistant_count=2,
+            previous_assistant_text="previous response",
+        )
+    )
 
 
 def test_wait_streaming_clicks_answer_now_once_for_extended_reasoning(monkeypatch) -> None:

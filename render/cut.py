@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from common.media import run_command
 from common.schema import EdlPlacement
@@ -46,13 +47,19 @@ def build_video_filter(*, params: RenderParams, frame_count: int, source_duratio
         f"scale={params.width}:{params.height}:force_original_aspect_ratio=increase,"
         f"crop={params.width}:{params.height}"
     )
-    filters = [scale_crop, f"fps={params.fps:g}"]
+    filters = [scale_crop]
     if abs(speed - 1.0) > 1e-6:
         filters.append(f"setpts=PTS/{speed:.6f}")
     elif abs(source_duration - target_duration) > 1e-3 and source_duration > 0:
         ratio = source_duration / target_duration
         filters.append(f"setpts=PTS/{ratio:.6f}")
-    filters.extend([f"trim=duration={target_duration:.6f}", "setpts=PTS-STARTPTS", "format=yuv420p"])
+    filters.extend([
+        f"fps={params.fps:g}",
+        f"tpad=stop_mode=clone:stop={frame_count}",
+        f"trim=end_frame={frame_count}",
+        "setpts=PTS-STARTPTS",
+        "format=yuv420p",
+    ])
     return ",".join(filters)
 
 
@@ -83,27 +90,32 @@ def cut_temp_clip(*, film_path: Path, output_path: Path, frame: FramePlacement, 
         speed=frame.placement.speed,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    run_command([
-        "ffmpeg",
-        "-y",
-        "-ss",
-        f"{source.src_in:.6f}",
-        "-i",
-        str(film_path),
-        "-t",
-        f"{source_duration:.6f}",
-        "-an",
-        "-vf",
-        filter_text,
-        "-frames:v",
-        str(frame.frame_count),
-        "-c:v",
-        "libx264",
-        "-preset",
-        params.preset,
-        "-crf",
-        str(params.crf),
-        "-pix_fmt",
-        "yuv420p",
-        str(output_path),
-    ])
+    partial_path = output_path.with_name(f".{output_path.stem}.{uuid4().hex}.partial{output_path.suffix}")
+    try:
+        run_command([
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{source.src_in:.6f}",
+            "-t",
+            f"{source_duration:.6f}",
+            "-i",
+            str(film_path),
+            "-an",
+            "-vf",
+            filter_text,
+            "-frames:v",
+            str(frame.frame_count),
+            "-c:v",
+            "libx264",
+            "-preset",
+            params.preset,
+            "-crf",
+            str(params.crf),
+            "-pix_fmt",
+            "yuv420p",
+            str(partial_path),
+        ])
+        partial_path.replace(output_path)
+    finally:
+        partial_path.unlink(missing_ok=True)

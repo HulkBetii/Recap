@@ -78,7 +78,7 @@ def probe_video_stream(input_path: Path) -> dict[str, Any]:
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height,codec_name,r_frame_rate,avg_frame_rate,duration",
+            "stream=width,height,codec_name,r_frame_rate,avg_frame_rate,duration,nb_frames",
             "-show_entries",
             "format=duration",
             "-of",
@@ -99,12 +99,15 @@ def probe_video_stream(input_path: Path) -> dict[str, Any]:
         rate_text = stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0/1"
         fps = _parse_rate(rate_text)
         duration = stream.get("duration") or payload.get("format", {}).get("duration")
+        frame_count_text = stream.get("nb_frames")
+        frame_count = int(frame_count_text) if frame_count_text not in {None, "N/A"} else None
         return {
             "width": int(stream["width"]),
             "height": int(stream["height"]),
             "codec": str(stream.get("codec_name") or "unknown"),
             "fps": fps,
             "duration": float(duration),
+            "frame_count": frame_count,
         }
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise MediaError("could not read video stream with ffprobe") from exc

@@ -4,7 +4,7 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def stable_hash(data: object) -> str:
@@ -31,9 +31,9 @@ class RenderCache:
     def temp_path(self, cache_key: str) -> Path:
         return self.temp_dir / f"{cache_key}.mp4"
 
-    def get_cached_temp(self, cache_key: str) -> Path | None:
+    def get_cached_temp(self, cache_key: str, validator: Callable[[Path], bool] | None = None) -> Path | None:
         path = self.temp_path(cache_key)
-        if path.is_file():
+        if path.is_file() and (validator is None or validator(path)):
             self.cache_hits.append(path.relative_to(self.work_dir).as_posix())
             return path
         return None

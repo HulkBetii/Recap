@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+STORYMAP_CACHE_VERSION = "storymap-v2"
+
 
 def stable_hash(value: Any) -> str:
     data = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")

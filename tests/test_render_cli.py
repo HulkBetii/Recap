@@ -57,7 +57,11 @@ def test_render_cli_missing_input_fails(tmp_path: Path, monkeypatch: pytest.Monk
 def test_render_cli_outputs_meta_and_uses_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     args = make_args(tmp_path)
     monkeypatch.setattr("render.__main__.require_ffmpeg", lambda: None)
-    monkeypatch.setattr("render.__main__.probe_video_stream", lambda path: {"width":1920,"height":1080,"codec":"h264","fps":30.0,"duration":10.0})
+    def fake_probe_video_stream(path):  # type: ignore[no-untyped-def]
+        duration = 1.0 if Path(path).parent.name == "temp_clips" else 10.0
+        return {"width":1920,"height":1080,"codec":"h264","fps":30.0,"duration":duration}
+
+    monkeypatch.setattr("render.__main__.probe_video_stream", fake_probe_video_stream)
     monkeypatch.setattr("render.__main__.probe_duration", lambda path: 2.0)
     monkeypatch.setattr("render.__main__.has_audio_stream", lambda path: True)
 
@@ -82,6 +86,28 @@ def test_render_cli_outputs_meta_and_uses_cache(tmp_path: Path, monkeypatch: pyt
     assert run_render(args) == 0
     cached_meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
     assert len(cached_meta["cache_hits"]) == 2
+
+
+def test_render_cli_rejects_truncated_concat_before_tail_padding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    args = make_args(tmp_path)
+    monkeypatch.setattr("render.__main__.require_ffmpeg", lambda: None)
+
+    def fake_probe_video_stream(path):  # type: ignore[no-untyped-def]
+        if Path(path).name == "video_only.mp4":
+            return {"width":1920,"height":1080,"codec":"h264","fps":30.0,"duration":0.7,"frame_count":21}
+        return {"width":1920,"height":1080,"codec":"h264","fps":30.0,"duration":10.0,"frame_count":None}
+
+    def fake_probe_duration(path):  # type: ignore[no-untyped-def]
+        return 0.7 if Path(path).name == "video_only.mp4" else 2.5
+
+    monkeypatch.setattr("render.__main__.probe_video_stream", fake_probe_video_stream)
+    monkeypatch.setattr("render.__main__.probe_duration", fake_probe_duration)
+    monkeypatch.setattr("render.__main__.cut_temp_clip", lambda **kwargs: kwargs["output_path"].write_bytes(b"temp"))
+    monkeypatch.setattr("render.__main__.concat_video", lambda temp_paths, output_path, work_dir: output_path.write_bytes(b"video"))
+    monkeypatch.setattr("render.__main__.pad_video_by_tail", lambda **kwargs: pytest.fail("tail padding must not hide a truncated concat"))
+
+    with pytest.raises(RenderError, match="concat frame count mismatch"):
+        run_render(args)
 
 
 def test_render_cli_tail_pads_when_video_is_shorter_than_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

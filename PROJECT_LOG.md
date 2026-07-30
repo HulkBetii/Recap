@@ -1,5 +1,29 @@
 # PROJECT_LOG.md
 
+## 2026-07-30 - Render cache interruption hardening
+
+- Diagnosed the Tensei S01 concat truncation: two nonzero interrupted temp MP4 cache files lacked a `moov` atom, while FFmpeg concat logged the demux error but returned success after only the first 99 of 614 clips.
+- Temp clips now render to unique partial paths and atomically replace cache entries only after success; cache hits are probed for expected media properties and frame count before reuse.
+- Replaced duration-boundary trimming with time-transform-first FPS sampling, bounded clone padding and `trim=end_frame`; moved `-t` before `-i` so it limits source input instead of truncating the padded output. Real 127-frame and 149-frame placements had previously rendered deterministically one frame short.
+- GĐ6 now compares concat frame count/duration with the quantized EDL before any audio tail padding, preventing a partial concat from becoming a multi-minute freeze frame while retaining legitimate short voiceover tail padding.
+
+## 2026-07-30 - Storymap non-story boundary fix
+
+- Bumped storymap cache identity to `storymap-v2` and split coarse story buckets at hard non-story gaps so manual OP/ED/preview ranges cannot produce overlapping story sections.
+- Added the `end_card` anime non-story label across schema, episode planning, and series composition for terminal post-credit frames.
+- Stopped series episode-planner rebuilds from implicitly adding `--force` to shots; GĐ4 now uses its own source/profile cache identity and preserves detection/features for profile-only OP/ED changes.
+
+## 2026-07-30 - Tensei VieNeu duration calibration
+
+- Measured the Tensei S01 VieNeu Ngọc Linh run at 63,107 normalized narration characters over 3,674.842 seconds, or 17.17 characters/second at `speed=0.9`.
+- Calibrated only `config.anime.series.vieneu.yaml` from `series_recap.tts_cps=24.0` to `17.0` so Composer planning tracks the 35-45 minute season target more closely; `review.tts_cps=15` and generic anime presets remain unchanged.
+
+## 2026-07-29 - Playwright JA-to-EN ingest translation
+
+- Added a production ChatGPT Playwright translation provider for GĐ1 using the shared persistent-profile browser adapter, exact segment-ID validation, Japanese-echo rejection, and no paid API fallback.
+- Added atomic per-batch translation cache/resume with 80-segment defaults and provider/model/prompt/parser-aware identity; source IDs, text, and timecodes remain code-owned.
+- Switched `config.anime.series.vieneu.yaml` to browser translation with `api_budget_guard=block`; the practical OpenAI-translation preset remains unchanged.
+
 ## 2026-07-29 - Anime recap review fixes
 
 - Added versioned per-stage cache identity for series Composer, TTS, chapters, match and render, with atomic manifests, output signatures, schema validation and selective invalidation that preserves beat/TTS and temp-clip caches. Composer identity tracks ordered episode content artifacts and excludes `shots.json`.

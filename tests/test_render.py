@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
+from common.media import MediaError
 from common.schema import EdlPlacement, RenderMeta
 from render.cache import RenderCache
 from render.compose import concat_list_text, concat_video, mux_voiceover, pad_video_by_tail, pad_video_to_duration, tail_pad_frame_count
-from render.cut import RenderParams, build_video_filter, clamp_source, temp_cache_key
+from render.cut import RenderParams, build_video_filter, clamp_source, cut_temp_clip, temp_cache_key
 from render.quantize import QuantizeError, quantize_placements
 
 
@@ -91,6 +92,63 @@ def test_render_cache_hits_existing_temp(tmp_path: Path) -> None:
     assert cache.cache_hits == ["temp_clips/abc.mp4"]
 
 
+def test_render_cache_rejects_invalid_existing_temp(tmp_path: Path) -> None:
+    cache = RenderCache(tmp_path / "work")
+    cache.prepare()
+    path = cache.temp_path("abc")
+    path.write_bytes(b"partial mp4")
+    assert cache.get_cached_temp("abc", validator=lambda candidate: candidate.stat().st_size > 100) is None
+    assert cache.cache_hits == []
+
+
+def test_cut_temp_clip_commits_output_atomically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = tmp_path / "clip.mp4"
+    frame = quantize_placements([placement(0, 1)], fps=30)[0]
+    source = clamp_source(frame.placement, 10)
+    params = RenderParams(width=1920, height=1080, fps=30, fit="cover", crf=20, preset="medium")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> None:
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"complete")
+
+    monkeypatch.setattr("render.cut.run_command", fake_run)
+    cut_temp_clip(
+        film_path=tmp_path / "film.mp4",
+        output_path=output,
+        frame=frame,
+        source=source,
+        params=params,
+    )
+    assert output.read_bytes() == b"complete"
+    assert commands[0].index("-t") < commands[0].index("-i")
+    assert not list(tmp_path.glob("*.partial.mp4"))
+
+
+def test_cut_temp_clip_failure_preserves_existing_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = tmp_path / "clip.mp4"
+    output.write_bytes(b"previous")
+    frame = quantize_placements([placement(0, 1)], fps=30)[0]
+    source = clamp_source(frame.placement, 10)
+    params = RenderParams(width=1920, height=1080, fps=30, fit="cover", crf=20, preset="medium")
+
+    def fake_run(command: list[str]) -> None:
+        Path(command[-1]).write_bytes(b"partial")
+        raise MediaError("interrupted")
+
+    monkeypatch.setattr("render.cut.run_command", fake_run)
+    with pytest.raises(MediaError, match="interrupted"):
+        cut_temp_clip(
+            film_path=tmp_path / "film.mp4",
+            output_path=output,
+            frame=frame,
+            source=source,
+            params=params,
+        )
+    assert output.read_bytes() == b"previous"
+    assert not list(tmp_path.glob("*.partial.mp4"))
+
+
 def test_cover_filter_and_speed_setpts() -> None:
     params = RenderParams(width=1920, height=1080, fps=30, fit="cover", crf=20, preset="medium")
     filter_text = build_video_filter(params=params, frame_count=90, source_duration=6, target_duration=3, speed=2.0)
@@ -98,6 +156,10 @@ def test_cover_filter_and_speed_setpts() -> None:
     assert "crop=1920:1080" in filter_text
     assert "fps=30" in filter_text
     assert "setpts=PTS/2.000000" in filter_text
+    assert filter_text.index("setpts=PTS/2.000000") < filter_text.index("fps=30")
+    assert "tpad=stop_mode=clone:stop=90" in filter_text
+    assert "trim=end_frame=90" in filter_text
+    assert "trim=duration" not in filter_text
     assert "format=yuv420p" in filter_text
 
 

@@ -69,6 +69,7 @@ def build_timecode_qa(film_meta: Any) -> dict[str, Any]:
         "aligner_provider": film_meta.get("aligner_provider"),
         "source_language": film_meta.get("source_language"),
         "translate_mode": film_meta.get("translate_mode"),
+        "translation_provider": film_meta.get("translation_provider"),
         "speech_count": film_meta.get("speech_count"),
         "visual_count": film_meta.get("visual_count"),
         "asr_warning_count": len(asr_warnings),

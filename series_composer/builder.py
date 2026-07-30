@@ -69,6 +69,7 @@ NON_STORY_EVENT_TYPES = {
     "recap_previous_episode",
     "sponsor_card",
     "studio_logo",
+    "end_card",
 }
 DETERMINISTIC_FALLBACK_CHAR_SCALE = 0.86
 PLACEHOLDER_EVENT_ID_MARKERS = ("...", "…")

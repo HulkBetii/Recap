@@ -24,7 +24,9 @@ from review.__main__ import build_parser as build_review_parser
 from review.integrity import REVIEW_CACHE_VERSION, build_review_identity
 from review.style import DEFAULT_STYLE_SAMPLE
 from run import run_pipeline, should_fallback_timecode, sync_review_fallback_reporting
-from storymap.cache import stable_hash as storymap_stable_hash
+from shots.__main__ import build_parser as build_shots_parser
+from shots.profile import video_profile_hash
+from storymap.cache import STORYMAP_CACHE_VERSION, stable_hash as storymap_stable_hash
 from visual_index.integrity import PREPROCESSING_VERSION, media_identity_hash, sha256_file, visual_index_config_hash
 
 NOW = "2026-07-02T00:00:00Z"
@@ -102,8 +104,8 @@ def write_stage_outputs(command: list[str]) -> None:
         profile_payload = VideoProfile.model_validate_json(profile_path.read_text(encoding="utf-8")).model_dump(mode="json") if profile_path else None
         content_type = command[command.index("--content-type") + 1]
         target_sections = int(command[command.index("--target-story-sections") + 1])
-        config_hash = storymap_stable_hash({"film_map":storymap_stable_hash(json.loads(film_map_path.read_text(encoding="utf-8"))),"video_profile":storymap_stable_hash(profile_payload),"content_type":content_type,"target_story_sections":target_sections})
-        output.with_name("story_map.meta.json").write_text(json.dumps({"film_map_path":str(film_map_path),"video_profile_path":str(profile_path) if profile_path else None,"content_type":content_type,"duration_s":2,"n_sections":1,"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[],"film_map_hash":file_hash(film_map_path),"video_profile_hash":file_hash(profile_path),"config_hash":config_hash,"cache_version":"storymap-v1"}), encoding="utf-8")
+        config_hash = storymap_stable_hash({"cache_version":STORYMAP_CACHE_VERSION,"film_map":storymap_stable_hash(json.loads(film_map_path.read_text(encoding="utf-8"))),"video_profile":storymap_stable_hash(profile_payload),"content_type":content_type,"target_story_sections":target_sections})
+        output.with_name("story_map.meta.json").write_text(json.dumps({"film_map_path":str(film_map_path),"video_profile_path":str(profile_path) if profile_path else None,"content_type":content_type,"duration_s":2,"n_sections":1,"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[],"film_map_hash":file_hash(film_map_path),"video_profile_hash":file_hash(profile_path),"config_hash":config_hash,"cache_version":STORYMAP_CACHE_VERSION}), encoding="utf-8")
         flag(command, "--output-qa").write_text(json.dumps({"n_sections":1,"n_non_story":0,"warnings":[],"section_warnings":[]}), encoding="utf-8")
     elif stage == "episode_planner":
         args = stage_args(command, build_episode_planner_parser())
@@ -210,13 +212,32 @@ def write_stage_outputs(command: list[str]) -> None:
         timing.with_name("tts_normalization_report.json").write_text(json.dumps({"mode":"vi","pronunciation_lexicon_path":None,"n_items":1,"n_changed":0,"warnings":[]}), encoding="utf-8")
         timing.with_name("tts_meta.json").write_text(json.dumps({"voice_id":"voice","provider_mode":"ai33","model":"eleven_multilingual_v2","speed":1,"inter_beat_pause_s":0.15,"total_duration_s":2,"film_duration_s":2,"real_ratio":1,"total_chars":6,"est_cost":0,"created_at":NOW,"cache_hits":[],"warnings":[],"review_script_hash":review_script_hash}), encoding="utf-8")
     elif stage == "shots":
+        args = stage_args(command, build_shots_parser())
         output = flag(command, "--output")
-        output.write_text(json.dumps([{"src":"film.mp4","index":0,"tc_start":0,"tc_end":2,"duration":2,"thumb":"shots/film-000.jpg","motion_score":0.5,"face_count":0,"face_area":0,"brightness":0.5,"is_usable":True}]), encoding="utf-8")
-        feature_config = {"end_credit_guard": "--end-credit-guard" in command}
-        if feature_config["end_credit_guard"]:
-            feature_config["end_credit_tail_s"] = float(command[command.index("--end-credit-tail-s") + 1])
-            feature_config["end_credit_threshold"] = float(command[command.index("--end-credit-threshold") + 1])
-        output.with_name("shots.meta.json").write_text(json.dumps({"src":"film.mp4","duration_s":2,"n_shots":1,"n_usable":1,"detector":"adaptive","feature_config":feature_config,"model_versions":{},"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
+        output.write_text(json.dumps([{"src":str(args.input.resolve()),"index":0,"tc_start":0,"tc_end":2,"duration":2,"thumb":"shots/film-000.jpg","motion_score":0.5,"face_count":0,"face_area":0,"brightness":0.5,"is_usable":True}]), encoding="utf-8")
+        feature_config = {
+            "sample_frames": args.sample_frames,
+            "frame_sampling": args.frame_sampling,
+            "face_detection": args.face_detection,
+            "min_brightness": args.min_brightness,
+            "min_shot_len": args.min_shot_len,
+            "end_credit_guard": args.end_credit_guard,
+            "end_credit_tail_s": args.end_credit_tail_s,
+            "end_credit_threshold": args.end_credit_threshold,
+            "skip_intro": args.skip_intro,
+            "skip_outro": args.skip_outro,
+            "downscale": args.downscale,
+            "scene_threshold": args.scene_threshold,
+            "scene_scale_width": args.scene_scale_width,
+            "scene_min_gap": args.scene_min_gap,
+            "max_shot_len": args.max_shot_len,
+        }
+        args.work_dir.mkdir(parents=True, exist_ok=True)
+        for cache_name in ("detection.json", "features.json"):
+            (args.work_dir / cache_name).write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
+        if args.end_credit_guard:
+            (args.work_dir / "end_credit_marking.json").write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
+        output.with_name("shots.meta.json").write_text(json.dumps({"src":str(args.input.resolve()),"duration_s":2,"n_shots":1,"n_usable":1,"detector":args.detector,"feature_config":feature_config,"model_versions":{},"video_profile_path":str(args.video_profile.resolve()) if args.video_profile else None,"video_profile_hash":video_profile_hash(args.video_profile),"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
     elif stage == "match":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")
@@ -330,6 +351,57 @@ def test_preflight_change_reruns_ingest_without_force_cache_clear(tmp_path: Path
     ingest_command = next(command for command in commands if stage_name(command) == "ingest")
     assert "--video-profile" in ingest_command
     assert "--force" not in ingest_command
+
+
+def test_refreshed_video_profile_reruns_shots_profile_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    profile_path = tmp_path / "run" / "video_profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["non_story_ranges"] = [{"start_s":0.25,"end_s":0.75,"label":"opening","confidence":1.0}]
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    commands: list[list[str]] = []
+
+    run_pipeline(
+        argset(tmp_path, only="shots"),
+        executor=lambda command, log_path: (commands.append(command), write_stage_outputs(command)),
+    )
+
+    assert [stage_name(command) for command in commands] == ["shots"]
+    assert "--profile-only" in commands[0]
+    assert "--force" not in commands[0]
+    assert outputs_valid(
+        build_paths(tmp_path / "run"),
+        "shots",
+        film=args.input,
+        config=load_config(args.config),
+    )
+
+
+def test_refreshed_video_profile_without_feature_cache_runs_full_shots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    profile_path = tmp_path / "run" / "video_profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["warnings"] = ["manual ranges refreshed"]
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    (tmp_path / "run" / "work" / "shots" / "features.json").unlink()
+    commands: list[list[str]] = []
+
+    run_pipeline(
+        argset(tmp_path, only="shots"),
+        executor=lambda command, log_path: (commands.append(command), write_stage_outputs(command)),
+    )
+
+    assert [stage_name(command) for command in commands] == ["shots"]
+    assert "--profile-only" not in commands[0]
+    assert "--force" not in commands[0]
 
 
 def test_stale_match_algorithm_reruns_match_and_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

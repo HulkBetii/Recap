@@ -101,6 +101,7 @@ NON_STORY_LABELS = {
     "sponsor_card",
     "title_card",
     "studio_logo",
+    "end_card",
 }
 ENTITY_RE = re.compile(r"\b[A-Z][A-Za-z0-9'-]{2,}\b")
 EPISODE_RE = re.compile(

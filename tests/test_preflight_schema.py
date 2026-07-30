@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from common.inputs import load_manual_non_story_ranges
 from common.schema import IntroDetection, NonStoryRange, VideoProfile
 from preflight.__main__ import run_preflight
 from preflight.detect import sample_frames
@@ -30,6 +31,25 @@ def test_video_profile_rejects_invalid_ranges() -> None:
         NonStoryRange(start_s=10, end_s=10, label="intro_opening", confidence=0.8)
     with pytest.raises(ValueError):
         IntroDetection(detected=True, start_s=10, end_s=5, confidence=0.8)
+
+
+def test_manual_ranges_accept_end_card_label(tmp_path: Path) -> None:
+    manual_ranges = tmp_path / "manual_ranges.yaml"
+    manual_ranges.write_text(
+        """
+non_story_ranges:
+  - start_s: 95
+    end_s: 100
+    label: end_card
+    confidence: 1.0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    ranges = load_manual_non_story_ranges(manual_ranges)
+
+    assert len(ranges) == 1
+    assert ranges[0].label == "end_card"
 
 
 def test_preflight_identity_changes_with_film_or_config(tmp_path: Path) -> None:

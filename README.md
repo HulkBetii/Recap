@@ -146,7 +146,7 @@ python -m series_recap --manifest examples\anime\series_manifest.example.yaml --
 
 - `config.anime.series.yaml`: `content_type=anime_series`, `source_language=ja`, `translate_mode=ja-en`, `shots.face_detection=off`, `match.w_face=0.0`, `match.w_visual=0.0`, `exclude_non_story=true`, `orchestrator.recap_mode=auto`.
 - `config.anime.series.practical.yaml`: preset season 12 tap thuc dung. OpenAI API chi dung cho JA->EN transcript translation (`translation_required=true`, `translation_min_success_ratio=0.95`), `vision_provider="off"` va `max_vision_frames=0`; review/composer/QA dung ChatGPT Playwright, ASR/shots/match/render local, TTS dung provider configured.
-- `config.anime.series.vieneu.yaml`: bien the cua practical preset dung local VieNeu v3 Turbo ONNX/int8, giong nu Bac `Ngọc Linh`, style `doc_truyen`, speed `0.9`; khong tu fallback sang paid TTS provider.
+- `config.anime.series.vieneu.yaml`: preset season dung ChatGPT Playwright de dich JA->EN theo batch 80 segment co cache/resume, `api_budget_guard=block`, va local VieNeu v3 Turbo ONNX/int8, giong nu Bac `Ngọc Linh`, style `doc_truyen`, speed `0.9`; khong fallback sang paid translation/TTS provider. Rieng season planning dung `series_recap.tts_cps=17.0`, hieu chinh tu run Tensei S01 co 63,107 ky tu trong 3,674.842 giay (`17.17` ky tu/giay), de bam sat target 35-45 phut; `review.tts_cps=15` va cac anime preset generic khong doi.
 - Solo Leveling uses `examples/anime/solo_leveling_vi_pronunciation.yaml` to normalize `Sung Jinwoo`/`Jinwoo` aliases to the Vietnamese TTS form `Sung Chin U`/`Chin U` before synthesis.
 - `config.anime.series.localvision.yaml`: opt-in local Qwen vision (`vision_provider=local_qwen2_5_vl`, `Qwen/Qwen2.5-VL-7B-Instruct`, `max_vision_frames=30`, resize long edge 768). Cai optional deps bang `python -m pip install -e ".[anime-vision]"`; neu local model/deps thieu thi ingest warning va tiep tuc khong co visual gap descriptions.
 - Khong dung Playwright cho batch vision automation; Playwright chi la duong text/review/composer/QA. Batch vision phai la OpenAI API co cap ro rang hoac local model opt-in.
@@ -170,6 +170,7 @@ python -m series_recap --manifest examples\anime\series_manifest.example.yaml --
 - Artifact moi gom `series_event_bank.json`, `series_review_script.json`, `series_tts_script.json`, `series_chapters.json`, `youtube_chapters.txt`, va `edl.source_map.json`. `edl.json` van dung contract cu, nhung `src` co the tro toi nhieu tap; GĐ6 render voi `--source-map` de cat dung file nguon.
 - Detailed season recap ghi them `series_arc_plan.json` va `series_composer.qa.json` de audit ngan sach arc/episode, prompt count, revision count va QA warnings.
 - Neu `preflight.manual_ranges` khong duoc set trong config, `series_recap` tu tim sidecar canh manifest theo convention `manual_ranges.<episode_key>.yaml|yml|json` de giu OP/ED/preview guard rieng tung tap.
+- Manual sidecars accept `end_card` for terminal non-story frames. Storymap v2 treats every non-story range as a hard boundary and splits coarse story sections around OP/ED/preview/end-card gaps.
 - Series resume uses the versioned internal `work/stage_manifest.json`. Composer, TTS, YouTube chapters, match, and render each fingerprint their own direct inputs and validate output signatures before skipping; legacy runs without the manifest rebuild the affected final stage once. Automatic invalidation does not pass `--force`, so per-beat TTS and render temp-clip caches remain reusable. Composer identity includes ordered episode artifacts and content settings but intentionally excludes `shots.json`; shot changes invalidate match/render.
 - Series matching uses `series-v2`: each `source_ref` gets a separate candidate pool and fair quota in event order. Normal clips target `min_clip` (default 3s), while `min_visual_clip` is the hard floor; impossible multi-event beats fail with event IDs instead of silently dropping footage. `edl.qa.json` records requested/covered/fallback/missing events and short-fallback diagnostics.
 - The browser API returns opaque DTOs only: plans expose `run_name`, placeholder `command_preview`, logical DAG/output names, and a sanitized dry-run summary; jobs expose IDs/status/timestamps without argv, config snapshots, process metadata, or absolute paths. Resume/rerun still resolve internal argv and config snapshots by job ID. Local Qwen vision is constructed lazily only after a cache miss and selected visual gaps.
@@ -545,10 +546,11 @@ python -m render `
 
 Nguyên tắc GĐ6:
 
-- Frame-lock toàn cục: quantize mốc timeline theo frame trước khi cắt để tránh trôi sync.
+- Frame-lock toàn cục: quantize mốc timeline theo frame trước khi cắt; filter time-transform rồi sample FPS, clone-pad khi cần và trim theo số frame tuyệt đối để tránh hụt một frame ở biên timestamp.
 - Mỗi placement được re-encode thành temp clip video-only cùng resolution/fps/codec/pix_fmt.
-- Temp clip dùng cache trong `work/render/temp_clips/`; thêm `--force` để render lại toàn bộ cache GĐ6.
+- Temp clip dùng cache trong `work/render/temp_clips/`; mỗi cache hit được probe media và clip mới chỉ commit atomically sau khi FFmpeg hoàn tất. Thêm `--force` để render lại toàn bộ cache GĐ6.
 - Concat temp clips bằng demuxer `-c copy`, sau đó mux `voiceover.mp3` thành audio duy nhất.
+- GĐ6 kiểm tra frame count và duration của video-only concat với timeline đã quantize trước khi tail-pad; concat thiếu clip phải fail rõ thay vì đóng băng frame cuối để bù hàng phút.
 - Nếu video-only concat ngắn hơn voiceover, GĐ6 chỉ encode một tail freeze-frame clip ngắn rồi concat copy; không re-encode toàn bộ video-only trong đường bình thường.
 - `render.meta.json` ghi duration video/audio, số temp clips, cache hits và warnings.
 

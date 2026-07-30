@@ -75,7 +75,7 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
         ingest["vision_provider"] = "off"
         if tts.get("pronunciation_suggest_backend") is None:
             tts["pronunciation_suggest_backend"] = "off"
-        warnings.append("low_cost disables vision and uses local-first ASR; translation may still require API unless translate_mode=none")
+        warnings.append("low_cost disables vision and uses local-first ASR; translation cost follows ingest.translation_provider")
     elif quality_mode == "max_quality":
         if asr_policy in {"preset", "openai_hybrid"}:
             ingest["asr_policy"] = "openai_hybrid"
@@ -120,12 +120,13 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
 def describe_ingest(ingest: dict[str, Any]) -> dict[str, Any]:
     asr_provider = ingest.get("asr_provider", "faster-whisper")
     translate_mode = ingest.get("translate_mode", "ko-en")
+    translation_provider = ingest.get("translation_provider", "openai_api")
     vision_frames = int(ingest.get("max_vision_frames", 0) or 0)
     vision_provider = ingest.get("vision_provider", "openai")
     openai_uses: list[str] = []
     if str(asr_provider).startswith("openai"):
         openai_uses.append("asr")
-    if translate_mode not in {"none", "off", None}:
+    if translate_mode not in {"none", "off", None} and translation_provider == "openai_api":
         openai_uses.append("translation")
     if vision_frames > 0 and vision_provider == "openai":
         openai_uses.append("vision")
@@ -134,12 +135,25 @@ def describe_ingest(ingest: dict[str, Any]) -> dict[str, Any]:
         "asr_provider": asr_provider,
         "aligner": ingest.get("aligner", "none"),
         "translate_mode": translate_mode,
+        "translation_provider": translation_provider,
         "translation_required": bool(ingest.get("translation_required", False)),
         "max_vision_frames": vision_frames,
         "vision_provider": vision_provider,
-        "backend": "openai_api" if openai_uses else "local",
+        "backend": (
+            "openai_api"
+            if openai_uses
+            else "chatgpt_playwright"
+            if translate_mode not in {"none", "off", None} and translation_provider == "chatgpt_playwright"
+            else "local"
+        ),
         "openai_uses": openai_uses,
-        "cost": "paid_api" if openai_uses else "local",
+        "cost": (
+            "paid_api"
+            if openai_uses
+            else "subscription_browser"
+            if translate_mode not in {"none", "off", None} and translation_provider == "chatgpt_playwright"
+            else "local"
+        ),
     }
 
 def describe_tts(tts: dict[str, Any]) -> dict[str, Any]:

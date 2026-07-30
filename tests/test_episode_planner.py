@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from common.inputs import load_review_context
-from episode_planner.planner import EpisodePlanSettings, build_episode_plan, parse_episode_from_filename, select_recap_mode
+from common.schema import IntroDetection, NonStoryRange, VideoProfile
+from episode_planner.planner import EpisodePlanSettings, build_episode_plan, non_story_ratio, parse_episode_from_filename, select_recap_mode
 from review.llm_flow import build_outline_prompt
 
 def write_film_map(path: Path, text: str = "Aki waits for the next clue.") -> None:
@@ -67,6 +68,19 @@ def test_recap_mode_thresholds_are_locked() -> None:
     assert select_recap_mode(0.50, settings) == "quick"
     assert select_recap_mode(0.20, settings) == "merge"
     assert select_recap_mode(0.05, settings) == "skip"
+
+
+def test_end_card_counts_toward_non_story_ratio() -> None:
+    profile = VideoProfile(
+        input_path="episode.mp4",
+        duration_s=100,
+        intro=IntroDetection(detected=False, confidence=0, reasons=[]),
+        non_story_ranges=[NonStoryRange(start_s=95, end_s=100, label="end_card", confidence=1.0)],
+        classifier="mock",
+        created_at="2026-07-30T00:00:00Z",
+    )
+
+    assert non_story_ratio(profile, 100) == 0.05
 
 def test_episode_memory_index_respects_spoiler_limit(tmp_path: Path) -> None:
     film = tmp_path / "show.S01E05.mp4"

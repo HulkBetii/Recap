@@ -6,16 +6,62 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 
 from common.media import MediaError, has_audio_stream, probe_duration, probe_video_stream, require_ffmpeg
 from common.schema import EdlPlacement, EdlSourceMap, RenderMeta, validate_edl, write_json
 from render.cache import RenderCache
 from render.compose import concat_video, mux_voiceover, pad_video_by_tail, pad_video_to_duration
 from render.cut import RenderParams, clamp_source, cut_temp_clip, temp_cache_key
-from render.quantize import quantize_placements
+from render.quantize import FramePlacement, quantize_placements
 
 class RenderError(RuntimeError):
     pass
+
+
+def valid_cached_temp(path: Path, *, frame: FramePlacement, params: RenderParams) -> bool:
+    try:
+        info = probe_video_stream(path)
+    except MediaError as exc:
+        logging.warning("ignore invalid cached temp clip %s: %s", path.name, exc)
+        return False
+    expected_duration = frame.frame_count / params.fps
+    duration_tolerance = max(0.1, 2.0 / params.fps)
+    valid = (
+        int(info["width"]) == params.width
+        and int(info["height"]) == params.height
+        and abs(float(info["fps"]) - params.fps) <= 0.05
+        and abs(float(info["duration"]) - expected_duration) <= duration_tolerance
+    )
+    frame_count = info.get("frame_count")
+    if frame_count is not None:
+        valid = valid and int(frame_count) == frame.frame_count
+    if not valid:
+        logging.warning("ignore cached temp clip with unexpected media properties: %s", path.name)
+    return valid
+
+
+def validate_concat_output(
+    *,
+    info: dict[str, object],
+    actual_duration: float,
+    frames: Sequence[FramePlacement],
+    fps: float,
+) -> None:
+    expected_frame_count = sum(frame.frame_count for frame in frames)
+    expected_duration = expected_frame_count / fps
+    actual_frame_count = info.get("frame_count")
+    if actual_frame_count is not None and int(actual_frame_count) != expected_frame_count:
+        raise RenderError(
+            "video-only concat frame count mismatch: "
+            f"actual={actual_frame_count} expected={expected_frame_count}; refusing tail padding"
+        )
+    duration_tolerance = max(0.1, 2.0 / fps, len(frames) / fps)
+    if abs(actual_duration - expected_duration) > duration_tolerance:
+        raise RenderError(
+            "video-only concat duration mismatch: "
+            f"actual={actual_duration:.3f}s expected={expected_duration:.3f}s; refusing tail padding"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,7 +125,10 @@ def render_temp_clips(*, source_paths: dict[str, Path], source_durations: dict[s
         source = clamp_source(frame.placement, source_durations[frame.placement.src])
         warnings.extend(source.warnings)
         cache_key = temp_cache_key(film_path=film_path, frame=frame, source=source, params=params)
-        cached = cache.get_cached_temp(cache_key)
+        cached = cache.get_cached_temp(
+            cache_key,
+            validator=lambda path, frame=frame: valid_cached_temp(path, frame=frame, params=params),
+        )
         if cached is not None:
             temp_paths[frame.index] = cached
             continue
@@ -149,6 +198,8 @@ def run_render(args: argparse.Namespace) -> int:
     video_for_mux = video_only
     video_only_duration = probe_duration(video_only)
     duration_tolerance = max(0.1, 2.0 / args.fps)
+    video_only_info = probe_video_stream(video_only)
+    validate_concat_output(info=video_only_info, actual_duration=video_only_duration, frames=frames, fps=args.fps)
     if video_only_duration + duration_tolerance < mux_audio_duration:
         padded_video = args.work_dir / "video_only_padded.mp4"
         target_label = "delayed audio duration" if args.audio_delay_s > 0 else "audio duration"

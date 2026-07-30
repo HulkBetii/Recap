@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from common.integrity import file_hash, stable_hash
+from ingest.playwright_translation import TRANSLATION_PARSER_VERSION, TRANSLATION_PROMPT_VERSION
 
 INGEST_CACHE_VERSION = "ingest-v1"
 INGEST_PREPROCESSING_VERSION = "film-map-v1"
@@ -14,6 +15,8 @@ INGEST_CONFIG_FIELDS = (
     "max_vision_frames",
     "max_visual_gap_s",
     "translate_model",
+    "translation_provider",
+    "translation_batch_size",
     "translation_required",
     "translation_min_success_ratio",
     "source_language",
@@ -45,8 +48,15 @@ def _value(settings: Mapping[str, Any] | object, name: str, default: Any = None)
     return getattr(settings, name, default)
 
 
+def translation_model_identity(settings: Mapping[str, Any] | object) -> str:
+    if _value(settings, "translation_provider", "openai_api") == "chatgpt_playwright":
+        return "chatgpt-web"
+    return str(_value(settings, "translate_model", "gpt-4.1-mini"))
+
+
 def ingest_config_hash(settings: Mapping[str, Any] | object) -> str:
     payload = {name: _value(settings, name) for name in INGEST_CONFIG_FIELDS}
+    payload["translate_model"] = translation_model_identity(settings)
     for name in (
         "gap_threshold",
         "max_visual_gap_s",
@@ -126,10 +136,14 @@ def translation_cache_key(transcript_hash: str, settings: Mapping[str, Any] | ob
         {
             "transcript_hash": transcript_hash,
             "translate_mode": _value(settings, "translate_mode"),
-            "translate_model": _value(settings, "translate_model"),
+            "translate_model": translation_model_identity(settings),
+            "translation_provider": _value(settings, "translation_provider", "openai_api"),
+            "translation_batch_size": _value(settings, "translation_batch_size", 80),
             "translation_required": bool(_value(settings, "translation_required", False)),
             "translation_min_success_ratio": _value(settings, "translation_min_success_ratio", 0.0),
-            "translation_pipeline": "segment-stable-v1",
+            "translation_prompt_version": TRANSLATION_PROMPT_VERSION,
+            "translation_parser_version": TRANSLATION_PARSER_VERSION,
+            "translation_pipeline": "segment-stable-v2",
         }
     )
 

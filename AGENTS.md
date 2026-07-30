@@ -254,8 +254,9 @@ repo/
 - GĐ6 là CLI local/offline, chạy bằng `python -m render`.
 - GĐ6 chỉ đọc `edl.json`, `voiceover.mp3`, `film.mp4` và sinh `recap.mp4` + `render.meta.json`; không gọi API, không chọn lại footage, không caption, không nhạc nền, không giữ tiếng gốc.
 - Render dùng `ffmpeg/ffprobe`; temp clips luôn video-only, re-encode H.264 `yuv420p`, cùng resolution/fps/codec params rồi concat bằng demuxer `-c copy`.
+- Temp clips chỉ được commit vào cache bằng atomic replace sau khi FFmpeg thành công; cache hit phải probe đúng resolution/fps/duration/frame count. Sau concat, GĐ6 đối chiếu frame count và duration với timeline đã quantize trước khi tail-pad để file cache dở dang không biến thành freeze-frame dài.
 - Khi video-only concat ngắn hơn voiceover, GĐ6 tail-pad bằng một freeze-frame clip ngắn rồi concat copy; full-video re-encode chỉ là fallback nếu tail padding fail.
-- Frame-lock toàn cục: placement chiếm frame `[round(tl_start*fps), round(tl_end*fps))`; không round duration từng clip độc lập.
+- Frame-lock toàn cục: placement chiếm frame `[round(tl_start*fps), round(tl_end*fps))`; cut filter áp dụng time transform trước final FPS sampling, clone-pad nếu nguồn thiếu và trim bằng `end_frame` để luôn phát đúng số frame quantized, không round duration từng clip độc lập.
 - Fit v1 chỉ hỗ trợ `cover`: scale-to-cover + center crop, không letterbox.
 - Package thực tế:
   - `render/`: quantize timeline, cache temp clip, cut/normalize, concat/mux và CLI orchestration.
@@ -415,6 +416,7 @@ repo/
 
 - Stage G1.5 `storymap` runs with `python -m storymap` and writes `story_map.json`, `story_map.meta.json`, and `story_map.qa.json` from `film_map.json` plus optional `video_profile.json`.
 - `story_map.json` is optional/backward-compatible and splits movie story into coarse sections such as setup, inciting incident, conflict, reveal, climax, ending, and non_story.
+- Storymap cache version `storymap-v2` treats each confident `non_story_range` as a hard timeline boundary. A coarse story bucket must split before and after an OP/ED/preview/end-card gap instead of spanning across the excluded interval.
 - G2 `review` accepts `--story-map` and writes optional `review_script.intent.json`; the required `review_script.json` contract is unchanged.
 - G5 `match` accepts `--review-intent` and `--story-map`; in `opening_guard_s`, `--opening-ordered-fill` prefers source chronology before score to reduce opening voice/image ordering issues.
 - Storymap and review-intent are movie-first defaults in orchestrator; episode behavior remains compatible and can opt out by config.
@@ -538,6 +540,7 @@ repo/
 - Anime presets live in `config.anime.series.yaml` and `config.anime.movie.yaml`. Series uses `content_type=anime_series`, Japanese ingest, strict non-story exclusion, `shots.face_detection=off`, and `match.w_face=0.0`/`match.w_visual=0.0`. Movie uses `content_type=anime_movie` with the same Japanese ingest defaults and setup-style opening behavior.
 - `config.anime.series.yaml` defaults Faster Whisper to `ingest.device=cuda` on this RTX 3060 runtime; CPU `large-v3` ASR is too slow for practical multi-episode smoke iteration. Use CPU only as an explicit fallback.
 - Manual anime metadata is local only. `preflight.manual_ranges` and `preflight.anime_context` can be YAML or JSON and must merge into `video_profile.non_story_ranges`; `review.context_file` loads the same context for cache identity and prompt grounding.
+- Anime manual ranges support `end_card` in addition to opening, ending, preview, eyecatch, recap, sponsor, title-card, and studio-logo labels. Episode planning and series composition treat it as non-story content.
 - Anime context must drive canonical Vietnamese names, aliases, special terms, pronunciation hints, continuity notes, and strict OP/ED/preview/recap guards. Do not hardcode OP/ED durations in presets.
 - `review/llm_flow.py` must keep anime prompts explicit about no verbatim dialogue, no theme-song lyrics, no OP/ED/preview-only beats, and series-vs-movie continuity. QA should flag glossary drift, unsupported spoilers, non-story source usage, and unclear episode continuity.
 - `review.non_story` may use the manual `non_story_ranges` from either `video_profile` or `anime_context`; G5 still keeps `exclude_non_story=true` by default and should not select anime opening/ending/preview footage when the preset says to exclude it.
@@ -576,6 +579,9 @@ repo/
 ## 43. PRACTICAL ANIME SEASON PIPELINE V1
 
 - `config.anime.series.practical.yaml` is the recommended 12-episode anime season smoke/production preset when cost control matters: OpenAI API is used only for JA->EN transcript translation, while ASR/WhisperX, shots, match, render, and TTS provider orchestration stay local/provider-specific.
+- GĐ1 translation supports `translation_provider=openai_api|chatgpt_playwright`. The Playwright backend uses the locked `PROFILE_GPT_1`, keeps one fresh ChatGPT conversation per ingest process, translates validated batches sequentially, and never falls back to OpenAI API.
+- Playwright translation defaults to 80 segments per batch. Each completed batch is atomically cached under `work/ingest/translation_batches` by transcript slice, provider, `chatgpt-web` identity, prompt/parser version, source language, and batch grouping; reruns resume only missing batches.
+- Every browser response must cover exactly the requested segment IDs with non-empty English text. Japanese echo/script-dominant output, malformed JSON, missing IDs, and extra IDs are rejected and retry only the current batch. Source IDs, source text, and timecodes are always copied from the transcript rather than accepted from ChatGPT.
 - Practical ingest sets `translation_required=true`, `translation_min_success_ratio=0.95`, `vision_provider=off`, and `max_vision_frames=0`. G1 must validate `OPENAI_API_KEY` before making a request: it must start with `sk-` and contain no hidden/control characters.
 - If required translation falls below the configured success ratio, G1 fails before writing/committing `translated.json` or `film_map.json`; placeholder-only translation artifacts must not be treated as successful cache.
 - `film_map.meta.json` records translation audit fields (`translation_total_count`, `translation_success_count`, `translation_success_ratio`, `translation_required`, `translation_min_success_ratio`) plus `vision_provider`.
@@ -616,7 +622,8 @@ repo/
 - Cache identity records provider package version, model, backend, precision, voice, style, thread count, watermark policy and speed method. Missing SDK/ONNX/SoundFile runtime, invalid style/voice and model-download failures fail clearly without falling back to a paid provider.
 - UI may select VieNeu only through the allowlisted `tts.provider_mode`/`tts.vieneu_style` overrides; backend, precision, model path and reference audio remain locked. Local preflight reports runtime readiness without exposing model paths, secrets or prompts.
 - UI preflight also validates the locked VieNeu backend/precision/style/thread settings and checks a configured pronunciation lexicon before enqueue; it exposes only safe runtime details such as the lexicon filename and first-run model-download notice.
-- `config.anime.series.vieneu.yaml` is the dedicated season preset for the selected production voice: exact voice ID `Ngọc Linh`, `style=doc_truyen`, ONNX/int8 CPU, and `speed=0.9`. It inherits the practical season policy while leaving `config.anime.series.practical.yaml` unchanged.
+- `config.anime.series.vieneu.yaml` is the dedicated season preset for the selected production voice: exact voice ID `Ngọc Linh`, `style=doc_truyen`, ONNX/int8 CPU, and `speed=0.9`. It uses ChatGPT Playwright for required JA->EN transcript translation with `api_budget_guard=block`; the OpenAI-translation practical preset remains unchanged.
+- Its `series_recap.tts_cps=17.0` is calibrated from the Tensei S01 production run: 63,107 normalized narration characters over 3,674.842 seconds, or 17.17 characters/second. The slightly conservative planning value keeps the 35-45 minute season target aligned with measured VieNeu delivery; `review.tts_cps=15` and generic anime presets remain unchanged.
 - The VieNeu Solo Leveling preset loads `examples/anime/solo_leveling_vi_pronunciation.yaml`; current validated aliases normalize `Sung Jinwoo`/`Jinwoo` spellings to `Sung Chin U`/`Chin U` before cache identity and synthesis. VieNeu/sea-g2p maps `Chin U` closer to Korean `진우` than `Jin U`, which introduces a "you" glide. Add other character names only after a short pronunciation smoke test.
 
 ## 47. SERIES FINAL-STAGE CACHE IDENTITY
@@ -625,6 +632,7 @@ repo/
 - Composer identity includes the manifest, ordered selected episode keys, `episode_meta.json`, `episode_memory.json`, `film_map.json`, `film_map.meta.json`, `story_map.json`, optional `video_profile.json`, and content-affecting Composer settings. It intentionally excludes `shots.json`.
 - TTS identity includes `series_tts_script.json`, provider/voice/model/speed/pause/normalization settings, and pronunciation-lexicon content. Chapter identity includes `series_chapters.json` and `beats_timing.json`. Match identity includes review/timing artifacts, ordered `shots.json`, clip settings, and matcher version. Render identity includes EDL/source map/voiceover, source-media identities, and render settings.
 - Automatic invalidation evaluates final stages independently and does not add `--force`; unchanged downstream content can remain cached and TTS beat/render temp-clip caches stay reusable. Explicit `--force` and `--force-final` retain their existing hard-force behavior.
+- Episode planner invalidation also does not force GĐ4. Shots revalidate their own source/profile identity so profile-only OP/ED changes can reuse detection/features and only rebuild story-safe marking.
 - `series_composer/work/cache_manifest.json` uses the same content identity rather than structure-only reuse. Legacy artifacts without the relevant manifest rebuild once; cache records are committed atomically only after successful execution and output validation.
 
 ## 48. SERIES MATCHER V2 AND EPISODE IDENTITY

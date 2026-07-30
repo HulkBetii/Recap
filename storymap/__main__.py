@@ -10,7 +10,7 @@ from pathlib import Path
 from common.schema import FilmMapMeta, FilmMapSegment, StoryMapMeta, VideoProfile, validate_film_map, validate_story_map, write_json
 from common.integrity import file_hash
 from storymap.builder import build_story_sections
-from storymap.cache import StoryMapCache, stable_hash
+from storymap.cache import STORYMAP_CACHE_VERSION, StoryMapCache, stable_hash
 
 
 class StoryMapError(RuntimeError):
@@ -62,6 +62,7 @@ def run_storymap(args: argparse.Namespace) -> int:
     video_profile = load_video_profile(args.video_profile)
     profile_hash = stable_hash(video_profile.model_dump(mode="json") if video_profile else None)
     config_key = stable_hash({
+        "cache_version": STORYMAP_CACHE_VERSION,
         "film_map": stable_hash(film_map_raw),
         "video_profile": profile_hash,
         "content_type": args.content_type,
@@ -71,7 +72,13 @@ def run_storymap(args: argparse.Namespace) -> int:
     cached_meta = cache.read_json("story_map.meta.json")
     cached_qa = cache.read_json("story_map.qa.json")
     cache_hits: list[str] = []
-    if cached and cached_meta and cached_meta.get("cache_key") == config_key and not args.force:
+    if (
+        cached
+        and cached_meta
+        and cached_meta.get("cache_version") == STORYMAP_CACHE_VERSION
+        and cached_meta.get("cache_key") == config_key
+        and not args.force
+    ):
         sections = cached
         qa = cached_qa or {}
         cache_hits.append("story_map.json")
@@ -88,7 +95,10 @@ def run_storymap(args: argparse.Namespace) -> int:
         qa = report.qa
         cache.write_json("story_map.json", sections)
         cache.write_json("story_map.qa.json", qa)
-        cache.write_json("story_map.meta.json", {"cache_key": config_key})
+        cache.write_json(
+            "story_map.meta.json",
+            {"cache_key": config_key, "cache_version": STORYMAP_CACHE_VERSION},
+        )
     story_sections = validate_story_map([__import__("common.schema", fromlist=["StorySection"]).StorySection.model_validate(item) for item in sections], duration=duration_s)
     meta = StoryMapMeta(
         film_map_path=str(film_map_path),
@@ -103,7 +113,7 @@ def run_storymap(args: argparse.Namespace) -> int:
         film_map_hash=file_hash(film_map_path),
         video_profile_hash=file_hash(args.video_profile) if args.video_profile else None,
         config_hash=config_key,
-        cache_version="storymap-v1",
+        cache_version=STORYMAP_CACHE_VERSION,
     )
     write_json(output_path, story_sections)
     write_json(output_path.with_name(f"{output_path.stem}.meta.json"), meta)

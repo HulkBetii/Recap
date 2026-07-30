@@ -14,6 +14,7 @@ TimecodeQuality = Literal["strict", "approximate"]
 TranscriptCorrectionMode = Literal["off", "glossary", "openai"]
 SourceLanguage = Literal["ko", "vi", "ja"]
 TranslateMode = Literal["ko-en", "ja-en", "none"]
+TranslationProvider = Literal["openai_api", "chatgpt_playwright", "none"]
 AnimeContentType = Literal["anime_series", "anime_movie"]
 ContentType = Literal["episode", "movie", "anime_series", "anime_movie"]
 RequestedRecapMode = Literal["off", "auto", "full", "quick", "merge", "skip"]
@@ -29,6 +30,7 @@ AnimeNonStoryLabel = Literal[
     "sponsor_card",
     "title_card",
     "studio_logo",
+    "end_card",
 ]
 ANIME_NON_STORY_LABELS = {
     "opening_theme",
@@ -39,6 +41,7 @@ ANIME_NON_STORY_LABELS = {
     "sponsor_card",
     "title_card",
     "studio_logo",
+    "end_card",
 }
 
 StorySectionType = Literal["setup", "inciting_incident", "conflict", "investigation", "reveal", "climax", "ending", "non_story"]
@@ -92,6 +95,7 @@ class FilmMapMeta(BaseModel):
     created_at: datetime
     whisper_model: str
     translate_model: str
+    translation_provider: TranslationProvider = "openai_api"
     vision_model: str
     vision_provider: str = "openai"
     gap_threshold: float = Field(ge=0)

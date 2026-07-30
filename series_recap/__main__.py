@@ -1017,7 +1017,7 @@ def run_series_recap(
         summaries.append(planner_summary)
 
         shots_stage, shots_command, shots_outputs = commands[1]
-        force_shots = args.force or planner_summary.status == "ran"
+        force_shots = bool(args.force)
         if force_shots and "--force" not in shots_command:
             shots_command = [*shots_command, "--force"]
         summaries.append(

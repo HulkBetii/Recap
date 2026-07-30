@@ -305,6 +305,48 @@ def test_episode_config_auto_discovers_manual_ranges_sidecar(tmp_path: Path) -> 
 
     assert config["preflight"]["manual_ranges"] == str(manual_ranges.resolve())
 
+
+def test_episode_planner_rebuild_does_not_force_shots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    manifest_path = tmp_path / "series_manifest.json"
+    source_one = tmp_path / "Grand_Blue.S03E01.mp4"
+    source_two = tmp_path / "Grand_Blue.S03E02.mp4"
+    config_path = tmp_path / "config.json"
+    write_manifest(manifest_path, source_one, source_two)
+    write_config(config_path)
+
+    class StopAfterShots(RuntimeError):
+        pass
+
+    def fake_run_step(**kwargs):  # type: ignore[no-untyped-def]
+        if kwargs["stage"].endswith(":episode_planner"):
+            return recap_cli.StepSummary(
+                stage=kwargs["stage"],
+                status="ran",
+                duration_s=0.0,
+                command=kwargs["command"],
+                outputs=[],
+            )
+        assert kwargs["stage"].endswith(":episode_shots")
+        assert kwargs["force"] is False
+        assert "--force" not in kwargs["command"]
+        raise StopAfterShots
+
+    monkeypatch.setattr(recap_cli, "run_step", fake_run_step)
+    args = argparse.Namespace(
+        manifest=manifest_path,
+        config=config_path,
+        episodes="1",
+        run_dir=tmp_path / "runs" / "grand-blue-s03",
+        python="python",
+        dry_run=True,
+        force=False,
+        force_final=False,
+        log_level="ERROR",
+    )
+
+    with pytest.raises(StopAfterShots):
+        run_series_recap(args, executor=lambda _command, _log_path: None)
+
 def test_write_youtube_chapters_from_series_chapters_and_timings(tmp_path: Path) -> None:
     chapters_path = tmp_path / "series_chapters.json"
     timings_path = tmp_path / "beats_timing.json"
