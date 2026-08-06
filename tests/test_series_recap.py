@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,8 +15,12 @@ from series_recap.cache import SeriesStageCache
 from series_recap.__main__ import (
     build_paths,
     chapters_stage_fingerprint,
+    configure_utf8_stdio,
     match_stage_fingerprint,
+    postprocess_command,
+    postprocess_stage_fingerprint,
     render_stage_fingerprint,
+    render_command,
     run_cached_step,
     tts_stage_fingerprint,
     episode_config_for,
@@ -288,6 +294,79 @@ def test_series_recap_practical_dry_run_plans_12_episode_flow(tmp_path: Path, ca
     assert "[planned] tts" in output
     assert "[planned] series_match" in output
     assert "[planned] render" in output
+
+
+def test_series_recap_dry_run_prints_unicode_voice_with_cp1252_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "series_manifest.json"
+    write_manifest(manifest_path, tmp_path / "Grand_Blue.S03E01.mp4", tmp_path / "Grand_Blue.S03E02.mp4")
+    output_buffer = io.BytesIO()
+    legacy_stdout = io.TextIOWrapper(output_buffer, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", legacy_stdout)
+    configure_utf8_stdio()
+
+    args = argparse.Namespace(
+        manifest=manifest_path,
+        config=Path("config.anime.series.vieneu.yaml"),
+        episodes="1-2",
+        run_dir=tmp_path / "runs" / "grand-blue-s03",
+        python="python",
+        dry_run=True,
+        force=False,
+        force_final=False,
+        log_level="ERROR",
+    )
+
+    assert run_series_recap(args, executor=lambda _command, _log_path: None) == 0
+    legacy_stdout.flush()
+    output = output_buffer.getvalue().decode("utf-8")
+    assert "Ngọc Linh" in output
+
+
+def test_enhanced_dry_run_inserts_postprocess_before_render(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest_path = tmp_path / "series_manifest.json"
+    config_path = tmp_path / "config.json"
+    run_dir = tmp_path / "runs" / "grand-blue-s03"
+    write_manifest(manifest_path, tmp_path / "Grand_Blue.S03E01.mp4", tmp_path / "Grand_Blue.S03E02.mp4")
+    write_config(config_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["postprocess"] = {
+        "enabled": True,
+        "profile": "dynamic_anime",
+        "seed": 1234,
+        "audio_assets": str(tmp_path / "audio_assets.yaml"),
+        "edit_overrides": "auto",
+        "log_level": "INFO",
+    }
+    config["series_recap"]["clip_profile"] = "dynamic_anime"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    args = argparse.Namespace(
+        manifest=manifest_path,
+        config=config_path,
+        episodes="1-2",
+        run_dir=run_dir,
+        python="python",
+        dry_run=True,
+        force=False,
+        force_final=True,
+        log_level="ERROR",
+    )
+
+    assert run_series_recap(args, executor=lambda _command, _log_path: None) == 0
+    output = capsys.readouterr().out
+    assert output.index("[planned] series_match") < output.index("[planned] postprocess") < output.index("[planned] render")
+    assert "python -m postprocess" in output
+    assert "--event-bank" in output
+    assert "--clip-profile dynamic_anime" in output
+    assert "--edit-plan" in output
+    assert "--audio-assets" in output
+    assert output.count("--force") >= 4
+    assert not (tmp_path / "audio_assets.yaml").exists()
 
 def test_episode_config_auto_discovers_manual_ranges_sidecar(tmp_path: Path) -> None:
     manifest_path = tmp_path / "series_manifest.json"
@@ -588,6 +667,81 @@ def test_match_identity_tracks_ordered_shot_artifacts(tmp_path: Path) -> None:
         paths=paths,
         episode_run_dirs={"e01": episode},
         config={"series_recap": {"min_clip": 3.0, "max_clip": 5.0, "min_visual_clip": 0.6}},
+    ) != first
+
+    paths.event_bank.write_text("changed-event-bank", encoding="utf-8")
+    assert match_stage_fingerprint(
+        paths=paths,
+        episode_run_dirs={"e01": episode},
+        config={"series_recap": {"min_clip": 3.0, "max_clip": 5.0, "min_visual_clip": 0.6}},
+    ) != first
+
+
+def test_enhanced_commands_and_fingerprints_include_plan_and_audio_assets(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "series_manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+    paths = build_paths(tmp_path / "run")
+    paths.final_dir.mkdir(parents=True)
+    episode = tmp_path / "episode"
+    episode.mkdir()
+    (episode / "shots.json").write_text("[]", encoding="utf-8")
+    for artifact in (paths.edl, paths.series_review_script, paths.event_bank, paths.beats_timing, paths.source_map):
+        artifact.write_text("[]", encoding="utf-8")
+    audio_root = tmp_path / "audio"
+    audio_root.mkdir()
+    for name in ("music.mp3", "whoosh.wav", "impact.wav"):
+        (audio_root / name).write_bytes(name.encode("ascii"))
+    assets_path = tmp_path / "audio_assets.yaml"
+    assets_path.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "base_dir: audio",
+                "assets:",
+                "  - {asset_id: music, path: music.mp3, kind: music, mood: default, loopable: true, license_source: CC0}",
+                "  - {asset_id: whoosh, path: whoosh.wav, kind: sfx, sfx_kind: whoosh, license_source: CC0}",
+                "  - {asset_id: impact, path: impact.wav, kind: sfx, sfx_kind: impact, license_source: CC0}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = {
+        "postprocess": {
+            "enabled": True,
+            "profile": "dynamic_anime",
+            "seed": 42,
+            "audio_assets": str(assets_path),
+            "edit_overrides": "auto",
+        },
+        "series_recap": {"clip_profile": "dynamic_anime"},
+        "render": {"width": 1920, "height": 1080},
+    }
+
+    post_command = postprocess_command(
+        py="python",
+        manifest_path=manifest_path,
+        episode_run_dirs={"e01": episode},
+        paths=paths,
+        config=config,
+        force=True,
+    )
+    enhanced_render_command = render_command(py="python", paths=paths, config=config, force=False)
+    assert post_command[post_command.index("--audio-assets") + 1] == str(assets_path.resolve())
+    assert "--force" in post_command
+    assert enhanced_render_command[enhanced_render_command.index("--edit-plan") + 1] == str(paths.edit_plan)
+
+    first = postprocess_stage_fingerprint(
+        paths=paths,
+        episode_run_dirs={"e01": episode},
+        manifest_path=manifest_path,
+        config=config,
+    )
+    (audio_root / "music.mp3").write_bytes(b"changed-music")
+    assert postprocess_stage_fingerprint(
+        paths=paths,
+        episode_run_dirs={"e01": episode},
+        manifest_path=manifest_path,
+        config=config,
     ) != first
 
 

@@ -1337,6 +1337,297 @@ class EdlMeta(BaseModel):
     cache_hits: list[str] = Field(default_factory=list)
     algorithm_version: str = "1"
 
+
+AudioAssetKind = Literal["music", "sfx"]
+MusicMood = Literal["default", "tension", "calm", "mystery", "suspense", "action", "emotional"]
+SfxKind = Literal["whoosh", "impact"]
+
+
+class AudioAsset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    path: str
+    kind: AudioAssetKind
+    mood: MusicMood | None = None
+    sfx_kind: SfxKind | None = None
+    loopable: bool = False
+    license_source: str
+    license_url: str | None = None
+    attribution: str | None = None
+    attribution_required: bool = False
+
+    @field_validator("asset_id", "license_source", "license_url", "attribution")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("audio asset text field cannot be empty")
+        return normalized
+
+    @field_validator("path")
+    @classmethod
+    def validate_relative_path(cls, value: str) -> str:
+        normalized = value.strip().replace("\\", "/")
+        path = Path(normalized)
+        if not normalized or path.is_absolute() or ".." in path.parts:
+            raise ValueError("audio asset path must be a safe relative path")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_kind_fields(self) -> "AudioAsset":
+        if self.kind == "music":
+            if self.sfx_kind is not None:
+                raise ValueError("music assets cannot define sfx_kind")
+            if self.mood is None:
+                raise ValueError("music assets require mood")
+        else:
+            if self.mood is not None:
+                raise ValueError("SFX assets cannot define mood")
+            if self.sfx_kind is None:
+                raise ValueError("SFX assets require sfx_kind")
+            if self.loopable:
+                raise ValueError("SFX assets cannot be loopable")
+        if self.attribution_required and not self.attribution:
+            raise ValueError("attribution text is required when attribution_required=true")
+        return self
+
+
+class AudioAssetManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    base_dir: str | None = None
+    assets: list[AudioAsset]
+
+    @field_validator("base_dir")
+    @classmethod
+    def validate_base_dir(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().replace("\\", "/")
+        path = Path(normalized)
+        if not normalized or path.is_absolute() or ".." in path.parts:
+            raise ValueError("audio asset base_dir must be a safe relative path")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "AudioAssetManifest":
+        ids = [asset.asset_id for asset in self.assets]
+        if len(ids) != len(set(ids)):
+            raise ValueError("audio asset ids must be unique")
+        return self
+
+
+class EditSpeedSegment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_ratio: float = Field(ge=0, le=1)
+    end_ratio: float = Field(gt=0, le=1)
+    speed: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_ratio(self) -> "EditSpeedSegment":
+        if self.end_ratio <= self.start_ratio:
+            raise ValueError("speed segment end_ratio must be greater than start_ratio")
+        return self
+
+
+class PlacementEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    placement_index: int = Field(ge=0)
+    beat_id: int = Field(ge=0)
+    mood: MusicMood = "default"
+    role: str = "neutral"
+    src_in: float = Field(ge=0)
+    src_out: float = Field(gt=0)
+    source_extension_s: float = Field(default=0.0, ge=0)
+    zoom_start: float = Field(default=1.0, ge=1.0)
+    zoom_end: float = Field(default=1.0, ge=1.0)
+    pan_x: float = Field(default=0.0, ge=-0.04, le=0.04)
+    pan_y: float = Field(default=0.0, ge=-0.04, le=0.04)
+    aspect_ratio: float | None = Field(default=None, gt=1.0)
+    contrast: float = Field(default=1.06, gt=0)
+    saturation: float = Field(default=1.08, ge=0)
+    brightness: float = Field(default=0.0, ge=-1, le=1)
+    warmth: float = Field(default=0.0, ge=-1, le=1)
+    speed_ramp: list[EditSpeedSegment] = Field(default_factory=list)
+    freeze_duration_s: float = Field(default=0.0, ge=0)
+    disabled: bool = False
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("placement edit role cannot be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_edit(self) -> "PlacementEdit":
+        if self.src_out <= self.src_in:
+            raise ValueError("placement edit src_out must be greater than src_in")
+        previous_end = 0.0
+        for segment in self.speed_ramp:
+            if abs(segment.start_ratio - previous_end) > 1e-6:
+                raise ValueError("speed ramp segments must tile from ratio 0")
+            previous_end = segment.end_ratio
+        if self.speed_ramp and abs(previous_end - 1.0) > 1e-6:
+            raise ValueError("speed ramp segments must end at ratio 1")
+        return self
+
+
+class MusicCue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    tl_start: float = Field(ge=0)
+    tl_end: float = Field(gt=0)
+    mood: MusicMood
+    crossfade_s: float = Field(default=1.5, ge=0)
+    gain_db: float = -24.0
+
+    @model_validator(mode="after")
+    def validate_cue(self) -> "MusicCue":
+        if self.tl_end <= self.tl_start:
+            raise ValueError("music cue tl_end must be greater than tl_start")
+        return self
+
+
+class SfxCue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    kind: SfxKind
+    tl_start: float = Field(ge=0)
+    gain_db: float
+
+
+class EditAudioMix(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    music_lufs: float = -24.0
+    duck_db: float = Field(default=9.0, ge=0)
+    whoosh_gain_db: float = -14.0
+    impact_gain_db: float = -10.0
+    master_lufs: float = -14.0
+    true_peak_db: float = -1.0
+    loudness_range: float = Field(default=11.0, gt=0)
+
+
+class EditPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    profile: str = "dynamic_anime"
+    seed: int
+    total_duration_s: float = Field(gt=0)
+    placements: list[PlacementEdit]
+    music_cues: list[MusicCue]
+    sfx_cues: list[SfxCue] = Field(default_factory=list)
+    audio_mix: EditAudioMix = Field(default_factory=EditAudioMix)
+    original_audio_included: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> "EditPlan":
+        indexes = [item.placement_index for item in self.placements]
+        if indexes != list(range(len(indexes))):
+            raise ValueError("edit plan placement_index must be continuous and ordered")
+        if self.music_cues:
+            ordered = sorted(self.music_cues, key=lambda cue: (cue.tl_start, cue.tl_end))
+            if abs(ordered[0].tl_start) > 0.05 or abs(ordered[-1].tl_end - self.total_duration_s) > 0.05:
+                raise ValueError("music cues must cover the full edit-plan timeline")
+            for previous, current in zip(ordered, ordered[1:]):
+                if current.tl_start > previous.tl_end + 0.05:
+                    raise ValueError("music cues cannot leave timeline gaps")
+        return self
+
+
+class EditPlanMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    algorithm_version: str
+    input_fingerprint: str
+    n_placements: int = Field(ge=0)
+    n_zoom: int = Field(ge=0)
+    n_aspect: int = Field(ge=0)
+    n_speed_ramp: int = Field(ge=0)
+    n_freeze: int = Field(ge=0)
+    n_music_cues: int = Field(ge=0)
+    n_sfx_cues: int = Field(ge=0)
+    created_at: datetime
+    cache_hits: list[str] = Field(default_factory=list)
+
+
+class EditPlanQa(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    warnings: list[str] = Field(default_factory=list)
+    skipped_effects: list[dict[str, Any]] = Field(default_factory=list)
+    source_bound_checks: list[dict[str, Any]] = Field(default_factory=list)
+    cue_density: dict[str, float | int] = Field(default_factory=dict)
+    asset_warnings: list[str] = Field(default_factory=list)
+
+
+class BeatEditOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: int = Field(ge=0)
+    mood: MusicMood | None = None
+    track_id: str | None = None
+    zoom_start: float | None = Field(default=None, ge=1)
+    zoom_end: float | None = Field(default=None, ge=1)
+    pan_x: float | None = Field(default=None, ge=-0.04, le=0.04)
+    aspect_ratio: float | None = Field(default=None, gt=1)
+    contrast: float | None = Field(default=None, gt=0)
+    saturation: float | None = Field(default=None, ge=0)
+    brightness: float | None = Field(default=None, ge=-1, le=1)
+    warmth: float | None = Field(default=None, ge=-1, le=1)
+    ramp: bool | None = None
+    freeze: bool | None = None
+    disable_effects: bool | None = None
+
+
+class PlacementEditOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    placement_index: int = Field(ge=0)
+    mood: MusicMood | None = None
+    track_id: str | None = None
+    zoom_start: float | None = Field(default=None, ge=1)
+    zoom_end: float | None = Field(default=None, ge=1)
+    pan_x: float | None = Field(default=None, ge=-0.04, le=0.04)
+    aspect_ratio: float | None = Field(default=None, gt=1)
+    contrast: float | None = Field(default=None, gt=0)
+    saturation: float | None = Field(default=None, ge=0)
+    brightness: float | None = Field(default=None, ge=-1, le=1)
+    warmth: float | None = Field(default=None, ge=-1, le=1)
+    ramp: bool | None = None
+    freeze: bool | None = None
+    disable_effects: bool | None = None
+
+
+class EditOverrides(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    beats: list[BeatEditOverride] = Field(default_factory=list)
+    placements: list[PlacementEditOverride] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_unique_targets(self) -> "EditOverrides":
+        beat_ids = [item.beat_id for item in self.beats]
+        placement_indexes = [item.placement_index for item in self.placements]
+        if len(beat_ids) != len(set(beat_ids)):
+            raise ValueError("edit override beat_id values must be unique")
+        if len(placement_indexes) != len(set(placement_indexes)):
+            raise ValueError("edit override placement_index values must be unique")
+        return self
+
 class RenderMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1352,6 +1643,16 @@ class RenderMeta(BaseModel):
     n_temp_clips: int = Field(ge=0)
     source_count: int | None = Field(default=None, ge=0)
     source_names: list[str] = Field(default_factory=list)
+    n_zoom: int | None = Field(default=None, ge=0)
+    n_aspect: int | None = Field(default=None, ge=0)
+    n_speed_ramp: int | None = Field(default=None, ge=0)
+    n_freeze: int | None = Field(default=None, ge=0)
+    n_music_cues: int | None = Field(default=None, ge=0)
+    n_sfx_cues: int | None = Field(default=None, ge=0)
+    grade_moods: dict[str, int] = Field(default_factory=dict)
+    loudness: dict[str, float] = Field(default_factory=dict)
+    audio_stream_count: int | None = Field(default=None, ge=0)
+    original_audio_included: bool = False
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
     cache_hits: list[str] = Field(default_factory=list)

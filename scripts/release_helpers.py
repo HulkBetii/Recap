@@ -12,6 +12,7 @@ RUNTIME_ROOTS = {
     "ingest",
     "match",
     "orchestrator",
+    "postprocess",
     "preflight",
     "recap_ui",
     "render",

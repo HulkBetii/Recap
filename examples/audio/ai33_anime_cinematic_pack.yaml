@@ -1,0 +1,68 @@
+version: 1
+music:
+  - asset_id: music-default
+    mood: default
+    prompt: >-
+      Seamless-loop instrumental cinematic animation score, balanced hybrid orchestra and modern percussion,
+      adventurous but neutral, no vocals, no recognizable melody, clean ending suitable for background narration.
+  - asset_id: music-tension
+    mood: tension
+    prompt: >-
+      Seamless-loop instrumental tension cue, restrained low strings, ticking percussion and subtle electronic pulse,
+      dramatic animated storytelling, no vocals, no recognizable melody, space for spoken narration.
+  - asset_id: music-calm
+    mood: calm
+    prompt: >-
+      Seamless-loop calm instrumental cue, gentle piano, warm strings and light acoustic texture,
+      hopeful animated storytelling, no vocals, no recognizable melody, unobtrusive under narration.
+  - asset_id: music-mystery
+    mood: mystery
+    prompt: >-
+      Seamless-loop mystery instrumental cue, soft marimba, glassy synth texture and sparse strings,
+      curious investigation mood, no vocals, no recognizable melody, restrained dynamics.
+  - asset_id: music-suspense
+    mood: suspense
+    prompt: >-
+      Seamless-loop suspense instrumental cue, rising string ostinato, muted drums and dark atmospheric pulse,
+      reveal anticipation, no vocals, no recognizable melody, narration-friendly mix.
+  - asset_id: music-action
+    mood: action
+    prompt: >-
+      Seamless-loop action instrumental cue, fast hybrid percussion, energetic strings and controlled brass accents,
+      animated battle momentum, no vocals, no recognizable melody, clear space for narration.
+  - asset_id: music-emotional
+    mood: emotional
+    prompt: >-
+      Seamless-loop emotional instrumental cue, warm piano and expressive strings with a restrained cinematic lift,
+      reflective ending mood, no vocals, no recognizable melody, gentle narration-friendly dynamics.
+sfx:
+  - asset_id: sfx-whoosh-soft
+    sfx_kind: whoosh
+    prompt: Clean short cinematic air whoosh for a smooth scene transition, no music, no voice, dry studio sound.
+    duration_s: 1.0
+    prompt_influence: 0.35
+  - asset_id: sfx-whoosh-fast
+    sfx_kind: whoosh
+    prompt: Fast sharp cinematic pass-by whoosh for a speed ramp transition, no music, no voice, dry studio sound.
+    duration_s: 1.0
+    prompt_influence: 0.4
+  - asset_id: sfx-whoosh-deep
+    sfx_kind: whoosh
+    prompt: Deep low cinematic whoosh with a compact tail for a dramatic transition, no music, no voice.
+    duration_s: 1.0
+    prompt_influence: 0.35
+  - asset_id: sfx-impact-tight
+    sfx_kind: impact
+    prompt: Tight cinematic impact hit for a freeze-frame story beat, short tail, no music, no voice.
+    duration_s: 1.0
+    prompt_influence: 0.4
+  - asset_id: sfx-impact-heavy
+    sfx_kind: impact
+    prompt: Heavy cinematic bass impact with a controlled one-second tail, no music, no voice, no distortion.
+    duration_s: 1.0
+    prompt_influence: 0.35
+  - asset_id: sfx-impact-bright
+    sfx_kind: impact
+    prompt: Bright metallic cinematic impact accent for a reveal beat, compact tail, no music, no voice.
+    duration_s: 1.0
+    prompt_influence: 0.35

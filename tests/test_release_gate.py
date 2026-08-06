@@ -137,7 +137,10 @@ def test_release_gate_runs_quality_tooling() -> None:
     assert "tach-audit.txt" not in script
     assert "audit-only" not in script
     assert 'throw "Tach boundary issues found' in script
+    assert '"enhanced_render_smoke"' in script
+    assert "scripts.enhanced_render_smoke" in script
     assert "work/release-gate/tach-report.txt" in workflow
+    assert "work/release-gate/enhanced-render-smoke-report.json" in workflow
 
 
 def test_project_version_matches_v1_0_2_release() -> None:

@@ -283,7 +283,12 @@ class PlanningService:
         completed = self.runner(dry_run, self.repo_root)
         warnings = self._dry_run_warnings(completed)
         paths = build_series_paths(run_dir)
-        dag = self._series_dag(completed.stdout, [spec.episode_key for spec in specs])
+        enhanced = bool(config.get("postprocess", {}).get("enabled", False))
+        dag = self._series_dag(
+            completed.stdout,
+            [spec.episode_key for spec in specs],
+            postprocess_enabled=enhanced,
+        )
         outputs = [
             str(paths.event_bank),
             str(paths.series_arc_plan),
@@ -295,6 +300,16 @@ class PlanningService:
             str(paths.beats_timing),
             str(paths.edl),
             str(paths.source_map),
+            *(
+                [
+                    str(paths.edit_plan),
+                    str(paths.edit_plan_meta),
+                    str(paths.edit_plan_qa),
+                    str(paths.audio_attribution),
+                ]
+                if enhanced
+                else []
+            ),
             str(paths.output_video),
         ]
         can_start = all(check.status != DeliveryStatus.BLOCK for check in checks) and completed.returncode == 0
@@ -502,7 +517,13 @@ class PlanningService:
             if stage in selected
         ]
 
-    def _series_dag(self, output: str, episode_keys: list[str]) -> list[PlanDagNode]:
+    def _series_dag(
+        self,
+        output: str,
+        episode_keys: list[str],
+        *,
+        postprocess_enabled: bool = False,
+    ) -> list[PlanDagNode]:
         statuses = self._parse_statuses(output)
         nodes: list[PlanDagNode] = []
         for episode_key in episode_keys:
@@ -515,7 +536,11 @@ class PlanningService:
                         status=statuses.get(key, "planned"),
                     )
                 )
-        for stage in ("series_composer", "tts", "youtube_chapters", "series_match", "render"):
+        final_stages = ["series_composer", "tts", "youtube_chapters", "series_match"]
+        if postprocess_enabled:
+            final_stages.append("postprocess")
+        final_stages.append("render")
+        for stage in final_stages:
             nodes.append(
                 PlanDagNode(
                     key=stage,

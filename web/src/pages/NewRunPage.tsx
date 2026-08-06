@@ -269,6 +269,7 @@ function PresetStep({ state, presets, loading, selectedPreset, onPreset, onOverr
   const configuredProvider = String(state.overrides.providerMode);
   const hasPresetOnlyProvider = ["ai33", "genmax", "openai"].includes(configuredProvider);
   const presetUsesVieNeu = summaryValue(selectedPreset?.summary, "tts.provider_mode") === "vieneu";
+  const enhancedPostprocess = summaryValue(selectedPreset?.summary, "postprocess.enabled") === true;
   return <div className={page.formGrid}>
     <div className={page.formFull}>
       <Field htmlFor="production-preset" label={t("preset.production")}>
@@ -286,6 +287,10 @@ function PresetStep({ state, presets, loading, selectedPreset, onPreset, onOverr
           <span><b>{t("preset.ttsStyle")}</b>{displaySummaryValue(summaryValue(selectedPreset.summary, "tts.vieneu_style"), t("preset.notConfigured"))}</span>
           <span><b>{t("preset.ttsSpeedSummary")}</b>{displaySummaryValue(summaryValue(selectedPreset.summary, "tts.speed"), t("preset.notConfigured"))}</span>
           <span><b>{t("preset.lexicon")}</b>{summaryValue(selectedPreset.summary, "tts.pronunciation_lexicon_configured") === true ? t("preset.configured") : t("preset.notConfigured")}</span>
+          {enhancedPostprocess && <>
+            <span><b>{t("preset.enhancedEditing")}</b>{t("preset.enabled")}</span>
+            <span><b>{t("preset.audioLibrary")}</b>{summaryValue(selectedPreset.summary, "postprocess.audio_assets_ready") === true ? t("preset.ready") : t("preset.notReady")}</span>
+          </>}
         </div>}
         {selectedPreset.summary && summaryRows(selectedPreset.summary).map(([key, value]) => <small key={key}>{key.replaceAll("_", " ")}: {value}</small>)}
       </div>}

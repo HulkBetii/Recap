@@ -128,6 +128,7 @@ def test_direct_review_backend_is_rejected(backend: str) -> None:
         "config.vi.balanced.auto.yaml",
         "config.anime.series.practical.yaml",
         "config.anime.series.vieneu.yaml",
+        "config.anime.series.vieneu.enhanced.yaml",
         "config.anime.series.localvision.yaml",
     ],
 )

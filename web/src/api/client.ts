@@ -73,10 +73,17 @@ function mapJob(job: ApiJob, stages: ApiStage[] = []): Job {
 function mapRun(run: ApiRun): RunSummary { return { id: run.id, job_id: run.job_id ?? undefined, kind: run.kind, title: run.display_title ?? run.name, display_title: run.display_title ?? run.name, run_dir: run.name, management_mode: run.management_mode ?? (run.job_id ? "managed" : "artifact_only"), available_actions: run.available_actions ?? ["view"], read_only_reason: run.read_only_reason, status: run.execution_status ?? "interrupted", delivery_status: run.delivery_status, episode_count: run.episode_keys.length || undefined, updated_at: run.modified_at, output_artifact_id: run.output_artifact_id }; }
 function mapEpisode(episode: ApiEpisode): EpisodeSummary { return { key: episode.episode_key, number: typeof episode.episode_number === "number" ? episode.episode_number : undefined, title: episode.title ?? (episode.episode_number != null ? `Episode ${episode.episode_number}` : episode.episode_key), status: Object.values(episode.stage_statuses).some((status) => ["failed", "blocked"].includes(status)) ? "block" : "pass", stages: Object.entries(episode.stage_statuses).map(([key, status]) => ({ key, status })), translation_ratio: episode.translation_ratio ?? undefined, approximate_timecodes: episode.approximate_timecodes ?? undefined };
 }
+export function artifactStageForPath(relativePath: string): string | undefined {
+  const name = relativePath.split("/").at(-1)?.toLowerCase();
+  if (["edit_plan.json", "edit_plan.meta.json", "edit_plan.qa.json", "audio_attribution.txt"].includes(name ?? "")) return "postprocess";
+  if (["edl.json", "edl.meta.json", "edl.qa.json", "edl.source_map.json"].includes(name ?? "")) return "series_match";
+  if (["series_recap.mp4", "render.meta.json"].includes(name ?? "")) return "render";
+  return relativePath.split("/").at(-2);
+}
 function mapArtifact(artifact: ApiArtifact): Artifact {
   const episode = artifact.relative_path.split("/")[0];
   const kind = artifact.kind === "binary" ? "other" : artifact.kind as Artifact["kind"];
-  return { id: artifact.id, name: artifact.name, kind, stage: artifact.relative_path.split("/").at(-2), episode_key: episode && /^(s\d+e\d+|e\d+)$/i.test(episode) ? episode : undefined, size: artifact.size, modified_at: artifact.modified_at, relative_path: artifact.relative_path, media_type: artifact.media_type };
+  return { id: artifact.id, name: artifact.name, kind, stage: artifactStageForPath(artifact.relative_path), episode_key: episode && /^(s\d+e\d+|e\d+)$/i.test(episode) ? episode : undefined, size: artifact.size, modified_at: artifact.modified_at, relative_path: artifact.relative_path, media_type: artifact.media_type };
 }
 export function normalizeEvent(event: ApiEvent): JobEvent { return { id: event.seq, type: event.event_type, timestamp: event.timestamp, level: event.level?.toLowerCase() as JobEvent["level"], stage: event.stage, message: event.message, payload: event.payload }; }
 

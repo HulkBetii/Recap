@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover - exercised only without optional dep
     yaml = None  # type: ignore[assignment]
 
 STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "visual_index", "match", "render")
-TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator", "series_recap"}
+TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator", "postprocess", "series_recap"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "orchestrator": {
@@ -258,6 +258,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "audio_delay_s": 0.0,
         "log_level": "INFO",
     },
+    "postprocess": {
+        "enabled": False,
+        "profile": "dynamic_anime",
+        "seed": 1234,
+        "audio_assets": "data/audio_library/audio_assets.yaml",
+        "edit_overrides": "auto",
+        "log_level": "INFO",
+    },
     "series_recap": {
         "scope": "end_to_end",
         "format": "compact",
@@ -286,6 +294,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_clip": 3.0,
         "max_clip": 5.0,
         "min_visual_clip": 0.6,
+        "clip_profile": "legacy",
         "log_level": "INFO",
     },
 }

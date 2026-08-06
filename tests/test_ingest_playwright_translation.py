@@ -357,3 +357,16 @@ def test_vieneu_preset_uses_browser_translation_without_openai_fallback() -> Non
     assert policy.stages["ingest"]["translation_provider"] == "chatgpt_playwright"
     assert policy.stages["ingest"]["openai_uses"] == []
     assert disallowed_openai_stages(policy, {"ingest"}) == []
+
+
+def test_vieneu_enhanced_preset_keeps_local_text_tts_and_opt_in_postprocess() -> None:
+    config = load_config(Path("config.anime.series.vieneu.enhanced.yaml"))
+    _resolved, policy = resolve_cost_policy(config)
+
+    assert config["orchestrator"]["api_budget_guard"] == "block"
+    assert config["ingest"]["translation_provider"] == "chatgpt_playwright"
+    assert policy.stages["ingest"]["openai_uses"] == []
+    assert config["tts"]["provider_mode"] == "vieneu"
+    assert config["tts"]["voice_id"] == "Ngọc Linh"
+    assert config["postprocess"]["enabled"] is True
+    assert config["series_recap"]["clip_profile"] == "dynamic_anime"

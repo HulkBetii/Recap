@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from recap_ui.app import _media_duration_checks, _provider_checks
+from recap_ui.app import (
+    _media_duration_checks,
+    _non_secret_preset_summary,
+    _postprocess_audio_checks,
+    _provider_checks,
+)
 from recap_ui.database import Database
 from recap_ui.planning import PlanningError, PlanningService
 from recap_ui.qa import build_delivery_qa
@@ -156,6 +161,66 @@ def test_series_plan_validates_duplicate_sources(tmp_path: Path) -> None:
     assert duplicate.status == DeliveryStatus.BLOCK
 
 
+def test_series_dag_adds_postprocess_only_for_enhanced_config(tmp_path: Path) -> None:
+    registry = PathRegistry({"repo": ("Repo", tmp_path)}, b"d" * 32)
+    service = PlanningService(tmp_path, tmp_path / "state", registry)
+
+    legacy = service._series_dag("", ["s01e01"])
+    enhanced = service._series_dag("", ["s01e01"], postprocess_enabled=True)
+
+    assert [node.key for node in legacy if ":" not in node.key] == [
+        "series_composer",
+        "tts",
+        "youtube_chapters",
+        "series_match",
+        "render",
+    ]
+    assert [node.key for node in enhanced if ":" not in node.key] == [
+        "series_composer",
+        "tts",
+        "youtube_chapters",
+        "series_match",
+        "postprocess",
+        "render",
+    ]
+
+
+def test_enhanced_audio_preflight_uses_preset_manifest_without_exposing_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("postprocess.assets.probe_audio_stream_count", lambda _path: 1)
+    monkeypatch.setattr("postprocess.assets.probe_duration", lambda _path: 1.0)
+    library = tmp_path / "data" / "audio_library"
+    library.mkdir(parents=True)
+    for name in ("music.wav", "whoosh.wav", "impact.wav"):
+        (library / name).write_bytes(b"audio")
+    manifest = library / "audio_assets.yaml"
+    manifest.write_text(
+        "version: 1\nassets:\n"
+        "  - asset_id: default-music\n    path: music.wav\n    kind: music\n    mood: default\n    loopable: true\n    license_source: local\n"
+        "  - asset_id: whoosh\n    path: whoosh.wav\n    kind: sfx\n    sfx_kind: whoosh\n    license_source: local\n"
+        "  - asset_id: impact\n    path: impact.wav\n    kind: sfx\n    sfx_kind: impact\n    license_source: local\n",
+        encoding="utf-8",
+    )
+    config = {
+        "postprocess": {
+            "enabled": True,
+            "profile": "dynamic_anime",
+            "audio_assets": "data/audio_library/audio_assets.yaml",
+        }
+    }
+
+    check = _postprocess_audio_checks(tmp_path, config)[0]
+    summary = _non_secret_preset_summary(config, "series", repo_root=tmp_path)["postprocess"]
+
+    assert check.status == DeliveryStatus.PASS
+    assert check.details["audio_assets_ready"] is True
+    assert check.details["manifest_name"] == "audio_assets.yaml"
+    assert summary["asset_count"] == 3
+    assert str(tmp_path) not in json.dumps(summary)
+
+
 def test_runtime_preflight_checks_tts_provider_and_media_duration(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     source = tmp_path / "episode.mp4"
     source.write_bytes(b"video")
@@ -288,6 +353,114 @@ def test_series_delivery_qa_blocks_actual_duration_below_minimum(tmp_path: Path)
     assert next(check for check in report.checks if check.code == "hard_cap").status == DeliveryStatus.PASS
 
 
+def test_enhanced_series_delivery_requires_postprocess_and_original_audio_exclusion(tmp_path: Path) -> None:
+    run, fake_probe = _series_delivery_fixture(tmp_path, duration=2200.0)
+    final = run / "series_recap"
+    _write_valid_postprocess_artifacts(final, duration=2200.0)
+    _write_json(
+        final / "render.meta.json",
+        {
+            "video_duration_s": 2200.0,
+            "audio_duration_s": 2200.0,
+            "audio_stream_count": 1,
+            "original_audio_included": False,
+        },
+    )
+
+    report = build_delivery_qa(
+        run,
+        JobKind.SERIES,
+        config={"postprocess": {"enabled": True}},
+        media_probe=fake_probe,
+    )
+
+    assert next(check for check in report.checks if check.code == "postprocess_artifacts").status == DeliveryStatus.PASS
+    assert next(check for check in report.checks if check.code == "enhanced_audio_stream_metadata").status == DeliveryStatus.PASS
+    assert next(check for check in report.checks if check.code == "original_audio_excluded").status == DeliveryStatus.PASS
+
+    _write_json(
+        final / "render.meta.json",
+        {
+            "video_duration_s": 2200.0,
+            "audio_duration_s": 2200.0,
+            "audio_stream_count": 1,
+            "original_audio_included": True,
+        },
+    )
+    blocked = build_delivery_qa(
+        run,
+        JobKind.SERIES,
+        config={"postprocess": {"enabled": True}},
+        media_probe=fake_probe,
+    )
+    assert next(check for check in blocked.checks if check.code == "original_audio_excluded").status == DeliveryStatus.BLOCK
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "invalid_payload"),
+    [
+        ("edit_plan.json", {"placements": [], "music_cues": []}),
+        ("edit_plan.meta.json", {"n_placements": 1}),
+        ("edit_plan.qa.json", {"warnings": [], "unexpected": True}),
+    ],
+)
+def test_enhanced_series_delivery_blocks_invalid_postprocess_schema(
+    tmp_path: Path,
+    artifact_name: str,
+    invalid_payload: object,
+) -> None:
+    run, fake_probe = _series_delivery_fixture(tmp_path, duration=2200.0)
+    final = run / "series_recap"
+    _write_valid_postprocess_artifacts(final, duration=2200.0)
+    _write_json(final / artifact_name, invalid_payload)
+
+    report = build_delivery_qa(
+        run,
+        JobKind.SERIES,
+        config={"postprocess": {"enabled": True}},
+        media_probe=fake_probe,
+    )
+
+    check = next(item for item in report.checks if item.code == "postprocess_artifacts")
+    assert check.status == DeliveryStatus.BLOCK
+
+
+def test_enhanced_series_delivery_blocks_empty_audio_attribution(tmp_path: Path) -> None:
+    run, fake_probe = _series_delivery_fixture(tmp_path, duration=2200.0)
+    final = run / "series_recap"
+    _write_valid_postprocess_artifacts(final, duration=2200.0)
+    (final / "audio_attribution.txt").write_text(" \n", encoding="utf-8")
+
+    report = build_delivery_qa(
+        run,
+        JobKind.SERIES,
+        config={"postprocess": {"enabled": True}},
+        media_probe=fake_probe,
+    )
+
+    check = next(item for item in report.checks if item.code == "postprocess_artifacts")
+    assert check.status == DeliveryStatus.BLOCK
+    assert check.details["attribution_available"] is False
+
+
+def test_series_delivery_config_takes_precedence_over_stale_edit_plan(tmp_path: Path) -> None:
+    run, fake_probe = _series_delivery_fixture(tmp_path, duration=2200.0)
+    final = run / "series_recap"
+    _write_valid_postprocess_artifacts(final, duration=2200.0)
+
+    legacy = build_delivery_qa(
+        run,
+        JobKind.SERIES,
+        config={"postprocess": {"enabled": False}},
+        media_probe=fake_probe,
+    )
+    inferred = build_delivery_qa(run, JobKind.SERIES, media_probe=fake_probe)
+
+    assert all(check.code != "postprocess_artifacts" for check in legacy.checks)
+    assert all(check.code != "original_audio_excluded" for check in legacy.checks)
+    assert next(check for check in inferred.checks if check.code == "postprocess_artifacts").status == DeliveryStatus.PASS
+
+
 def _series_delivery_fixture(tmp_path: Path, *, duration: float):  # type: ignore[no-untyped-def]
     run = tmp_path / "series-run"
     episode = run / "s01e01"
@@ -374,5 +547,78 @@ def test_run_service_indexes_artifacts_with_opaque_ids(tmp_path: Path) -> None:
     assert service.list_artifacts(records[0].id, limit=1)[0].name == "recap.mp4"
 
 
+def test_run_service_indexes_enhanced_postprocess_artifacts(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    final = repo / "runs" / "season" / "series_recap"
+    final.mkdir(parents=True)
+    for name, payload in (
+        ("edit_plan.json", {}),
+        ("edit_plan.meta.json", {}),
+        ("edit_plan.qa.json", {}),
+    ):
+        _write_json(final / name, payload)
+    (final / "audio_attribution.txt").write_text("No attribution required.\n", encoding="utf-8")
+    registry = PathRegistry({"repo": ("Repo", repo)}, b"a" * 32)
+    service = RunService(repo, Repository(Database(tmp_path / "ui.db")), registry)
+
+    run = service.discover_runs()[0]
+    artifacts = service.list_artifacts(run.id)
+
+    assert {item.name for item in artifacts} >= {
+        "edit_plan.json",
+        "edit_plan.meta.json",
+        "edit_plan.qa.json",
+        "audio_attribution.txt",
+    }
+
+
 def _write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_valid_postprocess_artifacts(final: Path, *, duration: float) -> None:
+    _write_json(
+        final / "edit_plan.json",
+        {
+            "version": 1,
+            "profile": "dynamic_anime",
+            "seed": 7,
+            "total_duration_s": duration,
+            "placements": [
+                {
+                    "placement_index": 0,
+                    "beat_id": 0,
+                    "src_in": 0.0,
+                    "src_out": duration,
+                }
+            ],
+            "music_cues": [
+                {
+                    "asset_id": "default",
+                    "tl_start": 0.0,
+                    "tl_end": duration,
+                    "mood": "default",
+                }
+            ],
+            "sfx_cues": [],
+            "original_audio_included": False,
+        },
+    )
+    _write_json(
+        final / "edit_plan.meta.json",
+        {
+            "algorithm_version": "postprocess-v1",
+            "input_fingerprint": "fixture",
+            "n_placements": 1,
+            "n_zoom": 0,
+            "n_aspect": 0,
+            "n_speed_ramp": 0,
+            "n_freeze": 0,
+            "n_music_cues": 1,
+            "n_sfx_cues": 0,
+            "created_at": "2026-07-30T00:00:00Z",
+            "cache_hits": [],
+        },
+    )
+    _write_json(final / "edit_plan.qa.json", {"version": 1, "warnings": []})
+    (final / "audio_attribution.txt").write_text("No attribution required.\n", encoding="utf-8")

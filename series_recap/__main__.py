@@ -15,11 +15,15 @@ from typing import Any, Callable
 from common.episodes import numeric_episode
 from common.integrity import file_hash, media_identity_hash, stable_hash
 from common.inputs import load_series_manifest
+from common.media import MediaError, require_ffmpeg
 from common.schema import (
     BeatTiming,
     EdlMeta,
     EdlPlacement,
     EdlSourceMap,
+    EditPlan,
+    EditPlanMeta,
+    EditPlanQa,
     RenderMeta,
     SeasonTargetPlan,
     SeriesChapter,
@@ -39,11 +43,53 @@ from common.series_identity import composer_input_fingerprint
 from orchestrator.config import ConfigError, add_option, load_config
 from orchestrator.graph import build_paths as build_episode_paths
 from orchestrator.runner import outputs_valid as episode_outputs_valid
+from postprocess.assets import AudioAssetError, load_audio_manifest, resolve_asset_path, validate_audio_assets
 from series_recap.cache import SeriesStageCache
 from tts.providers import TtsProviderError, resolve_provider_order
 from tts.vieneu_provider import VieneuProviderError, require_vieneu_runtime, validate_vieneu_settings
 
 EPISODE_KEY_RE = re.compile(r"(?:s(?P<season>\d{1,2})e(?P<episode>\d{1,3})|e(?P<episode_only>\d{1,3}))", re.IGNORECASE)
+ENHANCED_FFMPEG_FILTERS = {
+    "adelay",
+    "afade",
+    "aformat",
+    "alimiter",
+    "amix",
+    "apad",
+    "aresample",
+    "asetpts",
+    "asplit",
+    "atrim",
+    "colorbalance",
+    "concat",
+    "crop",
+    "drawbox",
+    "eq",
+    "format",
+    "fps",
+    "loudnorm",
+    "scale",
+    "setpts",
+    "sidechaincompress",
+    "split",
+    "tpad",
+    "trim",
+    "volume",
+    "zoompan",
+}
+
+
+def configure_utf8_stdio() -> None:
+    """Keep Unicode command previews printable on Windows legacy code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            continue
+
 
 class SeriesRecapError(RuntimeError):
     pass
@@ -81,6 +127,10 @@ class SeriesPaths:
     source_map: Path
     edl_meta: Path
     edl_qa: Path
+    edit_plan: Path
+    edit_plan_meta: Path
+    edit_plan_qa: Path
+    audio_attribution: Path
     output_video: Path
     render_meta: Path
 
@@ -110,7 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--python", default=None, help="Python executable for subprocess stages")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true", help="Force episode and final stages")
-    parser.add_argument("--force-final", action="store_true", help="Force only composer/TTS/match/render")
+    parser.add_argument("--force-final", action="store_true", help="Force only composer/TTS/match/postprocess/render")
     parser.add_argument("--log-level", default=None, choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
 
@@ -266,6 +316,10 @@ def build_paths(root_dir: Path) -> SeriesPaths:
         source_map=final_dir / "edl.source_map.json",
         edl_meta=final_dir / "edl.meta.json",
         edl_qa=final_dir / "edl.qa.json",
+        edit_plan=final_dir / "edit_plan.json",
+        edit_plan_meta=final_dir / "edit_plan.meta.json",
+        edit_plan_qa=final_dir / "edit_plan.qa.json",
+        audio_attribution=final_dir / "audio_attribution.txt",
         output_video=final_dir / "series_recap.mp4",
         render_meta=final_dir / "render.meta.json",
     )
@@ -306,6 +360,52 @@ def discover_episode_sidecar(manifest_path: Path, episode_key: str, stem: str) -
         if path.is_file():
             return path.resolve()
     return None
+
+
+def postprocess_enabled(config: dict[str, Any]) -> bool:
+    return bool(config.get("postprocess", {}).get("enabled", False))
+
+
+def audio_assets_path(config: dict[str, Any]) -> Path:
+    raw_path = config.get("postprocess", {}).get("audio_assets")
+    if not raw_path or not str(raw_path).strip():
+        raise SeriesRecapError("postprocess.audio_assets must be configured for enhanced rendering")
+    return Path(str(raw_path)).expanduser().resolve()
+
+
+def edit_overrides_path(manifest_path: Path, config: dict[str, Any]) -> Path | None:
+    raw_path = config.get("postprocess", {}).get("edit_overrides", "auto")
+    if raw_path is None or str(raw_path).strip().lower() in {"", "off", "none"}:
+        return None
+    if str(raw_path).strip().lower() != "auto":
+        resolved = Path(str(raw_path)).expanduser().resolve()
+        if not resolved.is_file():
+            raise SeriesRecapError(f"edit override file does not exist: {resolved}")
+        return resolved
+    for name in ("edit_overrides.yaml", "edit_overrides.yml", "edit_overrides.json"):
+        candidate = manifest_path.parent / name
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def validate_enhanced_preflight(config: dict[str, Any]) -> None:
+    manifest_path = audio_assets_path(config)
+    try:
+        validate_audio_assets(manifest_path, check_files=True)
+    except AudioAssetError as exc:
+        raise SeriesRecapError(str(exc)) from exc
+    try:
+        require_ffmpeg()
+    except MediaError as exc:
+        raise SeriesRecapError(str(exc)) from exc
+    result = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True, check=False)
+    filter_listing = f"{result.stdout}\n{result.stderr}"
+    if result.returncode != 0:
+        raise SeriesRecapError("could not inspect FFmpeg filters for enhanced render")
+    missing_filters = sorted(name for name in ENHANCED_FFMPEG_FILTERS if not re.search(rf"\b{re.escape(name)}\b", filter_listing))
+    if missing_filters:
+        raise SeriesRecapError("FFmpeg is missing enhanced render filter(s): " + ", ".join(missing_filters))
 
 def write_episode_config(
     *,
@@ -485,6 +585,8 @@ def series_match_command(
         str(paths.series_review_script),
         "--beats-timing",
         str(paths.beats_timing),
+        "--event-bank",
+        str(paths.event_bank),
     ]
     for episode_key, run_dir in episode_run_dirs.items():
         command.extend(["--episode-run-dir", f"{episode_key}={run_dir}"])
@@ -500,9 +602,63 @@ def series_match_command(
             str(paths.work_dir / "series_match"),
         ]
     )
-    for key in ("min_clip", "max_clip", "min_visual_clip", "log_level"):
+    for key in ("min_clip", "max_clip", "min_visual_clip", "clip_profile", "log_level"):
         add_option(command, key, section.get(key))
     return command
+
+
+def postprocess_command(
+    *,
+    py: str,
+    manifest_path: Path,
+    episode_run_dirs: dict[str, Path],
+    paths: SeriesPaths,
+    config: dict[str, Any],
+    force: bool,
+) -> list[str]:
+    section = config.get("postprocess", {})
+    command = [
+        py,
+        "-m",
+        "postprocess",
+        "--edl",
+        str(paths.edl),
+        "--series-review-script",
+        str(paths.series_review_script),
+        "--event-bank",
+        str(paths.event_bank),
+        "--beats-timing",
+        str(paths.beats_timing),
+        "--source-map",
+        str(paths.source_map),
+        "--audio-assets",
+        str(audio_assets_path(config)),
+    ]
+    for episode_key, run_dir in episode_run_dirs.items():
+        command.extend(["--episode-run-dir", f"{episode_key}={run_dir}"])
+    override_path = edit_overrides_path(manifest_path, config)
+    if override_path is not None:
+        command.extend(["--overrides", str(override_path)])
+    command.extend(
+        [
+            "--output",
+            str(paths.edit_plan),
+            "--output-meta",
+            str(paths.edit_plan_meta),
+            "--output-qa",
+            str(paths.edit_plan_qa),
+            "--output-attribution",
+            str(paths.audio_attribution),
+            "--work-dir",
+            str(paths.work_dir / "postprocess"),
+        ]
+    )
+    for key in ("seed", "profile", "log_level"):
+        add_option(command, key, section.get(key))
+    if force:
+        command.append("--force")
+    return command
+
 
 def render_command(*, py: str, paths: SeriesPaths, config: dict[str, Any], force: bool) -> list[str]:
     section = config.get("render", {})
@@ -519,6 +675,8 @@ def render_command(*, py: str, paths: SeriesPaths, config: dict[str, Any], force
         "--output",
         str(paths.output_video),
     ]
+    if postprocess_enabled(config):
+        command.extend(["--edit-plan", str(paths.edit_plan), "--audio-assets", str(audio_assets_path(config))])
     for key in ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s", "log_level"):
         add_option(command, key, section.get(key))
     command.extend(["--work-dir", str(paths.work_dir / "render")])
@@ -648,11 +806,12 @@ def match_stage_fingerprint(
     ]
     return stable_hash(
         {
-            "stage_version": "series-match-v2",
+            "stage_version": "series-match-v4-edge-inset",
             "review_script_hash": file_hash(paths.series_review_script),
             "beats_timing_hash": file_hash(paths.beats_timing),
+            "event_bank_hash": file_hash(paths.event_bank),
             "shots": shots,
-            "settings": config_values(section, ("min_clip", "max_clip", "min_visual_clip")),
+            "settings": config_values(section, ("min_clip", "max_clip", "min_visual_clip", "clip_profile")),
         }
     )
 
@@ -672,21 +831,82 @@ def source_media_identities(source_map_path: Path) -> list[dict[str, str | None]
         )
     return identities
 
-def render_stage_fingerprint(paths: SeriesPaths, config: dict[str, Any]) -> str:
-    section = config.get("render", {})
+
+def audio_asset_identities(config: dict[str, Any]) -> list[dict[str, str | None]]:
+    manifest_path = audio_assets_path(config)
+    try:
+        manifest, root = load_audio_manifest(manifest_path)
+    except AudioAssetError as exc:
+        raise SeriesRecapError(str(exc)) from exc
+    return [
+        {
+            "asset_id": asset.asset_id,
+            "path": str(asset_path),
+            "identity": media_identity_hash(asset_path) if asset_path.is_file() else None,
+        }
+        for asset in manifest.assets
+        for asset_path in [resolve_asset_path(asset, root)]
+    ]
+
+
+def postprocess_stage_fingerprint(
+    *,
+    paths: SeriesPaths,
+    episode_run_dirs: dict[str, Path],
+    manifest_path: Path,
+    config: dict[str, Any],
+) -> str:
+    section = config.get("postprocess", {})
+    override_path = edit_overrides_path(manifest_path, config)
+    shots = [
+        {
+            "episode_key": episode_key,
+            "path": str((run_dir / "shots.json").resolve()),
+            "hash": file_hash(run_dir / "shots.json"),
+        }
+        for episode_key, run_dir in episode_run_dirs.items()
+    ]
+    assets_path = audio_assets_path(config)
     return stable_hash(
         {
-            "stage_version": "series-render-v1",
+            "stage_version": "series-postprocess-v1",
             "edl_hash": file_hash(paths.edl),
+            "review_script_hash": file_hash(paths.series_review_script),
+            "event_bank_hash": file_hash(paths.event_bank),
+            "beats_timing_hash": file_hash(paths.beats_timing),
             "source_map_hash": file_hash(paths.source_map),
-            "voiceover_hash": file_hash(paths.voiceover),
-            "sources": source_media_identities(paths.source_map),
-            "settings": config_values(
-                section,
-                ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s"),
-            ),
+            "shots": shots,
+            "audio_manifest_hash": file_hash(assets_path),
+            "audio_assets": audio_asset_identities(config),
+            "override_hash": file_hash(override_path) if override_path else None,
+            "settings": config_values(section, ("profile", "seed")),
         }
     )
+
+
+def render_stage_fingerprint(paths: SeriesPaths, config: dict[str, Any]) -> str:
+    section = config.get("render", {})
+    fingerprint: dict[str, Any] = {
+        "stage_version": "series-render-v2" if postprocess_enabled(config) else "series-render-v1",
+        "edl_hash": file_hash(paths.edl),
+        "source_map_hash": file_hash(paths.source_map),
+        "voiceover_hash": file_hash(paths.voiceover),
+        "sources": source_media_identities(paths.source_map),
+        "settings": config_values(
+            section,
+            ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s"),
+        ),
+    }
+    if postprocess_enabled(config):
+        assets_path = audio_assets_path(config)
+        fingerprint.update(
+            {
+                "edit_plan_hash": file_hash(paths.edit_plan),
+                "audio_manifest_hash": file_hash(assets_path),
+                "audio_assets": audio_asset_identities(config),
+            }
+        )
+    return stable_hash(fingerprint)
 
 def episode_stage_valid(stage_name: str, run_dir: Path, film: Path, config: dict[str, Any]) -> bool:
     run_paths = build_episode_paths(run_dir)
@@ -835,10 +1055,27 @@ def series_match_outputs_valid(paths: SeriesPaths) -> bool:
         return False
     return True
 
-def render_outputs_valid(paths: SeriesPaths) -> bool:
+
+def postprocess_outputs_valid(paths: SeriesPaths) -> bool:
+    if not files_exist([paths.edit_plan, paths.edit_plan_meta, paths.edit_plan_qa, paths.audio_attribution]):
+        return False
+    plan = EditPlan.model_validate(load_json(paths.edit_plan))
+    EditPlanMeta.model_validate(load_json(paths.edit_plan_meta))
+    EditPlanQa.model_validate(load_json(paths.edit_plan_qa))
+    placements = [EdlPlacement.model_validate(item) for item in load_json(paths.edl)]
+    if len(plan.placements) != len(placements):
+        return False
+    if not paths.audio_attribution.read_text(encoding="utf-8").strip():
+        return False
+    return True
+
+
+def render_outputs_valid(paths: SeriesPaths, *, enhanced: bool = False) -> bool:
     if not files_exist([paths.output_video, paths.render_meta]):
         return False
-    RenderMeta.model_validate(load_json(paths.render_meta))
+    meta = RenderMeta.model_validate(load_json(paths.render_meta))
+    if enhanced and (meta.original_audio_included or meta.audio_stream_count != 1):
+        return False
     return True
 
 def run_step(
@@ -943,7 +1180,10 @@ def run_series_recap(
     py = python_executable(args, config)
     runner = executor or run_subprocess
     force_final = bool(args.force or args.force_final)
+    enhanced = postprocess_enabled(config)
     if not args.dry_run:
+        if enhanced:
+            validate_enhanced_preflight(config)
         paths.final_dir.mkdir(parents=True, exist_ok=True)
         paths.work_dir.mkdir(parents=True, exist_ok=True)
     stage_cache = SeriesStageCache(paths.stage_manifest)
@@ -1112,14 +1352,46 @@ def run_series_recap(
     )
     summaries.append(match)
 
+    if enhanced:
+        summaries.append(
+            run_cached_step(
+                stage="postprocess",
+                command=postprocess_command(
+                    py=py,
+                    manifest_path=manifest_path,
+                    episode_run_dirs=episode_run_dirs,
+                    paths=paths,
+                    config=config,
+                    force=force_final,
+                ),
+                outputs=[paths.edit_plan, paths.edit_plan_meta, paths.edit_plan_qa, paths.audio_attribution],
+                valid=lambda: postprocess_outputs_valid(paths),
+                cache=stage_cache,
+                input_fingerprint=(
+                    "dry-run:postprocess"
+                    if args.dry_run
+                    else postprocess_stage_fingerprint(
+                        paths=paths,
+                        episode_run_dirs=episode_run_dirs,
+                        manifest_path=manifest_path,
+                        config=config,
+                    )
+                ),
+                log_path=paths.log_path,
+                force=force_final,
+                dry_run=args.dry_run,
+                executor=runner,
+            )
+        )
+
     summaries.append(
         run_cached_step(
             stage="render",
             command=render_command(py=py, paths=paths, config=config, force=force_final),
             outputs=[paths.output_video, paths.render_meta],
-            valid=lambda: render_outputs_valid(paths),
+            valid=(lambda: render_outputs_valid(paths, enhanced=True)) if enhanced else (lambda: render_outputs_valid(paths)),
             cache=stage_cache,
-            input_fingerprint=render_stage_fingerprint(paths, config),
+            input_fingerprint="dry-run:render" if args.dry_run else render_stage_fingerprint(paths, config),
             log_path=paths.log_path,
             force=force_final,
             dry_run=args.dry_run,
@@ -1138,6 +1410,14 @@ def run_series_recap(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "stages": [item.to_json() for item in summaries],
     }
+    if enhanced:
+        summary.update(
+            {
+                "edit_plan": str(paths.edit_plan),
+                "edit_plan_qa": str(paths.edit_plan_qa),
+                "audio_attribution": str(paths.audio_attribution),
+            }
+        )
     if args.dry_run:
         print_plan(summaries)
     else:
@@ -1146,6 +1426,7 @@ def run_series_recap(
     return 0
 
 def main() -> int:
+    configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args()
     try:

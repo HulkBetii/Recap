@@ -221,7 +221,14 @@ class RunService:
 
     def qa(self, run_id: str):  # type: ignore[no-untyped-def]
         record = self.get_run(run_id)
-        return build_delivery_qa(self._path_for_run(run_id), record.kind, run_id=run_id)
+        job = self.repository.get_job(record.job_id) if record.job_id else None
+        config = job.config_snapshot if job is not None else None
+        return build_delivery_qa(
+            self._path_for_run(run_id),
+            record.kind,
+            config=config,
+            run_id=run_id,
+        )
 
     def _path_for_run(self, run_id: str) -> Path:
         for run in self.discover_runs():
@@ -239,7 +246,13 @@ class RunService:
             None,
         )
         execution_status = jobs[0].status if jobs else self._inferred_execution_status(path, kind)
-        qa = build_delivery_qa(path, kind, run_id=run_id, media_probe=_metadata_media_probe)
+        qa = build_delivery_qa(
+            path,
+            kind,
+            config=jobs[0].config_snapshot if jobs else None,
+            run_id=run_id,
+            media_probe=_metadata_media_probe,
+        )
         episode_keys = [item.name for item in path.iterdir() if item.is_dir() and EPISODE_DIR_RE.match(item.name)]
         candidate_paths = [path]
         if kind == JobKind.SERIES:

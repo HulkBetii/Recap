@@ -219,7 +219,7 @@ def create_app(
                     token=paths.token_for(path),
                     kind=kind,
                     description=_preset_description(config, kind),
-                    summary=_non_secret_preset_summary(config, kind),
+                    summary=_non_secret_preset_summary(config, kind, repo_root=root),
                 )
             )
         return presets
@@ -298,11 +298,16 @@ def create_app(
         )
         checks: list[Any] = [*plan.checks, *_runtime_checks_for_plan(health.runtime, plan)]
         checks.extend(_provider_checks(plan.config_snapshot, health.providers, plan))
+        checks.extend(_postprocess_audio_checks(root, plan.config_snapshot))
         checks.extend(_media_duration_checks(plan))
         can_start = plan.can_start and not any(check.status.value == "block" for check in checks)
+        sensitive_values = [plan.run_dir, plan.config_path, *plan.command]
         return {
-            "checks": [_public_check(check) for check in checks],
-            "warnings": [_sanitize_browser_text(warning) for warning in plan.warnings],
+            "checks": [_public_check(check, sensitive_values=sensitive_values) for check in checks],
+            "warnings": [
+                _sanitize_browser_text(warning, sensitive_values=sensitive_values)
+                for warning in plan.warnings
+            ],
             "providers": health.providers,
             "can_start": can_start,
             "plan_id": plan.plan_id,
@@ -325,6 +330,7 @@ def create_app(
             runtime_checks: list[Any] = [
                 *_runtime_checks_for_plan(health.runtime, plan),
                 *_provider_checks(plan.config_snapshot, health.providers, plan),
+                *_postprocess_audio_checks(root, plan.config_snapshot),
             ]
             blockers = [check.code for check in runtime_checks if check.status.value == "block"]
             if blockers:
@@ -1036,7 +1042,12 @@ def _preset_description(config: dict[str, Any], kind: str) -> str:
     return " | ".join(part for part in (kind.title(), str(content_type), language) if part)
 
 
-def _non_secret_preset_summary(config: dict[str, Any], kind: str) -> dict[str, Any]:
+def _non_secret_preset_summary(
+    config: dict[str, Any],
+    kind: str,
+    *,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
     orchestrator = config.get("orchestrator", {})
     ingest = config.get("ingest", {})
     review = config.get("review", {})
@@ -1101,7 +1112,65 @@ def _non_secret_preset_summary(config: dict[str, Any], kind: str) -> dict[str, A
             "playwright_max_attempts": series.get("playwright_max_attempts"),
             "playwright_recovery_timeout_s": series.get("playwright_recovery_timeout_s"),
         }
+        summary["postprocess"] = _postprocess_audio_status(config, repo_root)
     return summary
+
+
+def _postprocess_audio_status(config: dict[str, Any], repo_root: Path | None) -> dict[str, Any]:
+    section = config.get("postprocess", {})
+    enabled = bool(section.get("enabled", False))
+    raw_manifest = str(section.get("audio_assets") or "").strip()
+    status: dict[str, Any] = {
+        "enabled": enabled,
+        "profile": section.get("profile") if enabled else None,
+        "audio_assets_configured": bool(raw_manifest),
+        "audio_assets_ready": None if not enabled else False,
+        "manifest_name": Path(raw_manifest).name if raw_manifest else None,
+        "asset_count": 0,
+        "music_count": 0,
+        "sfx_count": 0,
+        "attribution_required": False,
+    }
+    if not enabled or not raw_manifest or repo_root is None:
+        return status
+    manifest_path = Path(raw_manifest).expanduser()
+    if not manifest_path.is_absolute():
+        manifest_path = repo_root / manifest_path
+    try:
+        from postprocess.assets import validate_audio_assets
+
+        manifest = validate_audio_assets(manifest_path.resolve())
+    except (ImportError, OSError, ValueError):
+        return status
+    status.update(
+        {
+            "audio_assets_ready": True,
+            "asset_count": len(manifest.assets),
+            "music_count": sum(asset.kind == "music" for asset in manifest.assets),
+            "sfx_count": sum(asset.kind == "sfx" for asset in manifest.assets),
+            "attribution_required": any(asset.attribution_required for asset in manifest.assets),
+        }
+    )
+    return status
+
+
+def _postprocess_audio_checks(repo_root: Path, config: dict[str, Any]) -> list[RuntimeCheck]:
+    status = _postprocess_audio_status(config, repo_root)
+    if not status["enabled"]:
+        return []
+    ready = bool(status["audio_assets_ready"])
+    return [
+        RuntimeCheck(
+            code="enhanced_audio_assets",
+            status=DeliveryStatus.PASS if ready else DeliveryStatus.BLOCK,
+            message=(
+                "Enhanced local music and SFX assets are ready"
+                if ready
+                else "Enhanced local music and SFX assets are missing or invalid"
+            ),
+            details=status,
+        )
+    ]
 
 
 def _mount_frontend(app: FastAPI, token: str) -> None:

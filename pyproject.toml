@@ -81,6 +81,7 @@ include = [
     "ingest*",
     "match*",
     "orchestrator*",
+    "postprocess*",
     "preflight*",
     "recap_ui*",
     "render*",

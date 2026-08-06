@@ -5,6 +5,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
+from pydantic import ValidationError
+
+from common.schema import EditPlan, EditPlanMeta, EditPlanQa
 from recap_ui.schemas import DeliveryStatus, JobKind, QaCheck, QaReport
 
 
@@ -30,11 +33,19 @@ def build_delivery_qa(
     job_kind = kind if isinstance(kind, JobKind) else JobKind(kind)
     checks: list[QaCheck] = []
     metrics: dict[str, Any] = {}
+    enhanced = False
     if job_kind == JobKind.SERIES:
         final_dir = resolved / "series_recap"
+        enhanced = (
+            bool(config.get("postprocess", {}).get("enabled", False))
+            if config is not None
+            else (final_dir / "edit_plan.json").is_file()
+        )
         checks.extend(_episode_timecode_checks(resolved, metrics))
         checks.extend(_composer_checks(final_dir, metrics))
         checks.extend(_series_timeline_checks(resolved, final_dir, metrics))
+        if enhanced:
+            checks.extend(_postprocess_artifact_checks(final_dir, metrics))
         output_video = final_dir / "series_recap.mp4"
         voiceover = final_dir / "voiceover.mp3"
         render_meta = final_dir / "render.meta.json"
@@ -60,6 +71,7 @@ def build_delivery_qa(
             render_meta,
             metrics,
             duration_targets=duration_targets,
+            enhanced=enhanced,
             media_probe=media_probe or probe_media,
         )
     )
@@ -288,6 +300,65 @@ def _single_timeline_checks(run_root: Path, metrics: dict[str, Any]) -> list[QaC
     return checks
 
 
+def _postprocess_artifact_checks(final_dir: Path, metrics: dict[str, Any]) -> list[QaCheck]:
+    required = {
+        "edit_plan.json": _read_json(final_dir / "edit_plan.json"),
+        "edit_plan.meta.json": _read_json(final_dir / "edit_plan.meta.json"),
+        "edit_plan.qa.json": _read_json(final_dir / "edit_plan.qa.json"),
+    }
+    attribution_path = final_dir / "audio_attribution.txt"
+    try:
+        attribution = attribution_path.read_text(encoding="utf-8").strip() if attribution_path.is_file() else ""
+    except OSError:
+        attribution = ""
+    missing = [name for name, payload in required.items() if payload is None]
+    if not attribution:
+        missing.append(attribution_path.name)
+
+    try:
+        plan = EditPlan.model_validate(required["edit_plan.json"])
+    except ValidationError:
+        plan = None
+    try:
+        EditPlanMeta.model_validate(required["edit_plan.meta.json"])
+        meta_valid = True
+    except ValidationError:
+        meta_valid = False
+    try:
+        EditPlanQa.model_validate(required["edit_plan.qa.json"])
+        qa_valid = True
+    except ValidationError:
+        qa_valid = False
+    plan_valid = plan is not None
+    metrics.update(
+        {
+            "postprocess_enabled": True,
+            "edit_placement_count": len(plan.placements) if plan is not None else 0,
+            "music_cue_count": len(plan.music_cues) if plan is not None else 0,
+            "sfx_cue_count": len(plan.sfx_cues) if plan is not None else 0,
+        }
+    )
+    valid = not missing and plan_valid and meta_valid and qa_valid
+    return [
+        _check(
+            "postprocess_artifacts",
+            "Enhanced post-production artifacts",
+            DeliveryStatus.PASS if valid else DeliveryStatus.BLOCK,
+            (
+                "Edit plan, QA, metadata and audio attribution are ready"
+                if valid
+                else "Enhanced post-production artifacts are missing or invalid"
+            ),
+            "edit_plan.json",
+            missing=missing,
+            edit_plan_valid=plan_valid,
+            edit_plan_meta_valid=meta_valid,
+            edit_plan_qa_valid=qa_valid,
+            attribution_available=bool(attribution),
+        )
+    ]
+
+
 def _timeline_checks(edl: Any, timings: Any, edl_meta: Any, *, artifact_prefix: str) -> list[QaCheck]:
     placements = edl if isinstance(edl, list) else []
     timing_items = timings if isinstance(timings, list) else []
@@ -350,6 +421,7 @@ def _render_checks(
     *,
     duration_targets: dict[str, float | None] | None,
     media_probe: MediaProbe,
+    enhanced: bool = False,
 ) -> list[QaCheck]:
     if not output_video.is_file():
         return [_check("render_output", "Rendered output", DeliveryStatus.BLOCK, "Final video is missing")]
@@ -384,6 +456,8 @@ def _render_checks(
         }
     )
     duration_delta = abs(audio_duration - voiceover_duration) if voiceover_duration else None
+    render_reports_one_stream = isinstance(meta, dict) and meta.get("audio_stream_count") == 1
+    render_reports_original_audio_excluded = isinstance(meta, dict) and meta.get("original_audio_included") is False
     checks = [
         _check(
             "render_format",
@@ -394,9 +468,15 @@ def _render_checks(
         ),
         _check(
             "voiceover_stream",
-            "Voiceover-only audio stream",
+            "Master mix audio stream" if enhanced else "Voiceover-only audio stream",
             DeliveryStatus.PASS if audio_streams == 1 else DeliveryStatus.BLOCK,
-            "Output contains one voiceover audio stream" if audio_streams == 1 else f"Output contains {audio_streams} audio streams",
+            (
+                "Output contains one master mix audio stream"
+                if enhanced and audio_streams == 1
+                else "Output contains one voiceover audio stream"
+                if audio_streams == 1
+                else f"Output contains {audio_streams} audio streams"
+            ),
             output_video.name,
         ),
         _check(
@@ -415,6 +495,33 @@ def _render_checks(
             output_video.name,
         ),
     ]
+    if enhanced:
+        checks.extend(
+            [
+                _check(
+                    "enhanced_audio_stream_metadata",
+                    "Enhanced audio stream metadata",
+                    DeliveryStatus.PASS if render_reports_one_stream else DeliveryStatus.BLOCK,
+                    (
+                        "Render metadata confirms exactly one output audio stream"
+                        if render_reports_one_stream
+                        else "Render metadata does not confirm exactly one output audio stream"
+                    ),
+                    render_meta_path.name,
+                ),
+                _check(
+                    "original_audio_excluded",
+                    "Original source audio excluded",
+                    DeliveryStatus.PASS if render_reports_original_audio_excluded else DeliveryStatus.BLOCK,
+                    (
+                        "Render metadata confirms original source audio is excluded"
+                        if render_reports_original_audio_excluded
+                        else "Render metadata does not confirm original source audio exclusion"
+                    ),
+                    render_meta_path.name,
+                ),
+            ]
+        )
     if duration_targets is not None:
         minimum = duration_targets["minimum"]
         maximum = duration_targets["maximum"]

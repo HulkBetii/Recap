@@ -249,6 +249,7 @@ def test_presets_server_metadata_and_registration_are_safe(tmp_path: Path) -> No
     config.write_text(
         "review:\n  chatgpt_profile_dir: D:/private/PROFILE_GPT_1\n  llm_backend: chatgpt_playwright\n"
         "tts:\n  voice_id: secret-voice-id\n  provider_mode: auto\n"
+        "postprocess:\n  enabled: true\n  profile: dynamic_anime\n  audio_assets: D:/private/audio_assets.yaml\n"
         "series_recap:\n  format: episode_arc_chaptered\n  detail_level: detailed\n  arc_size: 3\n",
         encoding="utf-8",
     )
@@ -267,6 +268,10 @@ def test_presets_server_metadata_and_registration_are_safe(tmp_path: Path) -> No
     preset_payload = presets.json()
     secret_summary = next(item["summary"] for item in preset_payload if item["name"] == "config.secret.series.yaml")
     assert secret_summary["tts"]["voice_id"] == "secret-voice-id"
+    assert secret_summary["postprocess"]["enabled"] is True
+    assert secret_summary["postprocess"]["audio_assets_ready"] is False
+    assert secret_summary["postprocess"]["manifest_name"] == "audio_assets.yaml"
+    assert "D:/private/audio_assets" not in presets.text
     assert "chatgpt_profile_dir" not in presets.text
 
     invalid = repo / "runs" / "empty"

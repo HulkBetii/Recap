@@ -141,6 +141,35 @@ def has_audio_stream(input_path: Path) -> bool:
         raise MediaError("could not read audio streams with ffprobe") from exc
 
 
+def probe_audio_stream_count(input_path: Path) -> int:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "json",
+            str(input_path),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
+    if result.returncode != 0:
+        message = stderr.strip() or "ffprobe failed"
+        raise MediaError(message)
+    try:
+        payload: dict[str, Any] = json.loads(stdout)
+        return len(payload.get("streams", []))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise MediaError("could not count audio streams with ffprobe") from exc
+
+
 def extract_audio(input_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_command([

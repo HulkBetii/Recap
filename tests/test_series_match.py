@@ -6,8 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from common.schema import BeatTiming, SeriesReviewBeat, Shot
-from series_match.__main__ import SeriesMatchError, build_edl, choose_clip_duration, run_series_match
+from common.schema import BeatTiming, SeriesEventBank, SeriesReviewBeat, SeriesSourceRef, Shot
+from series_match.__main__ import (
+    DYNAMIC_EDGE_INSET_S,
+    SeriesMatchError,
+    build_edl,
+    choose_clip_duration,
+    ref_candidates,
+    run_series_match,
+)
 
 CREATED_AT = "2026-07-21T00:00:00Z"
 
@@ -458,4 +465,256 @@ def test_invalid_clip_length_order_fails(
             shots_by_episode={"ep1": schema_shots("ep1", [(0.0, 5.0)])},
             min_clip=min_clip,
             min_visual_clip=min_visual_clip,
+        )
+
+
+def series_event_bank(*events: tuple[str, str, str, float]) -> SeriesEventBank:
+    episode_keys = list(dict.fromkeys(episode_key for _, episode_key, _, _ in events))
+    return SeriesEventBank.model_validate(
+        {
+            "series_id": "test-series",
+            "episode_keys": episode_keys,
+            "target_video_s": 60.0,
+            "char_budget": 600,
+            "events": [
+                {
+                    "event_id": event_id,
+                    "series_id": "test-series",
+                    "episode_key": episode_key,
+                    "source_path": f"C:/{episode_key}.mp4",
+                    "recap_mode": "full",
+                    "summary": f"Summary for {event_id}",
+                    "event_type": event_type,
+                    "from_seg_id": 0,
+                    "to_seg_id": 1,
+                    "tc_start": 0.0,
+                    "tc_end": 20.0,
+                    "importance": importance,
+                }
+                for event_id, episode_key, event_type, importance in events
+            ],
+            "created_at": CREATED_AT,
+        }
+    )
+
+
+def dynamic_beat(
+    *,
+    beat_id: int,
+    ref: dict[str, object],
+    is_hook: bool = False,
+) -> SeriesReviewBeat:
+    return SeriesReviewBeat.model_validate(
+        {
+            "beat_id": beat_id,
+            "narration": f"Beat {beat_id}",
+            "is_hook": is_hook,
+            "source_refs": [ref],
+        }
+    )
+
+
+def dynamic_timing(*, beat_id: int, start: float, end: float) -> BeatTiming:
+    return BeatTiming.model_validate(
+        {
+            "beat_id": beat_id,
+            "audio_path": f"audio/{beat_id}.mp3",
+            "tl_start": start,
+            "tl_end": end,
+            "duration": end - start,
+        }
+    )
+
+
+def test_dynamic_anime_round_robins_candidates_and_uses_event_clip_range() -> None:
+    qa_beats: list[dict[str, object]] = []
+    ref = source_ref(event_id="ep1:action", episode_key="ep1", end=12.0)
+    placements, warnings = build_edl(
+        beats=[dynamic_beat(beat_id=0, ref=ref, is_hook=True)],
+        timings=[dynamic_timing(beat_id=0, start=0.0, end=4.5)],
+        shots_by_episode={"ep1": schema_shots("ep1", [(0.0, 6.0), (6.0, 12.0)])},
+        min_clip=3.0,
+        max_clip=5.0,
+        min_visual_clip=0.6,
+        qa_beats=qa_beats,
+        event_bank=series_event_bank(("ep1:action", "ep1", "action", 0.0)),
+        clip_profile="dynamic_anime",
+    )
+
+    assert [placement.shot_index for placement in placements] == [0, 1, 0]
+    assert [placement.tl_end - placement.tl_start for placement in placements] == pytest.approx(
+        [1.5, 1.5, 1.5]
+    )
+    assert qa_beats[0]["event_clip_ranges"] == {
+        "ep1:action": {
+            "event_type": "hook",
+            "importance": 0.0,
+            "min_clip_s": 1.5,
+            "max_clip_s": 2.4,
+            "target_clip_s": 1.5,
+        }
+    }
+    assert qa_beats[0]["adjacency_fallbacks"] == []
+    assert qa_beats[0]["edge_inset_s"] == DYNAMIC_EDGE_INSET_S
+    assert warnings == []
+
+
+def test_dynamic_anime_insets_long_full_shot_candidate() -> None:
+    ref = SeriesSourceRef.model_validate(source_ref(event_id="ep1:action", episode_key="ep1", end=6.0))
+    candidates = ref_candidates(
+        ref,
+        schema_shots("ep1", [(0.0, 6.0)]),
+        edge_inset_s=DYNAMIC_EDGE_INSET_S,
+        inset_min_clip=1.5,
+    )
+
+    assert [(item.start, item.end) for item in candidates] == [(0.75, 5.25)]
+
+
+def test_legacy_candidate_keeps_full_shot_edges() -> None:
+    ref = SeriesSourceRef.model_validate(source_ref(event_id="ep1:action", episode_key="ep1", end=6.0))
+    candidates = ref_candidates(ref, schema_shots("ep1", [(0.0, 6.0)]))
+
+    assert [(item.start, item.end) for item in candidates] == [(0.0, 6.0)]
+
+
+@pytest.mark.parametrize(("start", "end"), [(1.0, 5.0), (0.0, 5.0), (1.0, 6.0)])
+def test_dynamic_anime_does_not_inset_ref_clipped_candidate(start: float, end: float) -> None:
+    ref = SeriesSourceRef.model_validate(
+        source_ref(event_id="ep1:action", episode_key="ep1", start=start, end=end)
+    )
+    candidates = ref_candidates(
+        ref,
+        schema_shots("ep1", [(0.0, 6.0)]),
+        edge_inset_s=DYNAMIC_EDGE_INSET_S,
+        inset_min_clip=1.5,
+    )
+
+    assert [(item.start, item.end) for item in candidates] == [(start, end)]
+
+
+def test_dynamic_anime_keeps_short_profile_sized_shot_unchanged() -> None:
+    ref = SeriesSourceRef.model_validate(source_ref(event_id="ep1:action", episode_key="ep1", end=1.5))
+    candidates = ref_candidates(
+        ref,
+        schema_shots("ep1", [(0.0, 1.5)]),
+        edge_inset_s=DYNAMIC_EDGE_INSET_S,
+        inset_min_clip=1.5,
+    )
+
+    assert [(item.start, item.end) for item in candidates] == [(0.0, 1.5)]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "importance", "expected_min", "expected_max", "expected_target"),
+    [
+        ("setup", 0.5, 1.8, 3.0, 2.4),
+        ("investigation", 0.0, 1.8, 3.0, 1.8),
+        ("reveal", 1.0, 2.5, 4.0, 4.0),
+        ("ending", 0.0, 2.5, 4.0, 2.5),
+    ],
+)
+def test_dynamic_anime_maps_event_type_and_importance_to_clip_range(
+    event_type: str,
+    importance: float,
+    expected_min: float,
+    expected_max: float,
+    expected_target: float,
+) -> None:
+    event_id = f"ep1:{event_type}"
+    ref = source_ref(event_id=event_id, episode_key="ep1", end=8.0)
+    qa_beats: list[dict[str, object]] = []
+    build_edl(
+        beats=[dynamic_beat(beat_id=0, ref=ref)],
+        timings=[dynamic_timing(beat_id=0, start=0.0, end=expected_target)],
+        shots_by_episode={"ep1": schema_shots("ep1", [(0.0, 8.0)])},
+        min_clip=3.0,
+        max_clip=5.0,
+        min_visual_clip=0.6,
+        qa_beats=qa_beats,
+        event_bank=series_event_bank((event_id, "ep1", event_type, importance)),
+        clip_profile="dynamic_anime",
+    )
+
+    assert qa_beats[0]["event_clip_ranges"][event_id] == {
+        "event_type": event_type,
+        "importance": importance,
+        "min_clip_s": expected_min,
+        "max_clip_s": expected_max,
+        "target_clip_s": expected_target,
+    }
+
+
+def test_dynamic_anime_avoids_contiguous_source_when_alternative_exists() -> None:
+    first_ref = source_ref(event_id="ep1:first", episode_key="ep1", start=0.0, end=1.5)
+    second_ref = source_ref(event_id="ep1:second", episode_key="ep1", start=1.5, end=6.0)
+    qa_beats: list[dict[str, object]] = []
+    placements, _ = build_edl(
+        beats=[
+            dynamic_beat(beat_id=0, ref=first_ref, is_hook=True),
+            dynamic_beat(beat_id=1, ref=second_ref),
+        ],
+        timings=[
+            dynamic_timing(beat_id=0, start=0.0, end=1.5),
+            dynamic_timing(beat_id=1, start=1.5, end=3.0),
+        ],
+        shots_by_episode={"ep1": schema_shots("ep1", [(0.0, 1.5), (1.5, 3.0), (4.0, 6.0)])},
+        min_clip=3.0,
+        max_clip=5.0,
+        min_visual_clip=0.6,
+        qa_beats=qa_beats,
+        event_bank=series_event_bank(
+            ("ep1:first", "ep1", "action", 0.0),
+            ("ep1:second", "ep1", "action", 0.0),
+        ),
+        clip_profile="dynamic_anime",
+    )
+
+    assert [placement.shot_index for placement in placements] == [0, 2]
+    assert qa_beats[1]["adjacency_fallbacks"] == []
+
+
+def test_dynamic_anime_reports_unavoidable_adjacent_repeat() -> None:
+    qa_beats: list[dict[str, object]] = []
+    ref = source_ref(event_id="ep1:action", episode_key="ep1", end=6.0)
+    placements, warnings = build_edl(
+        beats=[dynamic_beat(beat_id=0, ref=ref)],
+        timings=[dynamic_timing(beat_id=0, start=0.0, end=4.5)],
+        shots_by_episode={"ep1": schema_shots("ep1", [(0.0, 6.0)])},
+        min_clip=3.0,
+        max_clip=5.0,
+        min_visual_clip=0.6,
+        qa_beats=qa_beats,
+        event_bank=series_event_bank(("ep1:action", "ep1", "action", 0.0)),
+        clip_profile="dynamic_anime",
+    )
+
+    assert [placement.shot_index for placement in placements] == [0, 0, 0]
+    assert qa_beats[0]["n_adjacent_repeat_fallbacks"] == 2
+    assert qa_beats[0]["n_contiguous_source_fallbacks"] == 2
+    assert all(
+        item["reason"] == "no_distinct_candidate_capacity"
+        for item in qa_beats[0]["adjacency_fallbacks"]
+    )
+    assert "unavoidable adjacent source repeats" in warnings[0]
+
+
+def test_dynamic_anime_requires_complete_event_metadata() -> None:
+    ref = source_ref(event_id="ep1:event", episode_key="ep1")
+    kwargs = {
+        "beats": [dynamic_beat(beat_id=0, ref=ref)],
+        "timings": [dynamic_timing(beat_id=0, start=0.0, end=3.0)],
+        "shots_by_episode": {"ep1": schema_shots("ep1", [(0.0, 5.0)])},
+        "min_clip": 3.0,
+        "max_clip": 5.0,
+        "min_visual_clip": 0.6,
+        "clip_profile": "dynamic_anime",
+    }
+    with pytest.raises(SeriesMatchError, match="--event-bank is required"):
+        build_edl(**kwargs)
+
+    with pytest.raises(SeriesMatchError, match="event bank is missing event ep1:event"):
+        build_edl(
+            **kwargs,
+            event_bank=series_event_bank(("ep1:other", "ep1", "setup", 0.5)),
         )

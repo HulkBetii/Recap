@@ -103,7 +103,10 @@ function HeroStat({ label, value }: { label: string; value: string }) { return <
 
 function StageRail({ stages, kind, executionStatus, deliveryStatus }: { stages: StageState[]; kind: "single" | "series"; executionStatus: string; deliveryStatus?: string }) {
   const { t } = useLocale();
-  const keys = kind === "series" ? ["series_composer", "tts", "youtube_chapters", "series_match", "render", "delivery_qa"] : SINGLE_STAGES;
+  const enhanced = stages.some((stage) => stage.key === "postprocess" && !stage.episode_key);
+  const keys = kind === "series"
+    ? ["series_composer", "tts", "youtube_chapters", "series_match", ...(enhanced ? ["postprocess"] : []), "render", "delivery_qa"]
+    : SINGLE_STAGES;
   return <div className={styles.stageRail}>{keys.map((key, index) => {
     const state = stages.find((item) => item.key === key && !item.episode_key);
     const inferred = key === "delivery_qa"

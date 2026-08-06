@@ -1,0 +1,39 @@
+version: 1
+base_dir: .
+assets:
+  - asset_id: music-default
+    path: music/default.mp3
+    kind: music
+    mood: default
+    loopable: true
+    license_source: Replace with the track license or source
+    license_url: null
+    attribution: null
+    attribution_required: false
+  - asset_id: music-tension
+    path: music/tension.mp3
+    kind: music
+    mood: tension
+    loopable: true
+    license_source: Replace with the track license or source
+    license_url: null
+    attribution: null
+    attribution_required: false
+  - asset_id: sfx-whoosh
+    path: sfx/whoosh.wav
+    kind: sfx
+    sfx_kind: whoosh
+    loopable: false
+    license_source: Replace with the SFX license or source
+    license_url: null
+    attribution: null
+    attribution_required: false
+  - asset_id: sfx-impact
+    path: sfx/impact.wav
+    kind: sfx
+    sfx_kind: impact
+    loopable: false
+    license_source: Replace with the SFX license or source
+    license_url: null
+    attribution: null
+    attribution_required: false

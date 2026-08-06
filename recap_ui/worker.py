@@ -491,9 +491,12 @@ def _log_tailers(job: JobRecord) -> list[LogTailer]:
 def _outputs_complete(job: JobRecord) -> bool:
     try:
         if job.kind == JobKind.SERIES:
+            from orchestrator.config import load_config
             from series_recap.__main__ import (
                 build_paths,
                 composer_outputs_valid,
+                postprocess_enabled,
+                postprocess_outputs_valid,
                 render_outputs_valid,
                 series_match_outputs_valid,
                 tts_outputs_valid,
@@ -501,15 +504,18 @@ def _outputs_complete(job: JobRecord) -> bool:
             )
 
             paths = build_paths(Path(job.run_dir))
-            return all(
-                (
-                    composer_outputs_valid(paths),
-                    tts_outputs_valid(paths),
-                    youtube_chapters_outputs_valid(paths),
-                    series_match_outputs_valid(paths),
-                    render_outputs_valid(paths),
-                )
-            )
+            config = load_config(Path(job.config_path))
+            enhanced = postprocess_enabled(config)
+            validations = [
+                composer_outputs_valid(paths),
+                tts_outputs_valid(paths),
+                youtube_chapters_outputs_valid(paths),
+                series_match_outputs_valid(paths),
+            ]
+            if enhanced:
+                validations.append(postprocess_outputs_valid(paths))
+            validations.append(render_outputs_valid(paths, enhanced=enhanced))
+            return all(validations)
 
         from orchestrator.config import load_config
         from orchestrator.graph import build_paths
@@ -532,6 +538,8 @@ def _validated_stages(job: JobRecord) -> list[tuple[str, str, bool]]:
                 episode_config_for,
                 episode_stage_valid,
                 manifest_episode_specs,
+                postprocess_enabled,
+                postprocess_outputs_valid,
                 render_outputs_valid,
                 select_episodes,
                 series_match_outputs_valid,
@@ -546,6 +554,7 @@ def _validated_stages(job: JobRecord) -> list[tuple[str, str, bool]]:
             _, all_specs = manifest_episode_specs(Path(manifest_arg))
             specs = select_episodes(all_specs, episodes_arg)
             config = load_config(Path(job.config_path))
+            enhanced = postprocess_enabled(config)
             paths = build_paths(Path(job.run_dir))
             results: list[tuple[str, str, bool]] = []
             for spec in specs:
@@ -575,9 +584,11 @@ def _validated_stages(job: JobRecord) -> list[tuple[str, str, bool]]:
                     ("tts", "", tts_outputs_valid(paths)),
                     ("youtube_chapters", "", youtube_chapters_outputs_valid(paths)),
                     ("series_match", "", series_match_outputs_valid(paths)),
-                    ("render", "", render_outputs_valid(paths)),
                 ]
             )
+            if enhanced:
+                results.append(("postprocess", "", postprocess_outputs_valid(paths)))
+            results.append(("render", "", render_outputs_valid(paths, enhanced=enhanced)))
             return results
 
         from orchestrator.config import load_config

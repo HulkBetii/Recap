@@ -34,6 +34,7 @@ $reportPath = Join-Path $resolvedWorkDir "report.json"
 $secretReportPath = Join-Path $resolvedWorkDir "secret-report.json"
 $packageReportPath = Join-Path $resolvedWorkDir "package-report.json"
 $mediaReportPath = Join-Path $resolvedWorkDir "media-smoke-report.json"
+$enhancedMediaReportPath = Join-Path $resolvedWorkDir "enhanced-render-smoke-report.json"
 $tachReportPath = Join-Path $resolvedWorkDir "tach-report.txt"
 
 function Invoke-NativeCommand {
@@ -62,6 +63,7 @@ function Write-GateReport {
     param([string]$Status, [string]$FailureMessage = "")
     $package = if (Test-Path -LiteralPath $packageReportPath) { Get-Content -LiteralPath $packageReportPath -Raw | ConvertFrom-Json } else { $null }
     $media = if (Test-Path -LiteralPath $mediaReportPath) { Get-Content -LiteralPath $mediaReportPath -Raw | ConvertFrom-Json } else { $null }
+    $enhancedMedia = if (Test-Path -LiteralPath $enhancedMediaReportPath) { Get-Content -LiteralPath $enhancedMediaReportPath -Raw | ConvertFrom-Json } else { $null }
     $payload = [ordered]@{
         status = $Status
         git_commit = (git rev-parse HEAD).Trim()
@@ -72,6 +74,7 @@ function Write-GateReport {
         steps = $steps
         package = $package
         media = $media
+        enhanced_media = $enhancedMedia
         failure = if ($FailureMessage) { $FailureMessage } else { $null }
     }
     $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8
@@ -140,7 +143,7 @@ try {
         }
     }
     Invoke-GateStep "compileall" {
-        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "episode_planner", "ingest", "match", "orchestrator", "preflight", "recap_ui", "render", "review", "series_composer", "series_match", "series_recap", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py")
+        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "episode_planner", "ingest", "match", "orchestrator", "postprocess", "preflight", "recap_ui", "render", "review", "series_composer", "series_match", "series_recap", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py")
     }
     Invoke-GateStep "editable_install_dry_run" {
         Invoke-NativeCommand "python" @("-m", "pip", "install", "--dry-run", "--no-deps", "-e", ".")
@@ -168,7 +171,7 @@ try {
         New-Item -ItemType Directory -Path $smokeDir | Out-Null
         Push-Location $smokeDir
         try {
-            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, common, episode_planner, ingest, match, orchestrator, preflight, recap_ui, render, review, series_composer, series_match, series_recap, shots, storymap, tts, visual_index; modules=(run,common,episode_planner,ingest,match,orchestrator,preflight,recap_ui,render,review,series_composer,series_match,series_recap,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
+            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, common, episode_planner, ingest, match, orchestrator, postprocess, preflight, recap_ui, render, review, series_composer, series_match, series_recap, shots, storymap, tts, visual_index; modules=(run,common,episode_planner,ingest,match,orchestrator,postprocess,preflight,recap_ui,render,review,series_composer,series_match,series_recap,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
         } finally {
             Pop-Location
         }
@@ -177,7 +180,7 @@ try {
         $smokeDir = Join-Path $resolvedWorkDir "outside-repo"
         Push-Location $smokeDir
         try {
-            foreach ($module in @("episode_planner", "ingest", "match", "recap_ui", "series_composer", "series_match", "series_recap", "visual_index")) {
+            foreach ($module in @("episode_planner", "ingest", "match", "postprocess", "recap_ui", "series_composer", "series_match", "series_recap", "visual_index")) {
                 Invoke-NativeCommand $venvPython @("-m", $module, "--help")
             }
         } finally {
@@ -203,6 +206,9 @@ try {
     if (-not $SkipMediaSmoke) {
         Invoke-GateStep "real_media_cache_smoke" {
             Invoke-NativeCommand "python" @("-m", "scripts.cache_integrity_smoke", "--media", $dryRunFilm, "--work-dir", (Join-Path $resolvedWorkDir "cache-smoke"), "--report", $mediaReportPath)
+        }
+        Invoke-GateStep "enhanced_render_smoke" {
+            Invoke-NativeCommand "python" @("-m", "scripts.enhanced_render_smoke", "--work-dir", (Join-Path $resolvedWorkDir "enhanced-render-smoke"), "--report", $enhancedMediaReportPath)
         }
     }
 

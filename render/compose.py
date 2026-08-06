@@ -143,3 +143,27 @@ def mux_voiceover(video_path: Path, voiceover_path: Path, output_path: Path, aud
         str(output_path),
     ]
     run_command(command)
+
+
+def mux_master_audio(video_path: Path, master_audio_path: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    run_command([
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-i",
+        str(master_audio_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "copy",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ])

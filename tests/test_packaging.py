@@ -11,6 +11,7 @@ RUNTIME_PACKAGES = {
     "ingest*",
     "match*",
     "orchestrator*",
+    "postprocess*",
     "preflight*",
     "recap_ui*",
     "render*",
@@ -100,9 +101,10 @@ def test_tach_tracks_runtime_boundaries() -> None:
 
     assert set(modules) == {item.removesuffix("*") for item in RUNTIME_PACKAGES}
     assert modules["common"] == set()
-    assert modules["recap_ui"] == {"common", "orchestrator", "series_recap", "tts"}
+    assert modules["recap_ui"] == {"common", "orchestrator", "postprocess", "series_recap", "tts"}
     assert modules["match"] == {"common", "visual_index"}
     assert modules["series_composer"] == {"common", "review"}
     assert modules["series_match"] == {"common"}
-    assert modules["series_recap"] == {"common", "orchestrator", "tts"}
+    assert modules["postprocess"] == {"common"}
+    assert modules["series_recap"] == {"common", "orchestrator", "postprocess", "tts"}
     assert {"ingest", "match", "review", "tts"} <= modules["orchestrator"]

@@ -1,5 +1,20 @@
 # PROJECT_LOG.md
 
+## 2026-07-30 - AI33 technical audio pack and real anime acceptance
+
+- Added the approved one-time AI33 music/SFX generation workflow with environment-only credentials, a 10,000-credit guard for forecastable submissions, an explicit unknown-cost first-canary exception, partial/resumable output, media validation and test-only license metadata under `work/ai33-audio-library/`.
+- Added the isolated Tensei acceptance workflow: full-season dynamic matcher/postprocess QA followed by a 90-second real-footage enhanced render using the generated test manifest without modifying production artifacts.
+- Made `series_recap` stdout/stderr UTF-8-safe on Windows so dry-run command previews containing the VieNeu voice `Ngọc Linh` do not crash under inherited `cp1252` encoding.
+- Hardened paid generation so ambiguous create-request network failures are never resubmitted, redirects cannot forward `xi-api-key` to public hosts, provider-echoed keys are redacted, lifetime credit spend survives force/spec changes, and CLI output remains under repository `work/`.
+- Full validation passed: 685 Python tests, 15 frontend tests, Ruff, Tach, compileall, frontend lint/typecheck/build, wheel build/install/import/content inspection, secret scan, diff check, CLI help and production dry-run. Synthetic enhanced FFmpeg smoke passed all 17 assertions with the source tone suppressed by about 70.5 dB.
+- The first real-footage render exposed a 20-frame black fade because a dynamic placement began exactly at a shot boundary. Dynamic matching now applies a 0.75s shot-edge inset only when the remaining candidate still meets its event profile minimum; the series cache identity was bumped to `series-match-v4-edge-inset` without changing the public `series-v3-dynamic-anime` QA profile.
+- Fresh isolated Tensei validation with local synthetic test audio passed: 971 placements over 2539.127s, clip range 0.600-3.984s, zero non-story/end-credit selections, zero adjacent/contiguous fallbacks, 23 full-plan freezes/impacts, and a 90.000s 1080p/30fps/2700-frame render with zero black or isolated flash frames. The acceptance-only freeze override selected placement 35; push-in growth was 1.132, freeze MAD was 0.070 versus 24.241 moving MAD, music minimum five-second RMS was 0.04324, impact RMS was 0.00927, final AAC packets matched the cached master, and production hashes remained unchanged.
+- Live AI33 generation completed with `status=partial`, `credits_spent=7500`, `credit_spend_complete=true`, `observed_music_credit_cost=3600`, and `minimum_pack_ready=true`.
+- Completed assets were `music-default` (`220.019979s`), `music-tension` (`9.820167s`), three 1.0s whooshes (`sfx-whoosh-soft`, `sfx-whoosh-fast`, `sfx-whoosh-deep`), and three 1.0s impacts (`sfx-impact-tight`, `sfx-impact-heavy`, `sfx-impact-bright`). Every completed file passed ffprobe and SHA-256 validation recorded in `generation_report.json`; no signed URL or credential is copied into this log.
+- The budget guard skipped `music-calm`, `music-mystery`, `music-suspense`, `music-action`, and `music-emotional`. `audio_assets.test.yaml` validates as a test-only manifest with eight assets: two music tracks, three whooshes, and three impacts.
+- Final AI33-backed Tensei acceptance passed; the report is `work/enhanced-real-media-smoke-ai33-cue-correlation/report.json`. Full matching produced 971 placements over `2539.127s`, clip range `0.600-3.984s`, zero adjacent/contiguous fallbacks, and zero non-story/end-credit selections. Full postprocess planned 971 zooms, 23 freezes, 60 music cues, 23 impacts, and zero whoosh/speed-ramp cues; missing calm/mystery/suspense/action/emotional tracks correctly emitted default-track fallback warnings.
+- The real-footage excerpt is exactly `90.000s`, 1920x1080 at 30fps/2700 frames, with zero black or isolated flash frames, one audio stream, and `original_audio_included=false`. Measured music RMS was `0.0235132` with cue correlations `0.015512` and `0.013283`; SFX RMS was `0.02958222` with correlation `0.035496`. Final AAC packets matched the cached master, production artifacts remained unchanged, and the recorded acceptance-only override selected placement 35.
+
 ## 2026-07-30 - Render cache interruption hardening
 
 - Diagnosed the Tensei S01 concat truncation: two nonzero interrupted temp MP4 cache files lacked a `moov` atom, while FFmpeg concat logged the demux error but returned success after only the first 99 of 614 clips.
@@ -1033,3 +1048,13 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Fixed resumed ChatGPT history stabilization so stale assistant messages cannot satisfy a new request, and hardened AI33/Genmax polling so transient request exhaustion does not abandon an active provider task before its deadline.
 - Stage JSON contracts remain unchanged. ASR, vision, TTS, and media remain local/provider-first, with paid fallback limited by each stage policy.
 - Tags `v1.0.0` and `v1.0.1` are immutable; `v1.0.2` may be tagged only after the clean local media gate and GitHub Release Gate pass for the release commit.
+
+### 2026-07-30 - Anime Season Enhanced Post-Production V1
+
+- Added the opt-in `config.anime.series.vieneu.enhanced.yaml` preset. Existing presets remain legacy voiceover-only; global `run.py` is unchanged.
+- Added `series-v3-dynamic-anime` season matching with event-aware 1.5-4.0s clip ranges, round-robin shot residuals, adjacent/contiguous source avoidance, and explicit QA fallbacks.
+- Added the offline `postprocess` stage and shared schemas for deterministic reframing, grading, 2.35 masks, transition ramps, guarded freeze frames, local music/SFX planning, overrides, attribution, cache metadata and QA.
+- Enhanced render now accepts paired `--edit-plan`/`--audio-assets`, applies frame-locked effects, keeps video and audio caches separate, ducks music below delayed voiceover, loudness-normalizes the master, maps no source audio, and rejects output unless ffprobe reports exactly one audio stream.
+- Series orchestration, stage fingerprints, resume/force-final, enhanced preflight, local UI DAG/artifacts/readiness/delivery QA, packaging allowlists, Tach boundaries, CLI help/import smoke and release media gate were updated for the new stage.
+- Added local manifest/override examples and `scripts.enhanced_render_smoke`. The 4-second smoke passed at 1920x1080/30fps with 120 frames, one audio stream, source-tone suppression `-70.519 dB`, nonblack/no-flash frames, measurable zoom growth, and reduced freeze-frame motion.
+- Validation: `python -m pytest -q` -> `643 passed`; Ruff, Tach, compileall, `git diff --check`, frontend `15` tests, TypeScript, ESLint and Vite build all passed. The dirty-worktree release gate also passed secret scan, wheel content/install/import, CLI help and production dry-run with media smoke skipped; the enhanced FFmpeg smoke was run separately and passed all 17 assertions.
