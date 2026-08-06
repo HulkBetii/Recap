@@ -1058,3 +1058,12 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Series orchestration, stage fingerprints, resume/force-final, enhanced preflight, local UI DAG/artifacts/readiness/delivery QA, packaging allowlists, Tach boundaries, CLI help/import smoke and release media gate were updated for the new stage.
 - Added local manifest/override examples and `scripts.enhanced_render_smoke`. The 4-second smoke passed at 1920x1080/30fps with 120 frames, one audio stream, source-tone suppression `-70.519 dB`, nonblack/no-flash frames, measurable zoom growth, and reduced freeze-frame motion.
 - Validation: `python -m pytest -q` -> `643 passed`; Ruff, Tach, compileall, `git diff --check`, frontend `15` tests, TypeScript, ESLint and Vite build all passed. The dirty-worktree release gate also passed secret scan, wheel content/install/import, CLI help and production dry-run with media smoke skipped; the enhanced FFmpeg smoke was run separately and passed all 17 assertions.
+
+### 2026-08-06 - Enhanced master audio locked to 48 kHz
+
+- First real enhanced season render (Tensei S01, 12 episodes) delivered `2539.08s` at 1920x1080/30fps with one audio stream, but the output AAC stream was `96000 Hz` instead of the pipeline's 48 kHz convention.
+- Root cause: single-pass `loudnorm` resamples internally, so the music-bed and master-mix filter graphs left `loudnorm` at its own rate even though `aresample=48000` ran earlier in the chain. The AAC encoder then wrote that rate. The SFX bed, which has no `loudnorm`, stayed at 48 kHz and confirmed the diagnosis.
+- Fixed by resampling back to 48 kHz immediately after `loudnorm` in both `build_music_bed` and `build_master_mix`.
+- Bumped the audio cache identities to `music-v2` and `master-v2`. Without the bump, an existing run would silently reuse its 96 kHz beds and the fix would not reach the output.
+- Regression coverage asserts `aresample=48000` appears after `loudnorm` in both the music and master filter chains.
+- Validation: `python -m pytest -q` -> `693 passed`; Ruff, Tach and compileall passed. `scripts.enhanced_render_smoke` passed all 17 assertions with output `aac,48000,2`. The Tensei season was re-rendered in `224s` because the 971 video temp clips stayed cached and only the audio beds rebuilt; the new master is `aac,48000,2`, `duration_match=true`, one audio stream, identical loudness (`mean -15.3 dB`, `max -2.5 dB`) and identical sampled frame luma.

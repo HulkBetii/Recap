@@ -405,10 +405,16 @@ def test_enhanced_audio_builders_loop_fade_duck_and_limit(tmp_path: Path, monkey
         audio_delay_s=0.25,
     )
     assert "-stream_loop" in commands[0]
-    assert "afade=t=out" in commands[0][commands[0].index("-filter_complex") + 1]
+    music_filter = commands[0][commands[0].index("-filter_complex") + 1]
+    assert "afade=t=out" in music_filter
     assert "adelay=1000:all=1" in commands[1][commands[1].index("-filter_complex") + 1]
     master_filter = commands[2][commands[2].index("-filter_complex") + 1]
     assert "adelay=250:all=1" in master_filter
     assert "sidechaincompress=" in master_filter
     assert "loudnorm=I=-14:TP=-1:LRA=11" in master_filter
     assert "alimiter=limit=0.891251" in master_filter
+    # loudnorm resamples internally, so both beds must be pulled back to 48 kHz
+    # before encoding or the output lands at the loudnorm rate.
+    for filter_text in (music_filter, master_filter):
+        _, _, after_loudnorm = filter_text.partition("loudnorm=")
+        assert "aresample=48000" in after_loudnorm

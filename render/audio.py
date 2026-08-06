@@ -66,7 +66,8 @@ def _music_identity(plan: EditPlan, assets: dict[str, ResolvedAudioAsset], durat
     used_ids = sorted({cue.asset_id for cue in plan.music_cues})
     return stable_hash(
         {
-            "kind": "music-v1",
+            # v2 resamples to 48 kHz after loudnorm; v1 beds carry the loudnorm rate.
+            "kind": "music-v2",
             "duration_s": round(duration_s, 6),
             "cues": [cue.model_dump(mode="json") for cue in plan.music_cues],
             "music_lufs": plan.audio_mix.music_lufs,
@@ -98,7 +99,8 @@ def _master_identity(
 ) -> str:
     return stable_hash(
         {
-            "kind": "master-v1",
+            # v2 resamples to 48 kHz after loudnorm; v1 masters carry the loudnorm rate.
+            "kind": "master-v2",
             "voiceover": file_identity(voiceover_path),
             "music": file_identity(music_path),
             "sfx": file_identity(sfx_path),
@@ -142,6 +144,7 @@ def build_music_bed(
             f"[{index}:a]atrim=duration={cue_duration:.6f},asetpts=PTS-STARTPTS,"
             "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
             f"loudnorm=I={plan.audio_mix.music_lufs:g}:TP=-2:LRA=11,"
+            "aresample=48000,"
             f"volume={relative_gain_db:.6f}dB"
         )
         if fade_in > 0:
@@ -261,7 +264,8 @@ def build_master_mix(
         "[2:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[sfx];"
         "[voice][ducked][sfx]amix=inputs=3:duration=longest:normalize=0,"
         f"loudnorm=I={plan.audio_mix.master_lufs:g}:TP={plan.audio_mix.true_peak_db:g}:"
-        f"LRA={plan.audio_mix.loudness_range:g},alimiter=limit={limiter:.6f},"
+        f"LRA={plan.audio_mix.loudness_range:g},aresample=48000,"
+        f"alimiter=limit={limiter:.6f},"
         f"atrim=duration={duration_s:.6f}[master]"
     )
     partial_path = _atomic_audio_path(output_path)
