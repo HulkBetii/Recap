@@ -438,6 +438,41 @@ def test_reveal_never_becomes_transition_ramp_for_multi_episode_beat(tmp_path: P
     assert plan.placements[1].speed_ramp == []
 
 
+def test_chapter_opening_beat_receives_ramp_and_whoosh(tmp_path: Path) -> None:
+    _, manifest, _ = _asset_manifest(tmp_path)
+    placements, beats, timings, bank, shots = _planner_inputs(count=4)
+    # Chaptered scripts keep each beat inside one episode and carry no bridge or
+    # transition events, so the only real transition is the beat that opens the
+    # next episode chapter.
+    bank.events[1].event_type = "setup"
+    for index in (2, 3):
+        bank.events[index].event_type = "setup"
+        bank.events[index].episode_key = "ep2"
+        beats[index].source_refs = [beats[index].source_refs[0].model_copy(update={"episode_key": "ep2"})]
+    shots["ep2"] = shots["ep1"]
+
+    plan, meta, qa, _ = build_edit_plan(
+        placements=placements,
+        beats=beats,
+        timings=timings,
+        event_bank=bank,
+        shots_by_episode=shots,
+        audio_manifest=manifest,
+        input_fingerprint="fixture",
+    )
+
+    chapter_opening = plan.placements[2]
+    assert chapter_opening.speed_ramp[-1].speed == 1.35
+    assert chapter_opening.source_extension_s > 0
+    # The beat still grades as setup; only ramp eligibility changed.
+    assert chapter_opening.role == "setup"
+    assert plan.placements[3].speed_ramp == []
+    assert meta.n_speed_ramp == 1
+    whooshes = [cue for cue in plan.sfx_cues if cue.kind == "whoosh"]
+    assert len(whooshes) == 1
+    assert qa.cue_density["whoosh_per_minute"] <= 6
+
+
 def test_cli_outputs_are_cache_resumable(tmp_path: Path) -> None:
     manifest_path, _, _ = _asset_manifest(tmp_path)
     placements, beats, timings, bank, shots = _planner_inputs(count=2)

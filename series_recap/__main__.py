@@ -869,7 +869,8 @@ def postprocess_stage_fingerprint(
     assets_path = audio_assets_path(config)
     return stable_hash(
         {
-            "stage_version": "series-postprocess-v1",
+            # v2 ramps chapter-opening beats; v1 plans predate that and must rebuild.
+            "stage_version": "series-postprocess-v2",
             "edl_hash": file_hash(paths.edl),
             "review_script_hash": file_hash(paths.series_review_script),
             "event_bank_hash": file_hash(paths.event_bank),

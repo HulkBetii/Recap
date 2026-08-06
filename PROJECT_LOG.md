@@ -1067,3 +1067,12 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Bumped the audio cache identities to `music-v2` and `master-v2`. Without the bump, an existing run would silently reuse its 96 kHz beds and the fix would not reach the output.
 - Regression coverage asserts `aresample=48000` appears after `loudnorm` in both the music and master filter chains.
 - Validation: `python -m pytest -q` -> `693 passed`; Ruff, Tach and compileall passed. `scripts.enhanced_render_smoke` passed all 17 assertions with output `aac,48000,2`. The Tensei season was re-rendered in `224s` because the 971 video temp clips stayed cached and only the audio beds rebuilt; the new master is `aac,48000,2`, `duration_match=true`, one audio stream, identical loudness (`mean -15.3 dB`, `max -2.5 dB`) and identical sampled frame luma.
+
+### 2026-08-06 - Chapter-opening speed ramps and whoosh cues
+
+- The first real enhanced season render produced `n_speed_ramp=0` and `whoosh_count=0`: the ramp fired only for bridge/transition events or beats spanning more than one episode, and `episode_arc_chaptered` scripts produce neither. All three whoosh assets were dead weight because whoosh cues are emitted only where a ramp exists.
+- Measured on the 84-beat Tensei season: 0 multi-episode beats, 11 chapter boundaries. The beat before each boundary is `climax`/`reveal` at importance `1.0`, which doctrine excludes from auto ramp and which already carries push-in plus freeze plus impact. The beat that opens each chapter is `setup` at importance `0.53-0.65` with no freeze.
+- Speed ramp is now also eligible for the beat opening each episode chapter, matching the existing semantics that the ramp sits on the beat's last placement and accelerates into what follows. `_beat_role` is unchanged, so grade and mood stay the same.
+- Added a `freeze_conflict` skip so a placement that already carries a freeze never receives a ramp on the same frames.
+- Bumped `ALGORITHM_VERSION` to `anime-postprocess-v2` and the series stage identity to `series-postprocess-v2`. The series fingerprint does not include the planner algorithm version, so without that second bump the orchestrator would skip the stage and the change would never execute.
+- Validation: `python -m pytest -q` -> `694 passed`; Ruff and Tach passed.

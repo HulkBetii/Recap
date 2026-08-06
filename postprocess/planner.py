@@ -27,7 +27,7 @@ from common.schema import (
     SfxCue,
     Shot,
 )
-ALGORITHM_VERSION = "anime-postprocess-v1"
+ALGORITHM_VERSION = "anime-postprocess-v2"
 MIN_TRACK_DURATION_S = 20.0
 MUSIC_CROSSFADE_S = 1.5
 FREEZE_DURATION_S = 0.45
@@ -117,6 +117,33 @@ def _beat_role(beat: SeriesReviewBeat, events: list[SeriesEvent]) -> str:
 
 def _beat_importance(events: list[SeriesEvent]) -> float:
     return max((event.importance for event in events), default=0.5)
+
+
+def _chapter_transition_beat_ids(
+    beats: list[SeriesReviewBeat], events_by_id: dict[str, SeriesEvent]
+) -> set[int]:
+    """Beats that open a new episode chapter.
+
+    Chaptered season scripts keep every beat inside one episode, so `_beat_role`
+    never sees a multi-episode beat and the transition ramp would never fire.
+    The chapter opening is the real transition in the edit; reveal/climax beats
+    stay excluded because they never receive an auto ramp.
+    """
+    transition_ids: set[int] = set()
+    previous_episode: str | None = None
+    for beat in sorted(beats, key=lambda item: item.beat_id):
+        if not beat.source_refs:
+            continue
+        opening_episode = beat.source_refs[0].episode_key
+        if (
+            previous_episode is not None
+            and opening_episode != previous_episode
+            and not beat.is_hook
+            and _beat_role(beat, _events_for_beat(beat, events_by_id)) not in {"reveal", "climax"}
+        ):
+            transition_ids.add(beat.beat_id)
+        previous_episode = beat.source_refs[-1].episode_key
+    return transition_ids
 
 
 def _visual_grade(
@@ -256,6 +283,7 @@ def _build_base_edits(
     shots_by_episode: dict[str, list[Shot]],
     overrides: EditOverrides,
     seed: int,
+    chapter_transition_beat_ids: set[int],
     skipped_effects: list[dict[str, Any]],
     source_bound_checks: list[dict[str, Any]],
 ) -> tuple[list[PlacementEdit], dict[int, str]]:
@@ -346,11 +374,17 @@ def _build_base_edits(
                         "reason": "short_reused_static_missing_frames_or_spacing",
                     }
                 )
-        if role == "transition":
+        if role == "transition" or beat_id in chapter_transition_beat_ids:
             segments = _speed_ramp()
             extension = _ramp_extension(target.tl_end - target.tl_start, segments)
             shot = shot_by_placement[target_index]
-            if shot is not None and shot.tc_end - target.src_out >= extension - 1e-6:
+            if edit.freeze_duration_s > 0:
+                # A freeze already owns the tail of this placement; ramping it too
+                # would fight the same frames.
+                skipped_effects.append(
+                    {"placement_index": target_index, "effect": "speed_ramp", "reason": "freeze_conflict"}
+                )
+            elif shot is not None and shot.tc_end - target.src_out >= extension - 1e-6:
                 edit = edit.model_copy(update={"speed_ramp": segments, "source_extension_s": extension})
             else:
                 skipped_effects.append(
@@ -634,6 +668,7 @@ def build_edit_plan(
         shots_by_episode=shots_by_episode,
         overrides=overrides,
         seed=seed,
+        chapter_transition_beat_ids=_chapter_transition_beat_ids(beats, events_by_id),
         skipped_effects=skipped_effects,
         source_bound_checks=source_bound_checks,
     )
