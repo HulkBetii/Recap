@@ -1,6 +1,13 @@
 # Recap
 
-`Recap` là pipeline tạo video recap review từ một tập phim. Hiện project đang xây **Giai đoạn 1 — Ingest & Hiểu phim**.
+`Recap` là pipeline local tạo video recap review tiếng Việt từ phim gốc: transcript có timecode → kịch bản recap → TTS → chọn footage → render video 16:9 1080p, tắt tiếng gốc, không caption.
+
+Pipeline hiện có hai chế độ:
+
+- **Một video** (`python run.py`): GĐ0 `preflight` → GĐ1 `ingest` → `storymap` → `episode_planner` (khi bật `orchestrator.recap_mode`) → GĐ2 `review` → GĐ3 `tts`; song song GĐ4 `shots` → GĐ4.5 `visual_index` (tùy chọn); cuối cùng GĐ5 `match` → GĐ6 `render`.
+- **Cả season** (`python -m series_recap`): từng tập chạy tới `episode_planner` cùng `shots`, sau đó `series_composer` → `tts` → `series_match` → `postprocess` (chỉ preset enhanced) → `render`.
+
+Mỗi stage là một CLI `python -m <stage>` độc lập, giao tiếp qua file JSON. Contract, quyết định đã khóa và policy chi phí nằm trong `AGENTS.md`; tiến độ nằm trong `PROJECT_LOG.md`. Local Web UI (`python -m recap_ui`) điều khiển các CLI này.
 
 ## GĐ1 làm gì
 
@@ -17,7 +24,9 @@ Yêu cầu:
 
 - Python 3.11+
 - `ffmpeg` và `ffprobe` có trong `PATH`
-- `OPENAI_API_KEY`
+- GĐ2 review/Composer: ChatGPT đã đăng nhập trong Playwright profile `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`
+- GĐ3 TTS: `VIVOO_API_KEY` (AI33), `GENMAX_API_KEY` hoặc `OPENAI_API_KEY`; VieNeu chạy local không cần key
+- `OPENAI_API_KEY` chỉ bắt buộc khi preset dùng OpenAI cho dịch, vision, ASR hoặc fallback đã cấu hình
 
 ```powershell
 py -3.11 -m venv .venv
@@ -533,8 +542,8 @@ Nguyên tắc GĐ5:
 - Cai embedding deps khi dung `bge-m3`: `pip install -e ".[semantic-embed]"`.
 - `edl.qa.json` ghi provider/model/device/cache hits, từng beat chọn shot nào, semantic rank/score, `expected_src_position`, `source_drift_s`, `chronology_score` và warning `low semantic match`/`high source drift`.
 - `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse/drift và warnings theo beat.
-- Face l? ?i?m c?ng m?m, kh?ng l?c c?ng.
-- Placement m?c ??nh 1:1 speed `1.0`.
+- Face là điểm cộng mềm, không lọc cứng.
+- Placement mặc định 1:1 speed `1.0`.
 - `min_visual_clip` mac dinh `0.6s` de tranh flash-cut; pause gap ngan duoc absorb bang source capacity hoac slowdown toi da 10% tren hai clip ke nhau, va placement dai hon `max_clip` se duoc split lien tuc cung source/shot.
 - Khi thiếu footage, GĐ5 tính diversity capacity theo tối đa một clip `max_clip` cho mỗi shot. Nó thử shot usable rồi shot story chỉ bị loại vì tối trong cùng source window trước khi widen, và không vượt quá `max_widen`.
 - Repeat fallback ưu tiên phần source chưa dùng của các shot đã chọn, tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier, rồi mới dùng span có overlap thấp nhất.

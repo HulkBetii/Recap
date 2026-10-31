@@ -276,28 +276,28 @@ repo/
 - Hỗ trợ `--from`, `--to`, `--only`, `--dry-run`; dry-run chỉ in plan, không gọi subprocess.
 - Validate output sau mỗi stage bằng schema chung trước khi chuyển stage kế tiếp. GĐ5 output hiện gồm cả `edl.review.html` khi `match.review_html=true`.
 - `runs/` là artifact output/cache và không commit vào git.
-## 17. G?1 ASR/TIMECODE UPDATE HI?N T?I
+## 17. GĐ1 ASR/TIMECODE UPDATE HIỆN TẠI
 
-- G?1 gi? contract `film_map.json` nh?ng meta c? th?m `asr_provider`, `aligner_provider`, `timecode_quality`, `approximate_timecodes`, `asr_warnings`.
+- GĐ1 giữ contract `film_map.json` nhưng meta có thêm `asr_provider`, `aligner_provider`, `timecode_quality`, `approximate_timecodes`, `asr_warnings`.
 - GĐ1 hỗ trợ nguồn tiếng Việt bằng `--source-language vi --translate-mode none`; transcript Việt được giữ nguyên vào cả `ko` và `en` để không phá contract cũ, và không gọi KO→EN translation.
 - Preset tiếng Việt ổn định nằm ở `config.vi.stable.yaml`; dùng cho video đã là recap/phim tiếng Việt trước khi cân nhắc pipeline Korean drama mặc định.
 - Preset tiếng Việt mặc định bật `aligner=whisperx` với `source_language=vi`; WhisperX phải dùng align model `vi`, không được hardcode `ko`.
-- ASR provider hi?n c?: `faster-whisper` default, `openai-gpt4o`, `openai-gpt4o-hybrid`, v? `manual` ?? import transcript Markdown/JSON.
-- Cache transcript m?i trong `--work-dir`: `transcript_text.json`, `transcript_aligned.json`, `transcript_quality.json`.
+- ASR provider hiện có: `faster-whisper` default, `openai-gpt4o`, `openai-gpt4o-hybrid`, và `manual` để import transcript Markdown/JSON.
+- Cache transcript mới trong `--work-dir`: `transcript_text.json`, `transcript_aligned.json`, `transcript_quality.json`.
 - Local `faster-whisper` chunks long audio into `work/ingest/local_asr_chunks` to avoid whole-movie FFT memory spikes; it must pass `source_language` (`ko`/`vi`) into Whisper instead of hardcoding Korean.
 - Vietnamese/offline ingest with `translate_mode=none` and `max_vision_frames=0` must not require `OPENAI_API_KEY`; only translation, vision, OpenAI ASR, or OpenAI transcript correction require it.
-- Manual transcript d?ng `[MM:SS] text` ch? c? timestamp start; end-time ???c suy lu?n n?n lu?n ??nh d?u approximate n?u ch?a align.
-- `--aligner whisperx` ch?y WhisperX forced alignment th?t khi runtime `torch`/`whisperx` c? s?n; n?u l?i th? fallback timestamp hi?n t?i v? ghi warning. `qwen3` v?n l? placeholder an to?n.
-- Segment qu? d?i ???c split theo c?u/max duration ?? G?2/G?5 c? source windows m?n h?n.
-- G?2 ??c meta G?1 v? ghi warning khi timecode approximate; kh?ng ??i contract `review_script.json`.
+- Manual transcript dạng `[MM:SS] text` chỉ có timestamp start; end-time được suy luận nên luôn đánh dấu approximate nếu chưa align.
+- `--aligner whisperx` chạy WhisperX forced alignment thật khi runtime `torch`/`whisperx` có sẵn; nếu lỗi thì fallback timestamp hiện tại và ghi warning. `qwen3` vẫn là placeholder an toàn.
+- Segment quá dài được split theo câu/max duration để GĐ2/GĐ5 có source windows mịn hơn.
+- GĐ2 đọc meta GĐ1 và ghi warning khi timecode approximate; không đổi contract `review_script.json`.
 ## 18. WHISPERX ALIGNMENT RUNTIME
 
-- M?y hi?n ?? ???c smoke test v?i RTX 3060 12GB, Torch CUDA v? WhisperX.
-- K?t qu? t?t nh?t cho audio th?t l? `openai-gpt4o-hybrid` t?o chunk rough windows r?i `whisperx` refine timestamp trong t?ng chunk.
-- Kh?ng d?ng OpenAI full-span m?t m?nh l?m timestamp v? API kh?ng tr? segment timestamp.
-- Kh?ng d?ng WhisperX full-span text kh?ng c? rough windows v? test th?c t? b? n?n timeline v? ??u audio.
-- Transcript QC sau alignment clamp theo duration, merge segment qu? ng?n, split/flag segment qu? d?i v? c?nh b?o subtitle/credit artifacts.
-- Runtime aligner n?n xem l? optional/heavy; automated tests mock WhisperX, kh?ng y?u c?u GPU.
+- Máy hiện đã được smoke test với RTX 3060 12GB, Torch CUDA và WhisperX.
+- Kết quả tốt nhất cho audio thật là `openai-gpt4o-hybrid` tạo chunk rough windows rồi `whisperx` refine timestamp trong từng chunk.
+- Không dùng OpenAI full-span một mình làm timestamp vì API không trả segment timestamp.
+- Không dùng WhisperX full-span text không có rough windows vì test thực tế bị nén timeline về đầu audio.
+- Transcript QC sau alignment clamp theo duration, merge segment quá ngắn, split/flag segment quá dài và cảnh báo subtitle/credit artifacts.
+- Runtime aligner nên xem là optional/heavy; automated tests mock WhisperX, không yêu cầu GPU.
 
 
 ## 19. TRANSCRIPT CORRECTION / GLOSSARY HIỆN TẠI
@@ -429,14 +429,14 @@ repo/
 - `summary.json` includes `timecode_qa` from `film_map.meta.json`; if `approximate_timecodes=true`, treat footage/narration mismatch as an ASR/alignment risk first, not a render audio-delay problem.
 
 
-## 31. G?3 TTS TEXT NORMALIZATION / PRONUNCIATION QA
+## 31. GĐ3 TTS TEXT NORMALIZATION / PRONUNCIATION QA
 
-- G?3 kh?ng s?a `review_script.json`; text g?c v?n d?ng cho QA/G?5, c?n text g?i provider n?m trong `tts_script.json`.
-- CLI h? tr? `--tts-text-normalization off|basic|vi`, `--tts-pronunciation-lexicon`, `--tts-normalized-script-output`, v? `--tts-normalization-report`.
-- Default `vi` x? l? acronym/k? hi?u/s? nh? cho ti?ng Vi?t: `AI`, `A.I.`, `ChatGPT`, `TTS`, `%`, `/`, URL/email/emoji; kh?ng ???c ??i ch? th??ng `ai` th?nh acronym.
-- `tts_meta.json` ghi `text_normalization`, `pronunciation_lexicon_path`, `n_text_normalized`, v? `normalization_warnings`.
-- Cache G?3 ph?i d?ng `tts_text` ?? normalize ?? ??i lexicon/rule th? render l?i ??ng beat.
-- Lexicon m?u kh?ng ch?a secret n?m ? `examples/tts/vi_pronunciation_lexicon.example.yaml`; key API v?n ch? ??c env/.env gitignored.
+- GĐ3 không sửa `review_script.json`; text gốc vẫn dùng cho QA/GĐ5, còn text gửi provider nằm trong `tts_script.json`.
+- CLI hỗ trợ `--tts-text-normalization off|basic|vi`, `--tts-pronunciation-lexicon`, `--tts-normalized-script-output`, và `--tts-normalization-report`.
+- Default `vi` xử lý acronym/ký hiệu/số nhỏ cho tiếng Việt: `AI`, `A.I.`, `ChatGPT`, `TTS`, `%`, `/`, URL/email/emoji; không được đổi chữ thường `ai` thành acronym.
+- `tts_meta.json` ghi `text_normalization`, `pronunciation_lexicon_path`, `n_text_normalized`, và `normalization_warnings`.
+- Cache GĐ3 phải dùng `tts_text` đã normalize để đổi lexicon/rule thì render lại đúng beat.
+- Lexicon mẫu không chứa secret nằm ở `examples/tts/vi_pronunciation_lexicon.example.yaml`; key API vẫn chỉ đọc env/.env gitignored.
 
 
 ## VISUAL INDEX V1.1 CORRECTNESS / MATCH HARDENING
@@ -470,11 +470,11 @@ repo/
 
 ## 33. AUTO LOW-OPENAI VIETNAMESE PIPELINE
 
-- `config.vi.low_openai.yaml` l? preset test r? cho video ti?ng Vi?t: local-first ASR (`faster-whisper` + `whisperx`), `translate_mode=none`, `max_vision_frames=0`, v? `api_budget_guard=block`.
+- `config.vi.low_openai.yaml` là preset test rẻ cho video tiếng Việt: local-first ASR (`faster-whisper` + `whisperx`), `translate_mode=none`, `max_vision_frames=0`, và `api_budget_guard=block`.
 - `config.vi.balanced.auto.yaml` vẫn auto 100%: chạy local-first trước và chỉ rerun GĐ1 bằng `openai-gpt4o-hybrid` khi timecode/alignment có lỗi nghiêm trọng đã phân loại, sau đó force rerun downstream selected stages.
 - `timecode_quality != strict` hoặc `approximate_timecodes=true` đơn lẻ không đủ để kích hoạt paid ASR. Trigger hiện tại phải đến từ `asr_warnings` có alignment fail/unavailable, hoặc warning tương lai được đánh dấu rõ bằng `severe:`/`[severe]`; ingest fail trước khi có `film_map.meta.json` vẫn fail-fast và không tự gọi paid API.
-- `fallback_plan.json` ghi trigger/block reason; `fallback_summary.json` ghi k?t qu? sau fallback; `cost_summary.json` c? `openai_fallback_possible` v? `openai_fallback_triggered`.
-- N?u `api_budget_guard=block`, fallback OpenAI ph?i b? ch?n r? r?ng thay v? ?m th?m t?n API.
+- `fallback_plan.json` ghi trigger/block reason; `fallback_summary.json` ghi kết quả sau fallback; `cost_summary.json` có `openai_fallback_possible` và `openai_fallback_triggered`.
+- Nếu `api_budget_guard=block`, fallback OpenAI phải bị chặn rõ ràng thay vì âm thầm tốn API.
 
 ## 34. GĐ4.5 VISUAL INDEX / TIME-ANCHORED VISUAL MATCHING
 
