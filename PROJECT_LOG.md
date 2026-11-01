@@ -1,5 +1,17 @@
 # PROJECT_LOG.md
 
+## 2026-11-01 - Pipeline review R1-R8 (quality and speed)
+
+- Reviewed the whole pipeline in eight segments on the benchmark film `Quý Ông Số Đỏ` (7,406 s, 1920x804, 25 fps, burned-in subtitles); reports with before/after measurements are in `docs/pipeline-review/`.
+- Text LLM steps (GĐ1 translation and vision, GĐ2 review, `series_composer`) now run through the local 9router gateway with `ag/gemini-3.8-flash-high`; ChatGPT Playwright remains selectable with no automatic fallback. The gateway client classifies quarantine/rate-limit/upstream errors, honours reset hints, and preflight probes the chosen model before heavy stages.
+- GĐ3 production/example presets use CapCut `BV074_streaming`; `review.tts_cps=20.5` for CapCut presets after measuring 20.6-21.6 characters/second.
+- Runtime moved to an isolated `uv` virtualenv (torch 2.8.0+cu128, transformers 4.57.x, OpenCV 4.x) with a dependency-version preflight; CTranslate2 preloads torch's CUDA DLLs on Windows and GPU memory is released after ASR/WhisperX.
+- GĐ2 batches narration (~8,000 characters), rewrites beats below 75% of target once, and requires at least `ceil(char_budget/700)` outline beats: the recap reached 1,832 s for a 1,926 s target (baseline 926 s) with QA passing.
+- GĐ4 uses YuNet face detection (faces found in 1,108/1,527 shots versus 541 with Haar) and reruns when the loaded detector changes. A new overlay guard excludes shots under time-bounded burned-in overlays: the PhimMoi gambling ad at 176-201 s no longer appears in the recap (3 placements before). It also reports hardsub coverage (45% on the benchmark) and warns at 20% or more.
+- GĐ6 renders with NVENC when available (`render.encoder: auto`) at the source frame rate (`render.fps: source`; enhanced stays 30): render time fell from 686 s to 226 s with equal SSIM. GĐ6 also deletes `video_only*.mp4` and stale temp clips after a successful render. Thumbnails and keyframes are written Unicode-safely, fixing broken review-page images for Vietnamese film names.
+- Season flow: arc drafts and revisions run concurrently on 9router (`composer_concurrency`, default 2); oversized final stitches are replaced by per-seam stitches; `episode_concurrency: 2` (anime season presets except `localvision`) ingests two episodes at once while planners keep episode order (two 12-minute episodes: 399 s sequential, 272 s concurrent, 10.9 GB peak VRAM).
+- Wall clock on the benchmark: the baseline full run took about 75 minutes including ASR; the post-R4 run took 40.8 minutes with ASR cached (so the two are not directly comparable), and the render change saves a further ~7.7 minutes. Validation: 796 Python tests, Ruff and Tach clean.
+
 ## 2026-07-30 - AI33 technical audio pack and real anime acceptance
 
 - Added the approved one-time AI33 music/SFX generation workflow with environment-only credentials, a 10,000-credit guard for forecastable submissions, an explicit unknown-cost first-canary exception, partial/resumable output, media validation and test-only license metadata under `work/ai33-audio-library/`.

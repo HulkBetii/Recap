@@ -24,18 +24,21 @@ Yêu cầu:
 
 - Python 3.11+
 - `ffmpeg` và `ffprobe` có trong `PATH`
-- GĐ2 review/Composer: ChatGPT đã đăng nhập trong Playwright profile `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1`
-- GĐ3 TTS: `VIVOO_API_KEY` (AI33), `GENMAX_API_KEY` hoặc `OPENAI_API_KEY`; VieNeu chạy local không cần key
+- GĐ1 dịch/vision, GĐ2 review và Composer (mọi preset hiện tại): 9router chạy local ở `http://localhost:20128/v1` (đổi bằng `NINEROUTER_URL`) và biến môi trường `NINEROUTER_API_KEY`. Đặt key một lần bằng `setx NINEROUTER_API_KEY "<key>"`; không ghi key vào config hay git. Orchestrator kiểm key, `/models` và probe thật model trước khi chạy stage nặng.
+- ChatGPT Playwright profile `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1` chỉ cần khi chọn backend `chatgpt_playwright`
+- GĐ3 TTS: preset production/example dùng CapCut (`provider_mode: capcut`, giọng `BV074_streaming`, không cần key); `provider_mode: auto` dùng `VIVOO_API_KEY` (AI33), `GENMAX_API_KEY` hoặc `OPENAI_API_KEY`; VieNeu chạy local không cần key
 - `OPENAI_API_KEY` chỉ bắt buộc khi preset dùng OpenAI cho dịch, vision, ASR hoặc fallback đã cấu hình
 
+Chạy trong `.venv` riêng, dựng bằng `uv`. Python toàn cục dùng chung với project khác dễ lệch phiên bản (`transformers` 5, OpenCV 5…); preflight sẽ báo lỗi khi gói đã cài lệch yêu cầu của `recap`.
+
 ```powershell
-py -3.11 -m venv .venv
+uv venv .venv --python 3.11
+uv pip install --python .venv\Scripts\python.exe torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+uv pip install --python .venv\Scripts\python.exe -e ".[dev,ui,movie-visual,video-profile,tts-vieneu]"
 .\.venv\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
 ```
 
-Nếu muốn chọn VieNeu local trong CLI/UI, cài thêm extra: `python -m pip install -e ".[dev,ui,tts-vieneu]"`.
+Máy không có GPU NVIDIA bỏ dòng cài torch CUDA và chỉ cài các extra cần dùng, ví dụ `uv pip install --python .venv\Scripts\python.exe -e ".[dev]"`. GĐ6 tự dùng NVENC khi mã hóa thử thành công, nếu không thì dùng libx264.
 
 ## Local Web UI
 
@@ -87,7 +90,13 @@ powershell -ExecutionPolicy Bypass -File scripts/start_recap_ui.ps1 -Dev
 
 ## Chạy toàn pipeline bằng `run.py`
 
-Orchestrator chạy 6 stage bằng một lệnh, tôn trọng cache của từng stage và ghi toàn bộ artifact vào `--run-dir`. GĐ4 `shots` chạy song song với chuỗi GĐ1→GĐ3, sau đó GĐ5/GĐ6 chạy khi đủ input.
+Orchestrator chạy 6 stage bằng một lệnh, tôn trọng cache của từng stage và ghi toàn bộ artifact vào `--run-dir`. GĐ4 `shots` chạy song song với chuỗi GĐ1→GĐ3, GĐ4.5 `visual_index` chạy song song với review, sau đó GĐ5/GĐ6 chạy khi đủ input. `summary.json` ghi trạng thái và thời gian từng stage, kể cả khi run lỗi.
+
+GĐ4 mặc định bật `shots.overlay_guard`: tự loại các shot dính chữ chèn cứng có giới hạn thời gian (ví dụ quảng cáo của site phim), và cảnh báo trong `shots.meta.json` khi nguồn có phụ đề cứng từ 20% thời lượng trở lên. GĐ6 render theo fps nguồn (`render.fps: source`) và chọn encoder bằng `render.encoder: auto`.
+
+Phim bộ (`python -m series_recap`): `series_recap.episode_concurrency: 2` (đã đặt sẵn trong các preset anime season, trừ `localvision`) cho 2 tập ingest cùng lúc; `episode_planner` vẫn chạy theo thứ tự tập. Với 9router, Composer viết nháp các arc song song (`composer_concurrency`, mặc định 2).
+
+Báo cáo review pipeline và số đo trước/sau: `docs/pipeline-review/`.
 
 ```powershell
 python run.py `
@@ -156,11 +165,11 @@ python -m series_recap --manifest examples\anime\series_manifest.example.yaml --
 
 - `config.anime.series.yaml`: `content_type=anime_series`, `source_language=ja`, `translate_mode=ja-en`, `shots.face_detection=off`, `match.w_face=0.0`, `match.w_visual=0.0`, `exclude_non_story=true`, `orchestrator.recap_mode=auto`.
 - `config.anime.series.practical.yaml`: preset season 12 tap thuc dung. OpenAI API chi dung cho JA->EN transcript translation (`translation_required=true`, `translation_min_success_ratio=0.95`), `vision_provider="off"` va `max_vision_frames=0`; review/composer/QA dung ChatGPT Playwright, ASR/shots/match/render local, TTS dung provider configured.
-- `config.anime.series.vieneu.yaml`: preset season dung ChatGPT Playwright de dich JA->EN theo batch 80 segment co cache/resume, `api_budget_guard=block`, va local VieNeu v3 Turbo ONNX/int8, giong nu Bac `Ngọc Linh`, style `doc_truyen`, speed `0.9`; khong fallback sang paid translation/TTS provider. Rieng season planning dung `series_recap.tts_cps=17.0`, hieu chinh tu run Tensei S01 co 63,107 ky tu trong 3,674.842 giay (`17.17` ky tu/giay), de bam sat target 35-45 phut; `review.tts_cps=15` va cac anime preset generic khong doi.
-- `config.anime.series.vieneu.enhanced.yaml`: opt-in preset ke thua duong VieNeu/Playwright tren, bat `series_recap.clip_profile=dynamic_anime` va stage offline `postprocess`. Preset cu va run legacy khong doi hanh vi.
+- `config.anime.series.vieneu.yaml`: preset season dung 9router de dich JA->EN theo batch 80 segment co cache/resume, `api_budget_guard=block`, va local VieNeu v3 Turbo ONNX/int8, giong nu Bac `Ngọc Linh`, style `doc_truyen`, speed `0.9`; khong fallback sang paid translation/TTS provider. Rieng season planning dung `series_recap.tts_cps=17.0`, hieu chinh tu run Tensei S01 co 63,107 ky tu trong 3,674.842 giay (`17.17` ky tu/giay), de bam sat target 35-45 phut; `review.tts_cps=15` va cac anime preset generic khong doi.
+- `config.anime.series.vieneu.enhanced.yaml`: opt-in preset ke thua duong VieNeu tren, bat `series_recap.clip_profile=dynamic_anime` va stage offline `postprocess`. Preset cu va run legacy khong doi hanh vi.
 - Solo Leveling uses `examples/anime/solo_leveling_vi_pronunciation.yaml` to normalize `Sung Jinwoo`/`Jinwoo` aliases to the Vietnamese TTS form `Sung Chin U`/`Chin U` before synthesis.
 - `config.anime.series.localvision.yaml`: opt-in local Qwen vision (`vision_provider=local_qwen2_5_vl`, `Qwen/Qwen2.5-VL-7B-Instruct`, `max_vision_frames=30`, resize long edge 768). Cai optional deps bang `python -m pip install -e ".[anime-vision]"`; neu local model/deps thieu thi ingest warning va tiep tuc khong co visual gap descriptions.
-- Khong dung Playwright cho batch vision automation; Playwright chi la duong text/review/composer/QA. Batch vision phai la OpenAI API co cap ro rang hoac local model opt-in.
+- Khong dung Playwright cho batch vision automation; Playwright chi la duong text/review/composer/QA. Batch vision chay qua 9router (`vision_provider: ninerouter`), OpenAI API co cap ro rang, hoac local model opt-in.
 - `config.anime.movie.yaml`: `content_type=anime_movie`, cùng ingest defaults tiếng Nhật, `hook_mode=setup`, và cùng posture strict OP/ED/preview guard.
 - `preflight.manual_ranges` và `preflight.anime_context` nhận YAML/JSON local, rồi merge vào `video_profile.non_story_ranges`; `review.context_file` nạp cùng anime context để giữ glossary, continuity và spoiler guard nhất quán.
 - Anime context là metadata local only, không dùng AniList/API. OP/ED/theme/preview/recap zones phải đi qua manual ranges hoặc detector tin cậy, không hardcode duration.
@@ -274,15 +283,15 @@ python -m tach check --dependencies
 
 GĐ2 nhận `film_map.json` và tạo `review_script.json` + `review_script.meta.json`.
 
-GĐ2 là tác vụ LLM nặng nên luôn dùng ChatGPT qua Playwright persistent browser làm backend chính. Chạy thẳng `openai_api` hoặc tắt backend bằng `off` không còn được hỗ trợ; hai giá trị legacy này sẽ báo lỗi config.
+GĐ2 chạy qua backend `ninerouter` (9router gateway, model `ag/gemini-3.8-flash-high`) trong mọi preset hiện tại; `chatgpt_playwright` vẫn chọn được. Hai backend không tự fallback sang nhau. Chạy thẳng `openai_api` hoặc tắt backend bằng `off` không còn được hỗ trợ; hai giá trị legacy này sẽ báo lỗi config. Với 9router, narration được chia batch khoảng 8.000 ký tự và beat quá ngắn so với mục tiêu được viết lại một lần.
 
-OpenAI review fallback là opt-in qua `review.openai_fallback_model`. Fallback chỉ được phép khi Playwright đã hết retry/recovery với lỗi browser được phân loại là cho phép fallback, `api_budget_guard` không phải `block`, và `OPENAI_API_KEY` tồn tại. Playwright thành công không khởi tạo OpenAI client và không yêu cầu API key.
+OpenAI review fallback là opt-in qua `review.openai_fallback_model` và chỉ áp dụng cho đường Playwright. Fallback chỉ được phép khi Playwright đã hết retry/recovery với lỗi browser được phân loại là cho phép fallback, `api_budget_guard` không phải `block`, và `OPENAI_API_KEY` tồn tại. Playwright thành công không khởi tạo OpenAI client và không yêu cầu API key.
 
-Config mặc định:
+Config trong preset hiện tại (code mặc định vẫn là `chatgpt_playwright`):
 
 ```yaml
 orchestrator:
-  text_llm_backend: chatgpt_playwright
+  text_llm_backend: ninerouter
   api_budget_guard: warn
 review:
   playwright_max_attempts: 2
@@ -427,7 +436,7 @@ python -m shots `
   --work-dir work\shots
 ```
 
-Face detection v1 dùng Haar cascade bundled trong OpenCV. Nếu không cần face metrics:
+Face detection dùng YuNet (`shots/models/face_detection_yunet_2023mar.onnx`, đóng gói sẵn), Haar chỉ là dự phòng. Nếu không cần face metrics:
 
 ```powershell
 python -m shots --input path\to\film.mp4 --output out\shots.json --face-detection off
