@@ -24,7 +24,9 @@ ingest:
   translate_model: gpt-4.1-mini
   source_language: vi
   translate_mode: none
-  vision_model: gpt-4.1-mini
+  vision_model: ag/gemini-3.8-flash-high
+  vision_provider: ninerouter
+  vision_concurrency: 3
   device: cpu
   asr_policy: preset
   asr_provider: openai-gpt4o-hybrid

@@ -10,13 +10,17 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $repoRoot
 
+# Prefer the project venv: the shared interpreter can drift outside the project's pinned versions.
+$venvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+$python = if (Test-Path -LiteralPath $venvPython -PathType Leaf) { $venvPython } else { "python" }
+
 if ($Dev) {
     if (-not (Test-Path -LiteralPath (Join-Path $repoRoot "web\package.json") -PathType Leaf)) {
         throw "Frontend package is missing: web\package.json"
     }
 
     $backendArgs = @("-m", "recap_ui", "--host", "127.0.0.1", "--port", $Port, "--no-open")
-    $backend = Start-Process -FilePath "python" -ArgumentList $backendArgs -PassThru -WindowStyle Hidden
+    $backend = Start-Process -FilePath $python -ArgumentList $backendArgs -PassThru -WindowStyle Hidden
     try {
         $viteArgs = @("--prefix", "web", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5173")
         if (-not $NoOpen) {
@@ -45,5 +49,5 @@ if ($NoOpen) {
 } else {
     $uiArgs += "--open"
 }
-& python @uiArgs
+& $python @uiArgs
 exit $LASTEXITCODE

@@ -224,6 +224,7 @@ class GatewayChatClient:
         timeout_s: int = DEFAULT_TIMEOUT_S,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         temperature: float = 0.0,
+        system_prompt: str = JSON_ONLY_SYSTEM_PROMPT,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -239,6 +240,7 @@ class GatewayChatClient:
         self.timeout_s = timeout_s
         self.max_attempts = max_attempts
         self.temperature = temperature
+        self.system_prompt = system_prompt
         self._transport = transport
         self._sleep = sleep
         self._client: httpx.AsyncClient | None = None
@@ -259,14 +261,19 @@ class GatewayChatClient:
             await self._client.aclose()
             self._client = None
 
-    async def ask(self, prompt: str) -> str:
+    async def ask(self, prompt: str, *, image_data_urls: list[str] | None = None) -> str:
         if self._client is None:
             raise GatewayChatError("GatewayChatClient is not started", code="client_not_started", retryable=False)
+        user_content: str | list[dict[str, Any]] = prompt
+        if image_data_urls:
+            user_content = [{"type": "text", "text": prompt}] + [
+                {"type": "image_url", "image_url": {"url": url}} for url in image_data_urls
+            ]
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": JSON_ONLY_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_content},
             ],
             "temperature": self.temperature,
             "stream": False,

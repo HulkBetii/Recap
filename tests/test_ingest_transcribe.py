@@ -87,3 +87,33 @@ def test_local_asr_corrupt_cache_rebuilds_only_affected_chunk(tmp_path: Path, mo
 
     assert FakeWhisperModel.calls == 3
     assert not list(chunks.glob("*.tmp"))
+
+
+def test_batched_asr_keeps_sequential_chunk_caches_and_timestamps() -> None:
+    from ingest.transcribe import _chunk_cache_payload_is_valid, _transcribe_with_model
+
+    legacy = {"source": {"size": 1}, "start_s": 0.0, "length_s": 10.0, "whisper_model": "m", "device": "cuda", "language": "ko", "vad_filter": True, "segments": []}
+    common = dict(source_identity={"size": 1}, start_s=0.0, length_s=10.0, whisper_model="m", device="cuda", language="ko", vad_filter=True)
+    assert _chunk_cache_payload_is_valid(legacy, **common) is True
+    assert _chunk_cache_payload_is_valid(legacy, batch_size=16, **common) is False
+
+    class CapturingModel:
+        kwargs: dict = {}
+
+        def transcribe(self, _path, **kwargs):  # type: ignore[no-untyped-def]
+            CapturingModel.kwargs = kwargs
+            return [], None
+
+    _transcribe_with_model(CapturingModel(), Path("a.wav"), language="ko", vad_filter=True, batch_size=16)
+    assert CapturingModel.kwargs["batch_size"] == 16
+    assert CapturingModel.kwargs["without_timestamps"] is False
+    _transcribe_with_model(CapturingModel(), Path("a.wav"), language="ko", vad_filter=True)
+    assert "batch_size" not in CapturingModel.kwargs
+
+
+def test_transcript_cache_identity_only_changes_when_batching() -> None:
+    from ingest.integrity import transcript_cache_key
+
+    base = {"asr_provider": "faster-whisper", "whisper_model": "large-v3"}
+    assert transcript_cache_key("a", base) == transcript_cache_key("a", {**base, "asr_batch_size": 0})
+    assert transcript_cache_key("a", base) != transcript_cache_key("a", {**base, "asr_batch_size": 16})

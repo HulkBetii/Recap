@@ -14,6 +14,8 @@ class StageSummary:
     command: list[str] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
     error: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
 
 
 def read_json(path: Path) -> Any:
@@ -85,6 +87,7 @@ def write_summary(
     stages: list[StageSummary],
     meta_paths: dict[str, Path],
     dry_run: bool = False,
+    status: str = "completed",
 ) -> dict[str, Any]:
     tts_meta = read_json(meta_paths["tts"])
     edl_meta = read_json(meta_paths["match"])
@@ -92,6 +95,7 @@ def write_summary(
     film_meta = read_json(meta_paths["ingest"])
     payload = {
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": status,
         "dry_run": dry_run,
         "stages": [stage.__dict__ for stage in stages],
         "timecode_qa": build_timecode_qa(film_meta),

@@ -208,3 +208,15 @@ def test_review_cli_defaults_to_locked_auto_yt_profile() -> None:
 def test_review_runtime_rejects_any_other_profile(tmp_path) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(ReviewError, match="profile is locked"):
         resolve_chatgpt_profile_dir(tmp_path / "other-profile")
+
+
+def test_repeated_asr_warnings_are_collapsed() -> None:
+    from review.inputs import summarize_asr_warnings
+
+    summary = summarize_asr_warnings(
+        ["short segment merged near 88.879s", "short segment merged near 90.900s", "whisperx alignment failed: oom"]
+    )
+    assert summary == [
+        "ASR warning: short segment merged near <t>s x2 (details in film_map.meta.json)",
+        "ASR warning: whisperx alignment failed: oom",
+    ]

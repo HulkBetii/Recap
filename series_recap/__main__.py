@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor
 import time
 from copy import deepcopy
 from dataclasses import dataclass
@@ -113,6 +114,7 @@ class SeriesPaths:
     work_dir: Path
     stage_manifest: Path
     log_path: Path
+    shots_log_path: Path
     summary: Path
     event_bank: Path
     series_arc_plan: Path
@@ -302,6 +304,8 @@ def build_paths(root_dir: Path) -> SeriesPaths:
         work_dir=work_dir,
         stage_manifest=work_dir / "stage_manifest.json",
         log_path=final_dir / "series_recap.log",
+        # Episode shots run concurrently with the next ingest; a separate file avoids interleaved writes.
+        shots_log_path=final_dir / "series_recap.shots.log",
         summary=final_dir / "summary.json",
         event_bank=final_dir / "series_event_bank.json",
         series_arc_plan=final_dir / "series_arc_plan.json",
@@ -1234,6 +1238,8 @@ def run_series_recap(
     summaries: list[StepSummary] = []
     series_memory_dir = root_dir / "series_memory"
 
+    shots_pool = ThreadPoolExecutor(max_workers=1)
+    shots_futures: list[Future[StepSummary]] = []
     for spec in specs:
         episode_run_dir = root_dir / spec.episode_key
         episode_run_dirs[spec.episode_key] = episode_run_dir
@@ -1278,8 +1284,11 @@ def run_series_recap(
         force_shots = bool(args.force)
         if force_shots and "--force" not in shots_command:
             shots_command = [*shots_command, "--force"]
-        summaries.append(
-            run_step(
+        # Shot detection is CPU work that only needs this episode's planner outputs, so it runs
+        # while the next episode's GPU ingest proceeds; one shots job at a time keeps CPU bounded.
+        shots_futures.append(
+            shots_pool.submit(
+                run_step,
                 stage=f"{spec.episode_key}:{shots_stage}",
                 command=shots_command,
                 outputs=shots_outputs,
@@ -1289,12 +1298,16 @@ def run_series_recap(
                     film,
                     stage_config,
                 ),
-                log_path=paths.log_path,
+                log_path=paths.shots_log_path,
                 force=force_shots,
                 dry_run=args.dry_run,
                 executor=runner,
             )
         )
+    try:
+        summaries.extend(future.result() for future in shots_futures)
+    finally:
+        shots_pool.shutdown(wait=True)
 
     composer = run_cached_step(
         stage="series_composer",

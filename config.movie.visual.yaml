@@ -26,7 +26,9 @@ ingest:
   translate_model: gpt-4.1-mini
   source_language: ko
   translate_mode: ko-en
-  vision_model: gpt-4.1-mini
+  vision_model: ag/gemini-3.8-flash-high
+  vision_provider: ninerouter
+  vision_concurrency: 3
   device: cpu
   asr_policy: preset
   asr_provider: faster-whisper

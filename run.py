@@ -4,15 +4,25 @@ import argparse
 import json
 import os
 import sys
+import time
 from copy import deepcopy
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
 from orchestrator.config import ConfigError, load_config
 from orchestrator.cost_policy import build_cost_summary, resolve_cost_policy
 from orchestrator.graph import DOWNSTREAM, STAGES, build_paths, forced_stages, stage_range
-from orchestrator.runner import OrchestratorError, episode_planner_enabled, output_paths, outputs_valid, preflight, read_episode_meta, run_stage
+from orchestrator.runner import (
+    OrchestratorError,
+    episode_planner_enabled,
+    output_paths,
+    outputs_valid,
+    preflight,
+    read_episode_meta,
+    run_stage,
+    utc_timestamp,
+)
 from orchestrator.summary import StageSummary, write_summary
 
 SEVERE_TIMECODE_WARNING_MARKERS = (
@@ -225,6 +235,8 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
 
     def execute(stage: str) -> StageSummary:
         nonlocal openai_fallback_possible, fallback_triggered, review_status
+        started_at = utc_timestamp()
+        started = time.perf_counter()
         try:
             return run_stage(
                 stage=stage,
@@ -237,7 +249,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                 python_exe=python_exe,
                 executor=executor if executor is not None else run_stage.__globals__["run_subprocess"],
             )
-        except OrchestratorError:
+        except OrchestratorError as exc:
             if stage == "review" and not args.dry_run:
                 openai_fallback_possible, fallback_triggered, review_status = sync_review_fallback_reporting(
                     paths=paths,
@@ -247,7 +259,27 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                     openai_fallback_possible=openai_fallback_possible,
                     fallback_triggered=fallback_triggered,
                 )
+            if not args.dry_run:
+                # Keep timings of finished stages when a run fails, instead of losing the whole summary.
+                failed = StageSummary(
+                    stage=stage,
+                    status="failed",
+                    duration_s=round(time.perf_counter() - started, 3),
+                    error=str(exc),
+                    started_at=started_at,
+                    finished_at=utc_timestamp(),
+                )
+                write_summary(path=paths.summary, stages=[*summaries, failed], meta_paths=summary_meta_paths(paths), status="failed")
             raise
+
+    def start_visual_index_after(pool: ThreadPoolExecutor, shots_future: Future[StageSummary]) -> Future[StageSummary]:
+        # Ingest is the only GPU-heavy stage before match and it releases VRAM when it finishes,
+        # so visual indexing overlaps review/TTS instead of extending the critical path.
+        def run_after_shots() -> StageSummary:
+            shots_future.result()
+            return execute("visual_index")
+
+        return pool.submit(run_after_shots)
 
     if args.dry_run:
         print(json.dumps({"cost_policy": cost_policy.to_json(), "cost_summary": cost_summary, "fallback_plan": {"possible": openai_fallback_possible, "triggered": False, "review": review_status, "dry_run": True}}, ensure_ascii=False, indent=2))
@@ -300,14 +332,15 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
             short_circuited = True
             append_short_circuit_summaries(planner_meta.recap_mode)
         elif "shots" in selected:
-            with ThreadPoolExecutor(max_workers=1) as pool:
+            with ThreadPoolExecutor(max_workers=2) as pool:
                 shots_future = pool.submit(execute, "shots")
+                visual_future = start_visual_index_after(pool, shots_future) if "visual_index" in selected else None
                 for stage in ("review", "tts"):
                     if stage in selected:
                         summaries.append(execute(stage))
                 summaries.append(shots_future.result())
-                if "visual_index" in selected:
-                    summaries.append(execute("visual_index"))
+                if visual_future is not None:
+                    summaries.append(visual_future.result())
         else:
             for stage in ("review", "tts"):
                 if stage in selected:
@@ -315,8 +348,9 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
             if "visual_index" in selected:
                 summaries.append(execute("visual_index"))
     elif "shots" in selected:
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             shots_future = pool.submit(execute, "shots")
+            visual_future = None
             for stage in ("ingest", "storymap", "review", "tts"):
                 if stage in selected:
                     summaries.append(execute(stage))
@@ -331,9 +365,11 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                             python_exe=python_exe,
                             executor=executor,
                         )
+                if stage == "ingest" and "visual_index" in selected:
+                    visual_future = start_visual_index_after(pool, shots_future)
             summaries.append(shots_future.result())
-            if "visual_index" in selected:
-                summaries.append(execute("visual_index"))
+            if visual_future is not None:
+                summaries.append(visual_future.result())
     else:
         for stage in ("ingest", "storymap", "review", "tts"):
             if stage in selected:
@@ -379,24 +415,24 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     )
     paths.cost_summary.write_text(json.dumps(cost_summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    summary = write_summary(
-        path=paths.summary,
-        stages=summaries,
-        meta_paths={
-            "preflight": paths.video_profile,
-            "ingest": paths.film_map_meta,
-            "storymap": paths.story_map_meta,
-            "episode_planner": paths.episode_meta,
-            "review": paths.review_meta,
-            "tts": paths.tts_meta,
-            "shots": paths.shots_meta,
-            "visual_index": paths.shot_visual_index,
-            "match": paths.edl_meta,
-            "render": paths.render_meta,
-        },
-    )
+    summary = write_summary(path=paths.summary, stages=summaries, meta_paths=summary_meta_paths(paths))
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
+
+
+def summary_meta_paths(paths) -> dict[str, Path]:  # type: ignore[no-untyped-def]
+    return {
+        "preflight": paths.video_profile,
+        "ingest": paths.film_map_meta,
+        "storymap": paths.story_map_meta,
+        "episode_planner": paths.episode_meta,
+        "review": paths.review_meta,
+        "tts": paths.tts_meta,
+        "shots": paths.shots_meta,
+        "visual_index": paths.shot_visual_index,
+        "match": paths.edl_meta,
+        "render": paths.render_meta,
+    }
 
 
 def maybe_run_ingest_fallback(

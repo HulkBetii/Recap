@@ -8,6 +8,7 @@ import sys
 import time
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Callable
@@ -22,6 +23,7 @@ from common.llm_gateway import (
     resolve_gateway_api_key,
 )
 from common.media import require_ffmpeg
+from common.runtime import dependency_version_violations
 from common.schema import (
     BeatTiming,
     EdlMeta,
@@ -430,7 +432,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--classifier", "heuristic"]
     elif stage == "ingest":
         command += ["--input", str(film), "--output", str(paths.film_map)]
-        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "translation_provider", "translation_batch_size", "translation_batch_max_attempts", "translation_concurrency", "translation_base_url", "translation_chatgpt_profile_dir", "translation_chatgpt_session_file", "translation_reply_timeout_s", "translation_playwright_max_attempts", "translation_playwright_recovery_timeout_s", "translation_min_success_ratio", "source_language", "translate_mode", "vision_provider", "vision_model", "vision_resize_long_edge", "vision_batch_size", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
+        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "translation_provider", "translation_batch_size", "translation_batch_max_attempts", "translation_concurrency", "translation_base_url", "translation_chatgpt_profile_dir", "translation_chatgpt_session_file", "translation_reply_timeout_s", "translation_playwright_max_attempts", "translation_playwright_recovery_timeout_s", "translation_min_success_ratio", "source_language", "translate_mode", "vision_provider", "vision_model", "vision_resize_long_edge", "vision_batch_size", "vision_concurrency", "vision_base_url", "device", "asr_batch_size", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
             add_option(command, key, section.get(key))
         if section.get("translation_headless", False):
             command.append("--translation-headless")
@@ -634,6 +636,17 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
             model=ingest_config.get("translate_model"),
             base_url=ingest_config.get("translation_base_url"),
         )
+    if (
+        "ingest" in will_run
+        and not dry_run
+        and ingest_config.get("vision_provider") == GATEWAY_BACKEND
+        and int(ingest_config.get("max_vision_frames") or 0) > 0
+    ):
+        require_gateway_ready(
+            purpose="ingest vision",
+            model=ingest_config.get("vision_model"),
+            base_url=ingest_config.get("vision_base_url"),
+        )
     recap_mode = str(config.get("orchestrator", {}).get("recap_mode", "off"))
     defer_episode_downstream = "episode_planner" in selected and recap_mode in {"auto", "merge", "skip"}
     if "review" in will_run and not dry_run and not defer_episode_downstream:
@@ -723,14 +736,31 @@ def validate_runtime_requirements(will_run: set[str], config: dict[str, Any]) ->
         )
     if cuda_required and not runtime_cuda_available():
         raise OrchestratorError("production runtime requires CUDA, but torch.cuda.is_available() is false")
+    violations = runtime_dependency_violations()
+    if violations:
+        raise OrchestratorError(
+            "installed packages violate the project pins: " + "; ".join(violations)
+            + ". Run the pipeline from the project venv (.venv\\Scripts\\python.exe) instead of a shared interpreter"
+        )
+
+
+def runtime_dependency_violations() -> list[str]:
+    return dependency_version_violations()
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def run_subprocess(command: list[str], log_path: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
     with log_path.open("a", encoding="utf-8") as log_file:
-        log_file.write("$ " + " ".join(command) + "\n")
+        # Timestamped markers separate stages and resumed runs in the shared run.log the UI tails.
+        log_file.write(f"[{utc_timestamp()}] $ " + " ".join(command) + "\n")
         log_file.flush()
         result = subprocess.run(command, stdout=log_file, stderr=subprocess.STDOUT, text=True, check=False)
+        log_file.write(f"[{utc_timestamp()}] exit={result.returncode} after {time.perf_counter() - started:.1f}s\n")
     if result.returncode != 0:
         raise OrchestratorError(f"stage command failed with exit code {result.returncode}: {' '.join(command)}")
 
@@ -756,12 +786,21 @@ def run_stage(
     if dry_run:
         return StageSummary(stage=stage, status="planned", duration_s=0.0, command=command, outputs=outputs)
     paths.run_dir.mkdir(parents=True, exist_ok=True)
+    started_at = utc_timestamp()
     started = time.perf_counter()
     executor(command, paths.run_log)
     if stage == "review" and paths.review_meta.is_file() and not paths.review_meta_alias.exists():
         shutil.copyfile(paths.review_meta, paths.review_meta_alias)
     validate_stage(paths, stage)
-    return StageSummary(stage=stage, status="ran", duration_s=round(time.perf_counter() - started, 3), command=command, outputs=outputs)
+    return StageSummary(
+        stage=stage,
+        status="ran",
+        duration_s=round(time.perf_counter() - started, 3),
+        command=command,
+        outputs=outputs,
+        started_at=started_at,
+        finished_at=utc_timestamp(),
+    )
 
 
 def ordered_selected(selected: set[str]) -> list[str]:

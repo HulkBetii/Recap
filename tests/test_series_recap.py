@@ -426,6 +426,47 @@ def test_episode_planner_rebuild_does_not_force_shots(monkeypatch: pytest.Monkey
     with pytest.raises(StopAfterShots):
         run_series_recap(args, executor=lambda _command, _log_path: None)
 
+
+def test_episode_shots_overlap_next_episode_planner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import threading
+
+    manifest_path = tmp_path / "series_manifest.json"
+    config_path = tmp_path / "config.json"
+    write_manifest(manifest_path, tmp_path / "Grand_Blue.S03E01.mp4", tmp_path / "Grand_Blue.S03E02.mp4")
+    write_config(config_path)
+    second_planner_started = threading.Event()
+
+    class StopAfterShots(RuntimeError):
+        pass
+
+    def fake_run_step(**kwargs):  # type: ignore[no-untyped-def]
+        stage = kwargs["stage"]
+        if stage == "s03e02:episode_planner":
+            second_planner_started.set()
+        if stage == "s03e01:episode_shots":
+            # Sequential scheduling would block here forever: e02 planner only started after e01 shots.
+            assert second_planner_started.wait(5), "episode 2 planner did not overlap episode 1 shots"
+            assert kwargs["log_path"].name == "series_recap.shots.log"
+        if stage == "s03e02:episode_shots":
+            raise StopAfterShots
+        return recap_cli.StepSummary(stage=stage, status="ran", duration_s=0.0, command=kwargs["command"], outputs=[])
+
+    monkeypatch.setattr(recap_cli, "run_step", fake_run_step)
+    args = argparse.Namespace(
+        manifest=manifest_path,
+        config=config_path,
+        episodes="1-2",
+        run_dir=tmp_path / "runs" / "grand-blue-s03",
+        python="python",
+        dry_run=True,
+        force=False,
+        force_final=False,
+        log_level="ERROR",
+    )
+
+    with pytest.raises(StopAfterShots):
+        run_series_recap(args, executor=lambda _command, _log_path: None)
+
 def test_write_youtube_chapters_from_series_chapters_and_timings(tmp_path: Path) -> None:
     chapters_path = tmp_path / "series_chapters.json"
     timings_path = tmp_path / "beats_timing.json"

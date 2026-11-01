@@ -13,13 +13,34 @@ TRANSLATION_UNAVAILABLE = "[translation unavailable]"
 VISION_UNAVAILABLE = "[vision unavailable]"
 
 T = TypeVar("T")
+PERMANENT_OPENAI_ERROR_CODES = {"insufficient_quota", "credit_balance_exhausted", "invalid_api_key", "model_not_found"}
 
 
-def retry_call(action: Callable[[], T], *, attempts: int = 3, base_delay: float = 1.0) -> T:
+class VisionUnavailableError(RuntimeError):
+    """No further frame can succeed with this client (no credits, rejected key or unknown model)."""
+
+
+def is_permanent_openai_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status in {401, 403, 404}:
+        return True
+    markers = {str(getattr(exc, "code", "") or ""), str(getattr(exc, "type", "") or "")}
+    return bool(markers & PERMANENT_OPENAI_ERROR_CODES)
+
+
+def retry_call(
+    action: Callable[[], T],
+    *,
+    attempts: int = 3,
+    base_delay: float = 1.0,
+    stop_on: tuple[type[Exception], ...] = (),
+) -> T:
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
             return action()
+        except stop_on:
+            raise
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             if attempt < attempts - 1:
@@ -104,7 +125,15 @@ class OpenAIIngestClient:
         return text
 
     def describe_frame(self, frame_path: Path) -> str:
-        return retry_call(lambda: self._describe_frame(frame_path))
+        return retry_call(lambda: self._describe_frame_or_stop(frame_path), stop_on=(VisionUnavailableError,))
+
+    def _describe_frame_or_stop(self, frame_path: Path) -> str:
+        try:
+            return self._describe_frame(frame_path)
+        except Exception as exc:  # noqa: BLE001 - classified below, everything else is re-raised for retry
+            if is_permanent_openai_error(exc):
+                raise VisionUnavailableError(f"OpenAI vision cannot continue: {exc}") from exc
+            raise
 
     def _translate_batch(self, batch: list[TranscriptSegment], *, source_language: str = "ko") -> dict[str, str]:
         payload = [{"id": item.id, "ko": item.ko} for item in batch]

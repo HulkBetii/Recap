@@ -14,3 +14,14 @@ Phạm vi: `preflight/`, `ingest/`. Số liệu lấy từ [00-baseline.md](00-b
 **Không đề xuất sửa:** dịch qua 9router mất 6,2 phút cho 1.160 câu, thành công 100%. Tăng concurrency có nguy cơ làm cạn ngân sách tài khoản, nên giữ `translation_concurrency: 2`.
 
 **Thứ tự đề xuất:** R2-1, rồi R2-3, đo lại R2-2, rồi R2-4 (cần đo A/B), cuối cùng R2-5 và R2-6.
+
+## Kết quả sau khi sửa (đo lại trên đoạn 900 giây, `runs/bench-qods-900s-r2`)
+
+| ID | Trạng thái | Kết quả đo được |
+|---|---|---|
+| R2-1 | Đã sửa | Vision qua 9router (`ag/gemini-3.8-flash-high`, 3 luồng): **30/30** frame có mô tả (trước đó 0/30), nhận ra cả title card và logo. Gặp lỗi vĩnh viễn thì dừng ngay và không ghi cache. 7 preset đang dùng OpenAI vision đã chuyển sang 9router. |
+| R2-2 | Đã khắc phục nhờ R2-1 | Beat 0 giờ bắt đầu từ 60 giây; footage đầu tiên ở 65,9 giây (trước đó 15,3 giây là logo PLUS M). Đã xem frame: phần mở đầu toàn cảnh truyện. Không cần thêm classifier. |
+| R2-3 | Đã sửa | VRAM lên 5,1 GB lúc ASR/WhisperX rồi giảm về khoảng 900 MiB ngay khi ASR xong (mức nghỉ 830 MiB); trước đó giữ 11,9 GB. Đo trên 60 giây audio: phần còn giữ sau WhisperX giảm từ 1.760 MiB xuống 139 MiB. |
+| R2-4 | Thêm tùy chọn, **mặc định tắt** | A/B trên 900 giây với `asr_batch_size=16` và timestamp: ASR từ 32,4 s xuống 18,3 s (nhanh gấp 1,8 lần); mốc bắt đầu câu sau WhisperX lệch trung vị 0,14 s, p90 2,4 s; độ giống chữ 91,7%. Không có bản chuẩn để kết luận bên nào đúng hơn, nên giữ mặc định tuần tự. Nếu tắt timestamp, batch chỉ ra 11 câu thô cho 900 giây, không dùng được. |
+| R2-5 | Đã sửa | Prompt dịch dùng cách diễn đạt trung tính; `TRANSLATION_PROMPT_VERSION=segment-v2`. |
+| R2-6 | Đã sửa | Cảnh báo ASR cùng loại được gộp thành một dòng có đếm, ví dụ `short segment merged near <t>s x23`. |

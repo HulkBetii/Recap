@@ -14,7 +14,7 @@ from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from common.schema import TranslatedSegment, TranscriptSegment
 
 TRANSLATION_PROVIDER = "chatgpt_playwright"
-TRANSLATION_PROMPT_VERSION = "ja-en-segment-v1"
+TRANSLATION_PROMPT_VERSION = "segment-v2"
 TRANSLATION_PARSER_VERSION = "exact-id-english-v1"
 
 
@@ -46,7 +46,7 @@ def build_translation_prompt(
     payload = [{"id": str(segment.id), "text": segment.ko} for segment in batch]
     return (
         f"TASK_VERSION: {TRANSLATION_PROMPT_VERSION}\n"
-        f"Translate these {source_name} anime transcript segments into natural, concise English.\n"
+        f"Translate these {source_name} transcript segments from a film or series into natural, concise English.\n"
         "Preserve names and meaning. Do not summarize, merge, split, omit, or renumber segments.\n"
         "Return only one JSON object whose keys are exactly EXPECTED_IDS and whose values are non-empty English strings.\n"
         f"EXPECTED_IDS: {json.dumps(expected_ids, ensure_ascii=False)}\n"

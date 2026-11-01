@@ -10,3 +10,12 @@ Phạm vi: `run.py`, `orchestrator/`, `series_recap/__main__.py`, môi trường
 | R1-4 | TB (ước tính) | Tốc độ | Season xử lý 12 tập tuần tự hoàn toàn ([series_recap/__main__.py:1220](../../series_recap/__main__.py:1220)): `ingest` (GPU) rồi `shots` (CPU) của từng tập. | Pipeline hai làn: chạy `shots` của tập N song song với `ingest` của tập N+1, tối đa 1 job GPU tại một thời điểm. | Tiết kiệm khoảng thời gian shots × (N−1), ước tính 15–25 phút mỗi season 12 tập | Chưa đo được vì chưa có bộ season mẫu; log song song khó đọc hơn |
 
 **Thứ tự đề xuất:** R1-1 trước (nó gây ra các lỗi đã thấy ở R2/R5), rồi R1-3; R1-2 làm sau R2-3; R1-4 chờ có dữ liệu season.
+
+## Kết quả sau khi sửa (đo lại trên đoạn 900 giây, `runs/bench-qods-900s-r2`)
+
+| ID | Trạng thái | Kết quả đo được |
+|---|---|---|
+| R1-1 | Đã sửa | `.venv` tạo bằng `uv`: torch 2.8.0+cu128, `transformers` 4.57.6, Pillow 11.3, `huggingface-hub` 0.36, OpenCV 4.14 (có `CascadeClassifier`); `dependency_version_violations()` = []. Phát hiện thêm: `scenedetect` tự kéo OpenCV 5, nên Recap chuyển sang phụ thuộc `opencv-python>=4.9,<5`. faster-whisper trên GPU chỉ chạy được nhờ torch được import sẵn, nên code giờ nạp sẵn cuBLAS. Preflight production sẽ chặn run nếu phiên bản gói lệch pin. |
+| R1-2 | Đã sửa | `visual_index` chạy 08:00:27–08:01:17, song song với review (08:00:28–08:07:23); không còn nằm trên đường găng. |
+| R1-3 | Đã sửa | `summary.json` có `status` và `started_at`/`finished_at` cho từng stage, kể cả khi run lỗi. `run.log` có mốc thời gian UTC trước và sau mỗi stage. |
+| R1-4 | Đã sửa (chưa đo thật) | `shots` của tập N chạy song song với ingest của tập N+1, log ghi vào `series_recap.shots.log`; có test chứng minh. Chưa có bộ season thật để đo. |

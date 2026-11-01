@@ -549,6 +549,26 @@ def test_blocked_review_fallback_reports_playwright_failure_when_stage_fails(tmp
     assert fallback["review"]["playwright_attempts"] == 2
     assert fallback["review"]["error_code"] == "response_timeout"
     assert fallback["reasons"][0]["block_reason"] == "api_budget_guard=block"
+    summary = json.loads((args.run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "failed"
+    failed = summary["stages"][-1]
+    assert failed["stage"] == "review"
+    assert failed["status"] == "failed"
+    assert failed["error"] == "review failed"
+    assert failed["started_at"] and failed["finished_at"]
+
+
+def test_run_subprocess_writes_timestamped_markers(tmp_path: Path) -> None:
+    import sys
+
+    from orchestrator.runner import run_subprocess
+
+    log_path = tmp_path / "run.log"
+    run_subprocess([sys.executable, "-c", "print('hello')"], log_path)
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("[") and "] $ " in lines[0]
+    assert lines[1] == "hello"
+    assert lines[-1].startswith("[") and "exit=0 after" in lines[-1]
 
 
 def test_sync_restores_configured_review_status_without_usage_artifact(tmp_path: Path) -> None:
@@ -689,6 +709,35 @@ def test_visual_config_runs_visual_index_and_passes_to_match(tmp_path: Path, mon
 
     assert run_pipeline(args, executor=fake_executor) == 0
     assert "visual_index" in calls
+    assert calls.index("visual_index") < calls.index("match")
+
+
+def test_visual_index_overlaps_review_after_ingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    data = json.loads(args.config.read_text(encoding="utf-8"))
+    data["visual_index"] = {"enabled": True, "embedding_model": "mock", "device": "cpu"}
+    data["match"] = {"visual_mode": "rerank"}
+    args.config.write_text(json.dumps(data), encoding="utf-8")
+    visual_started = threading.Event()
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        stage = stage_name(command)
+        calls.append(stage)
+        if stage == "visual_index":
+            assert "ingest" in calls, "visual_index must wait for ingest to release the GPU"
+            visual_started.set()
+        if stage == "review":
+            # Sequential scheduling would deadlock here: visual_index only ran after tts before.
+            assert visual_started.wait(5), "visual_index did not start while review was running"
+        write_stage_outputs(command)
+
+    assert run_pipeline(args, executor=fake_executor) == 0
     assert calls.index("visual_index") < calls.index("match")
 
 
@@ -1011,6 +1060,34 @@ def test_production_runtime_preflight_requires_cuda(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(OrchestratorError, match="requires CUDA"):
         validate_runtime_requirements({"ingest", "visual_index", "match"}, config)
+
+
+def test_production_runtime_preflight_rejects_out_of_range_packages(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = load_config(Path("config.movie.production.yaml"))
+    monkeypatch.setattr("orchestrator.runner.runtime_module_available", lambda _module: True)
+    monkeypatch.setattr("orchestrator.runner.runtime_cuda_available", lambda: True)
+    monkeypatch.setattr("orchestrator.runner.runtime_dependency_violations", lambda: ["transformers 5.16.1 (requires <5,>=4.53)"])
+
+    with pytest.raises(OrchestratorError, match="transformers 5.16.1"):
+        validate_runtime_requirements({"ingest", "visual_index", "match"}, config)
+
+    monkeypatch.setattr("orchestrator.runner.runtime_dependency_violations", lambda: [])
+    validate_runtime_requirements({"ingest", "visual_index", "match"}, config)
+
+
+def test_dependency_version_violations_reads_installed_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    from common import runtime
+
+    monkeypatch.setattr(runtime.metadata, "requires", lambda _name: ["transformers<5,>=4.53; extra == 'visual-index'", "absent-pkg>=1", "Pillow<12,>=10"])
+    versions = {"transformers": "5.16.1", "Pillow": "11.3.0"}
+
+    def fake_version(name: str) -> str:
+        if name not in versions:
+            raise runtime.metadata.PackageNotFoundError(name)
+        return versions[name]
+
+    monkeypatch.setattr(runtime.metadata, "version", fake_version)
+    assert runtime.dependency_version_violations() == ["transformers 5.16.1 (requires <5,>=4.53)"]
 
 
 

@@ -78,6 +78,10 @@ def ingest_config_hash(settings: Mapping[str, Any] | object) -> str:
     payload["translation_required"] = bool(payload.get("translation_required"))
     if payload.get("transcript_correction") in {None, False}:
         payload["transcript_correction"] = "off"
+    batch_size = int(_value(settings, "asr_batch_size", 0) or 0)
+    if batch_size > 0:
+        # Only batched runs key on it, so sequential caches keep their identity.
+        payload["asr_batch_size"] = batch_size
     transcript_input = _value(settings, "transcript_input")
     glossary = _value(settings, "glossary")
     payload.update(
@@ -96,8 +100,10 @@ def audio_cache_key(input_hash: str) -> str:
 
 def transcript_cache_key(audio_key: str, settings: Mapping[str, Any] | object) -> str:
     transcript_input = _value(settings, "transcript_input")
+    batch_size = int(_value(settings, "asr_batch_size", 0) or 0)
     return stable_hash(
         {
+            **({"asr_batch_size": batch_size} if batch_size > 0 else {}),
             "audio_key": audio_key,
             "asr_provider": _value(settings, "asr_provider"),
             "whisper_model": _value(settings, "whisper_model"),

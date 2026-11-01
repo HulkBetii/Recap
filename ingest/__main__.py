@@ -41,7 +41,8 @@ from ingest.llm import TRANSLATION_UNAVAILABLE
 from ingest.local_vision import LocalQwenVisionClient, LocalVisionError
 from ingest.playwright_translation import PlaywrightTranslationClient, PlaywrightTranslationError
 from ingest.transcribe import transcribe_korean, transcribe_openai_chunked, transcribe_openai_gpt4o
-from ingest.vision import VisionClient, describe_gaps
+from ingest.gateway_vision import GatewayVisionClient
+from ingest.vision import VisionCircuitOpen, VisionClient, describe_gaps
 
 DEFAULT_TRANSLATE_MODEL = "gpt-4.1-mini"
 DEFAULT_VISION_MODEL = "gpt-4.1-mini"
@@ -54,7 +55,8 @@ SOURCE_LANGUAGE_TRANSLATE_MODES = {
     "vi": {"none"},
     "ja": {"ja-en", "none"},
 }
-VISION_PROVIDERS = {"openai", "off", "local_qwen2_5_vl"}
+VISION_PROVIDERS = {"openai", "off", "local_qwen2_5_vl", GATEWAY_BACKEND}
+LAZY_VISION_PROVIDERS = {"local_qwen2_5_vl", GATEWAY_BACKEND}
 TRANSLATION_PROVIDERS = {"openai_api", "chatgpt_playwright", GATEWAY_BACKEND}
 
 
@@ -125,6 +127,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vision-model", default=DEFAULT_VISION_MODEL)
     parser.add_argument("--vision-resize-long-edge", default=768, type=int)
     parser.add_argument("--vision-batch-size", default=1, type=int)
+    parser.add_argument(
+        "--asr-batch-size",
+        default=0,
+        type=int,
+        help="faster-whisper BatchedInferencePipeline batch size; 0 keeps sequential decoding (~1.8x slower, reference segmentation)",
+    )
+    parser.add_argument("--vision-concurrency", default=3, type=int, help=f"Parallel frames for vision_provider={GATEWAY_BACKEND}")
+    parser.add_argument("--vision-base-url", default=None, help=f"Gateway base URL for vision_provider={GATEWAY_BACKEND}")
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
     parser.add_argument("--asr-provider", default="faster-whisper", choices=["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"])
     parser.add_argument("--aligner", default="none", choices=["none", "whisperx", "qwen3"])
@@ -205,6 +215,7 @@ def load_transcript(
                 language=args.source_language,
                 duration=duration,
                 chunks_dir=cache.path("local_asr_chunks"),
+                batch_size=getattr(args, "asr_batch_size", 0),
             )
         except TypeError:
             transcript = transcribe_korean(audio_path, args.whisper_model, args.device)
@@ -360,6 +371,8 @@ def build_vision_client(
         except (LocalVisionError, OSError, RuntimeError) as exc:
             logger.warning("local vision unavailable; continuing without visual gap descriptions: %s", exc)
             return None
+    if args.vision_provider == GATEWAY_BACKEND:
+        return GatewayVisionClient(model=args.vision_model, base_url=args.vision_base_url, concurrency=args.vision_concurrency)
     expected = ", ".join(sorted(VISION_PROVIDERS))
     raise IngestError(f"--vision-provider must be one of: {expected}")
 
@@ -406,13 +419,18 @@ def load_vision(
             cache.write_json("vision.json", [])
             return [], 1
         raise IngestError("OPENAI_API_KEY is required for vision")
-    vision_segments, warnings_count = describe_gaps(
-        input_path=input_path,
-        gaps=selected_gaps,
-        frames_dir=cache.path("frames"),
-        client=client,
-        logger=logger,
-    )
+    try:
+        vision_segments, warnings_count = describe_gaps(
+            input_path=input_path,
+            gaps=selected_gaps,
+            frames_dir=cache.path("frames"),
+            client=client,
+            logger=logger,
+        )
+    except VisionCircuitOpen as exc:
+        # Do not cache a run that stopped on a permanent error, so a fixed provider retries vision next time.
+        logger.error("vision.json not cached because vision stopped early: %s", exc)
+        return exc.segments, exc.warnings_count
     cache.write_json("vision.json", vision_segments)
     return vision_segments, warnings_count
 
@@ -461,6 +479,9 @@ def run_ingest(args: argparse.Namespace) -> int:
         "vision_provider": "openai",
         "vision_resize_long_edge": 768,
         "vision_batch_size": 1,
+        "vision_concurrency": 3,
+        "vision_base_url": None,
+        "asr_batch_size": 0,
     }.items():
         if not hasattr(args, key):
             setattr(args, key, value)
@@ -499,6 +520,10 @@ def run_ingest(args: argparse.Namespace) -> int:
         raise IngestError("--vision-resize-long-edge must be > 0")
     if args.vision_batch_size <= 0:
         raise IngestError("--vision-batch-size must be > 0")
+    if args.vision_concurrency <= 0:
+        raise IngestError("--vision-concurrency must be > 0")
+    if args.asr_batch_size < 0:
+        raise IngestError("--asr-batch-size must be >= 0")
     if args.max_segment_s < 0:
         raise IngestError("--max-segment-s must be >= 0")
     if args.drop_non_korean_intro_s < 0:
@@ -646,7 +671,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         client_factory=(
             lambda: build_vision_client(args=args, openai_client=openai_client, logger=logger)
         )
-        if args.vision_provider == "local_qwen2_5_vl"
+        if args.vision_provider in LAZY_VISION_PROVIDERS
         else None,
         logger=logger,
         vision_provider=args.vision_provider,

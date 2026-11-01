@@ -51,8 +51,9 @@ ingest:
   translation_min_success_ratio: 0.0
   source_language: ko
   translate_mode: ko-en
-  vision_provider: openai
-  vision_model: gpt-4.1-mini
+  vision_provider: ninerouter
+  vision_model: ag/gemini-3.8-flash-high
+  vision_concurrency: 3
   vision_resize_long_edge: 768
   vision_batch_size: 1
   device: cpu

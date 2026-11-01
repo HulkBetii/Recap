@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 from common.schema import TranscriptQuality, TranscriptSegment
+from ingest.transcribe import release_gpu_memory
 
 TIMESTAMP_RE = re.compile(r"^\s*-?\s*\[(?P<stamp>\d{1,2}:\d{2}(?::\d{2})?)\]\s*(?P<text>.+?)\s*$")
 SENTENCE_RE = re.compile(r"(?<=[.!?。！？]|[.?!]|[다요죠까니네])\s+")
@@ -277,7 +278,11 @@ def align_with_whisperx(
     ]
     audio = whisperx.load_audio(str(audio_path))
     model, metadata = whisperx.load_align_model(language_code=whisperx_language_code(source_language), device=device)
-    result = whisperx.align(whisperx_segments, model, metadata, audio, device, return_char_alignments=False)
+    try:
+        result = whisperx.align(whisperx_segments, model, metadata, audio, device, return_char_alignments=False)
+    finally:
+        del model
+        release_gpu_memory()
     aligned: list[TranscriptSegment] = []
     for item in result.get("segments", []):
         text = str(item.get("text") or "").strip()
