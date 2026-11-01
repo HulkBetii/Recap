@@ -4,15 +4,25 @@ import argparse
 import json
 import os
 import sys
+import time
 from copy import deepcopy
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
 from orchestrator.config import ConfigError, load_config
 from orchestrator.cost_policy import build_cost_summary, resolve_cost_policy
 from orchestrator.graph import DOWNSTREAM, STAGES, build_paths, forced_stages, stage_range
-from orchestrator.runner import OrchestratorError, outputs_valid, preflight, run_stage
+from orchestrator.runner import (
+    OrchestratorError,
+    episode_planner_enabled,
+    output_paths,
+    outputs_valid,
+    preflight,
+    read_episode_meta,
+    run_stage,
+    utc_timestamp,
+)
 from orchestrator.summary import StageSummary, write_summary
 
 SEVERE_TIMECODE_WARNING_MARKERS = (
@@ -79,6 +89,8 @@ def build_fallback_config(config: dict) -> dict:
     ingest["asr_policy"] = "openai_hybrid"
     ingest["asr_provider"] = orchestrator.get("fallback_ingest_asr_provider", "openai-gpt4o-hybrid")
     ingest["max_vision_frames"] = orchestrator.get("fallback_max_vision_frames", 0)
+    if int(ingest.get("max_vision_frames") or 0) <= 0:
+        ingest["vision_provider"] = "off"
     return fallback
 
 def write_fallback_artifacts(paths, plan: dict, summary: dict | None = None) -> None:  # type: ignore[no-untyped-def]
@@ -197,6 +209,8 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
         selected.discard("preflight")
     if not config.get("visual_index", {}).get("enabled", False):
         selected.discard("visual_index")
+    if not episode_planner_enabled(config) and args.only != "episode_planner":
+        selected.discard("episode_planner")
     forced = forced_stages(selected, args.force, args.force_stage)
     python_exe = config.get("orchestrator", {}).get("python")
     invalid = {stage for stage in selected if not outputs_valid(paths, stage, film=film, config=config)}
@@ -221,6 +235,8 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
 
     def execute(stage: str) -> StageSummary:
         nonlocal openai_fallback_possible, fallback_triggered, review_status
+        started_at = utc_timestamp()
+        started = time.perf_counter()
         try:
             return run_stage(
                 stage=stage,
@@ -233,7 +249,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                 python_exe=python_exe,
                 executor=executor if executor is not None else run_stage.__globals__["run_subprocess"],
             )
-        except OrchestratorError:
+        except OrchestratorError as exc:
             if stage == "review" and not args.dry_run:
                 openai_fallback_possible, fallback_triggered, review_status = sync_review_fallback_reporting(
                     paths=paths,
@@ -243,7 +259,27 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                     openai_fallback_possible=openai_fallback_possible,
                     fallback_triggered=fallback_triggered,
                 )
+            if not args.dry_run:
+                # Keep timings of finished stages when a run fails, instead of losing the whole summary.
+                failed = StageSummary(
+                    stage=stage,
+                    status="failed",
+                    duration_s=round(time.perf_counter() - started, 3),
+                    error=str(exc),
+                    started_at=started_at,
+                    finished_at=utc_timestamp(),
+                )
+                write_summary(path=paths.summary, stages=[*summaries, failed], meta_paths=summary_meta_paths(paths), status="failed")
             raise
+
+    def start_visual_index_after(pool: ThreadPoolExecutor, shots_future: Future[StageSummary]) -> Future[StageSummary]:
+        # Ingest is the only GPU-heavy stage before match and it releases VRAM when it finishes,
+        # so visual indexing overlaps review/TTS instead of extending the critical path.
+        def run_after_shots() -> StageSummary:
+            shots_future.result()
+            return execute("visual_index")
+
+        return pool.submit(run_after_shots)
 
     if args.dry_run:
         print(json.dumps({"cost_policy": cost_policy.to_json(), "cost_summary": cost_summary, "fallback_plan": {"possible": openai_fallback_possible, "triggered": False, "review": review_status, "dry_run": True}}, ensure_ascii=False, indent=2))
@@ -261,9 +297,60 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     if "preflight" in selected:
         summaries.append(execute("preflight"))
 
-    if "shots" in selected:
-        with ThreadPoolExecutor(max_workers=1) as pool:
+    short_circuited = False
+
+    def append_short_circuit_summaries(mode: str) -> None:
+        for stage in ("review", "tts", "shots", "visual_index", "match", "render"):
+            if stage in selected:
+                summaries.append(
+                    StageSummary(
+                        stage=stage,
+                        status=f"short_circuited:{mode}",
+                        duration_s=0.0,
+                        command=[],
+                        outputs=[str(path) for path in output_paths(paths, stage)],
+                    )
+                )
+
+    if "episode_planner" in selected:
+        for stage in ("ingest", "storymap", "episode_planner"):
+            if stage in selected:
+                summaries.append(execute(stage))
+                if stage == "ingest":
+                    fallback_triggered = maybe_run_ingest_fallback(
+                        paths=paths,
+                        film=film,
+                        config=config,
+                        selected=selected,
+                        summaries=summaries,
+                        forced=forced,
+                        python_exe=python_exe,
+                        executor=executor,
+                    )
+        planner_meta = read_episode_meta(paths)
+        if planner_meta is not None and planner_meta.short_circuit:
+            short_circuited = True
+            append_short_circuit_summaries(planner_meta.recap_mode)
+        elif "shots" in selected:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                shots_future = pool.submit(execute, "shots")
+                visual_future = start_visual_index_after(pool, shots_future) if "visual_index" in selected else None
+                for stage in ("review", "tts"):
+                    if stage in selected:
+                        summaries.append(execute(stage))
+                summaries.append(shots_future.result())
+                if visual_future is not None:
+                    summaries.append(visual_future.result())
+        else:
+            for stage in ("review", "tts"):
+                if stage in selected:
+                    summaries.append(execute(stage))
+            if "visual_index" in selected:
+                summaries.append(execute("visual_index"))
+    elif "shots" in selected:
+        with ThreadPoolExecutor(max_workers=2) as pool:
             shots_future = pool.submit(execute, "shots")
+            visual_future = None
             for stage in ("ingest", "storymap", "review", "tts"):
                 if stage in selected:
                     summaries.append(execute(stage))
@@ -278,9 +365,11 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
                             python_exe=python_exe,
                             executor=executor,
                         )
+                if stage == "ingest" and "visual_index" in selected:
+                    visual_future = start_visual_index_after(pool, shots_future)
             summaries.append(shots_future.result())
-            if "visual_index" in selected:
-                summaries.append(execute("visual_index"))
+            if visual_future is not None:
+                summaries.append(visual_future.result())
     else:
         for stage in ("ingest", "storymap", "review", "tts"):
             if stage in selected:
@@ -300,14 +389,18 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
             summaries.append(execute("visual_index"))
 
     for stage in ("match", "render"):
-        if stage in selected:
+        if stage in selected and not short_circuited:
             summaries.append(execute(stage))
+
+    final_will_run = set(will_run)
+    if short_circuited:
+        final_will_run.difference_update({"review", "tts", "shots", "visual_index", "match", "render"})
 
     openai_fallback_possible, fallback_triggered, review_status = sync_review_fallback_reporting(
         paths=paths,
         cost_policy=cost_policy,
         selected=selected,
-        will_run=will_run,
+        will_run=final_will_run,
         openai_fallback_possible=openai_fallback_possible,
         fallback_triggered=fallback_triggered,
     )
@@ -315,30 +408,31 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     cost_summary = build_cost_summary(
         cost_policy,
         selected,
-        will_run,
+        final_will_run,
         openai_fallback_possible=openai_fallback_possible,
         openai_fallback_triggered=fallback_triggered,
         review_fallback=review_status,
     )
     paths.cost_summary.write_text(json.dumps(cost_summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    summary = write_summary(
-        path=paths.summary,
-        stages=summaries,
-        meta_paths={
-            "preflight": paths.video_profile,
-            "ingest": paths.film_map_meta,
-            "storymap": paths.story_map_meta,
-            "review": paths.review_meta,
-            "tts": paths.tts_meta,
-            "shots": paths.shots_meta,
-            "visual_index": paths.shot_visual_index,
-            "match": paths.edl_meta,
-            "render": paths.render_meta,
-        },
-    )
+    summary = write_summary(path=paths.summary, stages=summaries, meta_paths=summary_meta_paths(paths))
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
+
+
+def summary_meta_paths(paths) -> dict[str, Path]:  # type: ignore[no-untyped-def]
+    return {
+        "preflight": paths.video_profile,
+        "ingest": paths.film_map_meta,
+        "storymap": paths.story_map_meta,
+        "episode_planner": paths.episode_meta,
+        "review": paths.review_meta,
+        "tts": paths.tts_meta,
+        "shots": paths.shots_meta,
+        "visual_index": paths.shot_visual_index,
+        "match": paths.edl_meta,
+        "render": paths.render_meta,
+    }
 
 
 def maybe_run_ingest_fallback(
@@ -365,14 +459,14 @@ def maybe_run_ingest_fallback(
         write_fallback_artifacts(paths, {"possible": True, "triggered": False, "blocked": True, "reasons": reasons, "error": "OPENAI_API_KEY missing"})
         raise OrchestratorError("OpenAI fallback required but OPENAI_API_KEY is not set: " + "; ".join(reasons))
     fallback_config = build_fallback_config(config)
-    forced.update(stage for stage in ("storymap", "review", "tts", "match", "render") if stage in selected)
+    forced.update(stage for stage in ("storymap", "episode_planner", "review", "tts", "match", "render") if stage in selected)
     plan = {
         "possible": True,
         "triggered": True,
         "reasons": reasons,
         "fallback_asr_provider": fallback_config["ingest"].get("asr_provider"),
         "fallback_max_vision_frames": fallback_config["ingest"].get("max_vision_frames"),
-        "rerun_stages": [stage for stage in ("ingest", "storymap", "review", "tts", "match", "render") if stage in selected],
+        "rerun_stages": [stage for stage in ("ingest", "storymap", "episode_planner", "review", "tts", "match", "render") if stage in selected],
     }
     write_fallback_artifacts(paths, plan)
     stage_summary = run_stage(

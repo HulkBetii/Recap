@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 from pathlib import Path
 from typing import Any
 
+from common.integrity import file_hash as common_file_hash
+from common.integrity import stable_hash as common_stable_hash
+
 
 def file_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = common_file_hash(path)
+    if digest is None:
+        raise FileNotFoundError(path)
+    return digest
 
 
 def stable_hash(data: object) -> str:
-    return hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    return common_stable_hash(data)
 
 
 class MatchCache:

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from common.inputs import load_shots
+from common.integrity import file_hash
 from common.media import MediaError, require_ffmpeg
 from common.schema import (
     Shot,
@@ -18,8 +20,6 @@ from common.schema import (
     validate_shots,
     write_json,
 )
-from match.cache import file_hash
-from match.inputs import load_shots
 from visual_index.encoder import DEFAULT_VISUAL_MODEL, TransformerVisualEncoder, VisualEncoder, VisualEncoderError, normalize_vector
 from visual_index.frames import FrameRequest, extract_keyframes
 from visual_index.integrity import (

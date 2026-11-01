@@ -17,12 +17,21 @@ def video_profile_hash(path: Path | None) -> str:
     return stable_hash(resolved.read_text(encoding="utf-8"))
 
 
-def profile_cache_key(feature_key: str, profile_hash: str, end_credit_key: str = "end-credit-disabled") -> str:
-    return stable_hash({
+def profile_cache_key(
+    feature_key: str,
+    profile_hash: str,
+    end_credit_key: str = "end-credit-disabled",
+    overlay_key: str = "overlay-disabled",
+) -> str:
+    payload = {
         "features": feature_key,
         "video_profile": profile_hash,
         "end_credit": end_credit_key,
-    })
+    }
+    # Only hashed when the overlay guard runs, so caches written before it existed stay valid.
+    if overlay_key != "overlay-disabled":
+        payload["overlay"] = overlay_key
+    return stable_hash(payload)
 
 
 def non_story_reason(start: float, end: float, profile: VideoProfile | None) -> str | None:

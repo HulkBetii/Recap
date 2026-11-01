@@ -1,0 +1,27 @@
+# R2 — GĐ0 preflight và GĐ1 ingest
+
+Phạm vi: `preflight/`, `ingest/`. Số liệu lấy từ [00-baseline.md](00-baseline.md).
+
+| ID | Tác động | Loại | Bằng chứng | Đề xuất | Lợi ích ước tính | Rủi ro |
+|---|---|---|---|---|---|---|
+| R2-1 | **Cao** | Tốc độ + chất lượng | Vision tốn **29,7 phút nhưng ra 0/193 mô tả**: OpenAI báo `credit_balance_exhausted`, nhưng `retry_call` ([ingest/llm.py:18](../../ingest/llm.py:18)) bắt mọi `Exception`, thử 3 lần, cộng thêm retry nội bộ của SDK. GĐ2 vì vậy không có thông tin hình, và bước bỏ logo ở đầu cũng hỏng theo. | (a) Ngắt hẳn vision khi gặp lỗi vĩnh viễn (`insufficient_quota`, 401/403): dừng ngay từ lần đầu, không gọi tiếp 192 lần còn lại; đồng thời bỏ việc bắt `Exception` rộng. (b) Thêm `vision_provider: ninerouter`: đã kiểm chứng `gemini-3.8-flash` mô tả đúng frame qua `image_url` (8,5 s/ảnh, tự bỏ qua phụ đề); chạy song song khoảng 3 luồng và cache theo từng frame. | Bớt khoảng 30 phút cho mỗi phim; khôi phục mô tả cho 193 đoạn không thoại | Vision qua 9router tốn ngân sách tài khoản Antigravity; tuần tự thì khoảng 27 phút, nên bắt buộc chạy song song |
+| R2-2 | **Cao** | Chất lượng | Recap mở đầu bằng **6 giây logo hãng phim / PLUS M MEGABOX**. Preflight `heuristic` chỉ đạt confidence 0,4 nên không loại; bước bỏ logo ở đầu cũng thất bại vì không có mô tả hình. | Làm R2-1 trước rồi đo lại. Nếu vẫn còn logo: bật classifier `openclip` trong preset production (extra `video-profile`), hoặc thêm heuristic "khung sáng, nền đồng màu, ít chuyển động trong 60 giây đầu". | Hook mở bằng cảnh truyện thay vì logo | Heuristic có thể loại nhầm cảnh mở đầu nền sáng; cần ngưỡng an toàn |
+| R2-3 | TB | Tốc độ / tài nguyên | Sau khi ASR xong, ingest **giữ 11,9/12 GB VRAM suốt 36 phút** (trong lúc dịch và vision), vì model Whisper/WhisperX không được giải phóng. | Giải phóng model ngay sau transcribe và align (`del` + `gc.collect()` + `torch.cuda.empty_cache()`), hoặc chạy ASR trong subprocess riêng. | Mở đường cho R1-2; giảm nguy cơ hết VRAM | Thấp |
+| R2-4 | TB | Tốc độ | ASR + căn timecode mất 12,3 phút cho phim 2 giờ; GPU chỉ bận trung bình 55%; các chunk 10 phút giải mã tuần tự với beam 5 ([ingest/transcribe.py:153](../../ingest/transcribe.py:153)). faster-whisper 1.2.1 đã có `BatchedInferencePipeline`. | Thêm tùy chọn `asr_batch_size` (ví dụ 16) dùng `BatchedInferencePipeline`. So sánh với cách cũ trên đoạn 900 giây: thời gian, số câu nhận ra, độ khớp timecode sau WhisperX. | Ước tính ASR nhanh gấp 2–4 lần (bớt 6–9 phút) | Batched mode cắt câu theo VAD nên ranh giới câu có thể khác; WhisperX căn lại timecode sau đó nên rủi ro thấp, nhưng phải đo |
+| R2-5 | Thấp | Chất lượng | Prompt dịch luôn ghi "anime transcript" kể cả với phim Hàn ([ingest/playwright_translation.py:48](../../ingest/playwright_translation.py:48)). | Đổi câu chữ theo `content_type`; tăng `TRANSLATION_PROMPT_VERSION`. | Bản dịch đúng giọng phim người đóng hơn | Cache dịch cũ bị invalidate một lần |
+| R2-6 | Thấp | Vận hành | 202 cảnh báo "short segment merged" bị chép nguyên vào `review_script.meta.json.warnings`, làm chìm các cảnh báo quan trọng. | Gộp thành một dòng đếm số lượng trong meta; chi tiết vẫn giữ trong `film_map.meta.json`. | Meta dễ đọc hơn | Thấp |
+
+**Không đề xuất sửa:** dịch qua 9router mất 6,2 phút cho 1.160 câu, thành công 100%. Tăng concurrency có nguy cơ làm cạn ngân sách tài khoản, nên giữ `translation_concurrency: 2`.
+
+**Thứ tự đề xuất:** R2-1, rồi R2-3, đo lại R2-2, rồi R2-4 (cần đo A/B), cuối cùng R2-5 và R2-6.
+
+## Kết quả sau khi sửa (đo lại trên đoạn 900 giây, `runs/bench-qods-900s-r2`)
+
+| ID | Trạng thái | Kết quả đo được |
+|---|---|---|
+| R2-1 | Đã sửa | Vision qua 9router (`ag/gemini-3.8-flash-high`, 3 luồng): **30/30** frame có mô tả (trước đó 0/30), nhận ra cả title card và logo. Gặp lỗi vĩnh viễn thì dừng ngay và không ghi cache. 7 preset đang dùng OpenAI vision đã chuyển sang 9router. |
+| R2-2 | Đã khắc phục nhờ R2-1 | Beat 0 giờ bắt đầu từ 60 giây; footage đầu tiên ở 65,9 giây (trước đó 15,3 giây là logo PLUS M). Đã xem frame: phần mở đầu toàn cảnh truyện. Không cần thêm classifier. |
+| R2-3 | Đã sửa | VRAM lên 5,1 GB lúc ASR/WhisperX rồi giảm về khoảng 900 MiB ngay khi ASR xong (mức nghỉ 830 MiB); trước đó giữ 11,9 GB. Đo trên 60 giây audio: phần còn giữ sau WhisperX giảm từ 1.760 MiB xuống 139 MiB. |
+| R2-4 | Thêm tùy chọn, **mặc định tắt** | A/B trên 900 giây với `asr_batch_size=16` và timestamp: ASR từ 32,4 s xuống 18,3 s (nhanh gấp 1,8 lần); mốc bắt đầu câu sau WhisperX lệch trung vị 0,14 s, p90 2,4 s; độ giống chữ 91,7%. Không có bản chuẩn để kết luận bên nào đúng hơn, nên giữ mặc định tuần tự. Nếu tắt timestamp, batch chỉ ra 11 câu thô cho 900 giây, không dùng được. |
+| R2-5 | Đã sửa | Prompt dịch dùng cách diễn đạt trung tính; `TRANSLATION_PROMPT_VERSION=segment-v2`. |
+| R2-6 | Đã sửa | Cảnh báo ASR cùng loại được gộp thành một dòng có đếm, ví dụ `short segment merged near <t>s x23`. |

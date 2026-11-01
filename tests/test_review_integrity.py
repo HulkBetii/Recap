@@ -69,3 +69,33 @@ def test_operational_browser_settings_do_not_change_review_cache(tmp_path: Path)
     second = build_review_identity(film_map_path=film_map, settings=second_settings, style_sample_path=style, story_map_path=None, video_profile_path=None)
 
     assert first.cache_key == second.cache_key
+
+def test_context_file_content_changes_review_cache(tmp_path: Path) -> None:
+    film_map = tmp_path / "film_map.json"
+    film_map.write_text("[]", encoding="utf-8")
+    style = tmp_path / "style.txt"
+    style.write_text("style", encoding="utf-8")
+    context = tmp_path / "anime_context.yaml"
+    context.write_text("title: Example\nkind: anime_movie\n", encoding="utf-8")
+
+    first = build_review_identity(
+        film_map_path=film_map,
+        settings=settings() | {"content_type": "anime_movie"},
+        style_sample_path=style,
+        story_map_path=None,
+        video_profile_path=None,
+        context_file_path=context,
+    )
+    context.write_text("title: Example Two\nkind: anime_movie\n", encoding="utf-8")
+    second = build_review_identity(
+        film_map_path=film_map,
+        settings=settings() | {"content_type": "anime_movie"},
+        style_sample_path=style,
+        story_map_path=None,
+        video_profile_path=None,
+        context_file_path=context,
+    )
+
+    assert first.context_file_hash != second.context_file_hash
+    assert first.core_input_hash != second.core_input_hash
+    assert first.cache_key != second.cache_key

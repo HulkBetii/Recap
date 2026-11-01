@@ -4,7 +4,9 @@ import argparse
 import json
 from pathlib import Path
 
-from tts.__main__ import run_tts_with_client
+import pytest
+
+from tts.__main__ import TtsError, run_tts_with_client
 from tts.providers import ProviderResult, TtsProviderClient, TtsProviderError
 
 
@@ -46,6 +48,30 @@ def write_review_script(tmp_path):  # type: ignore[no-untyped-def]
     data = [
         {"beat_id": 0, "narration": "Mở đầu căng thẳng.", "from_seg_id": 1, "to_seg_id": 1, "src_tc_start": 1.0, "src_tc_end": 2.0, "is_hook": True},
         {"beat_id": 1, "narration": "Câu chuyện tiếp tục.", "from_seg_id": 0, "to_seg_id": 0, "src_tc_start": 0.0, "src_tc_end": 1.0, "is_hook": False},
+    ]
+    path = tmp_path / "review_script.json"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    meta = tmp_path / "film_map.meta.json"
+    meta.write_text(json.dumps({"duration_s": 10.0}), encoding="utf-8")
+    return path, meta
+
+def write_repeated_review_script(tmp_path: Path) -> tuple[Path, Path]:
+    repeated = (
+        "Ở tập 8, chuyện cần giữ lại là: đây là một bước ngoặt của mạch truyện. "
+        "Mốc này quan trọng vì nó làm thay đổi trạng thái câu chuyện. "
+        "Mốc này quan trọng vì nó làm thay đổi trạng thái câu chuyện."
+    )
+    data = [
+        {
+            "beat_id": index,
+            "narration": repeated.replace("tập 8", f"tập {index + 1}"),
+            "from_seg_id": index,
+            "to_seg_id": index,
+            "src_tc_start": float(index),
+            "src_tc_end": float(index + 1),
+            "is_hook": index == 0,
+        }
+        for index in range(4)
     ]
     path = tmp_path / "review_script.json"
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -118,6 +144,20 @@ def test_tts_cli_mock_end_to_end(tmp_path, monkeypatch) -> None:  # type: ignore
     assert meta.real_ratio == 0.315
     assert meta.est_cost > 0
     assert meta.text_normalization == "vi"
+    assert meta.review_script_hash is not None
+
+def test_tts_cli_rejects_repeated_content_before_provider_call(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    review_script, film_meta = write_repeated_review_script(tmp_path)
+    monkeypatch.setattr("tts.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setenv("VIVOO_API_KEY", "ai33")
+    provider = FakeProvider()
+
+    import asyncio
+
+    with pytest.raises(TtsError, match="review_script content QA failed"):
+        asyncio.run(run_tts_with_client(make_args(tmp_path, review_script, film_meta), provider))
+
+    assert provider.calls == []
 
 
 def test_tts_cli_cache_skips_second_run(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

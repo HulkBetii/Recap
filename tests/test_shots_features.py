@@ -67,3 +67,36 @@ def test_tail_batch_sampling_seeks_to_first_request() -> None:
     assert initial_batch_position(capture, requests, seek_to_first_request=True) == 2700
     assert capture.positions == [2700]
     assert initial_batch_position(capture, requests, seek_to_first_request=False) == 0
+
+
+def test_face_detector_prefers_yunet_and_falls_back_with_reason(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from shots import features
+
+    detector, warnings = features.create_face_detector("on")
+    assert detector.version == "opencv-yunet-2023mar"
+    assert warnings == []
+
+    def broken(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("model missing")
+
+    monkeypatch.setattr(features.YuNetFaceDetector, "__init__", broken)
+    detector, warnings = features.create_face_detector("on")
+    assert detector.version == "opencv-haar-frontalface-default"
+    assert warnings and "YuNetFaceDetector unavailable" in warnings[0]
+
+
+def test_yunet_detects_nothing_on_blank_frame() -> None:
+    from shots.features import YuNetFaceDetector
+
+    assert YuNetFaceDetector().detect(np.zeros((202, 360, 3), dtype=np.uint8)) == (0, 0.0)
+
+
+def test_feature_cache_key_tracks_the_loaded_detector() -> None:
+    import argparse
+
+    from shots.__main__ import feature_cache_key
+    from shots.detect import ShotSpan
+
+    args = argparse.Namespace(sample_frames=3, frame_sampling="batch", face_detection="on", min_brightness=0.1, min_shot_len=0.5)
+    spans = [ShotSpan(index=0, tc_start=0.0, tc_end=2.0)]
+    assert feature_cache_key(spans, args, face_detector="off") != feature_cache_key(spans, args, face_detector="opencv-yunet-2023mar")

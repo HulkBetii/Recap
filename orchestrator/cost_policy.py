@@ -8,6 +8,8 @@ from tts.providers import TtsProviderError, resolve_provider_order
 
 QualityMode = Literal["low_cost", "balanced", "max_quality"]
 ApiBudgetGuard = Literal["off", "warn", "block"]
+TEXT_LLM_BACKENDS = ("chatgpt_playwright", "ninerouter")
+TEXT_LLM_COST = {"chatgpt_playwright": "playwright_session", "ninerouter": "gateway"}
 
 @dataclass(frozen=True)
 class CostPolicy:
@@ -33,18 +35,32 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
     if quality_mode not in {"low_cost", "balanced", "max_quality"}:
         raise ValueError("orchestrator.quality_mode must be low_cost|balanced|max_quality")
     text_llm_backend = orchestrator.get("text_llm_backend", "chatgpt_playwright")
-    if text_llm_backend != "chatgpt_playwright":
-        raise ValueError("orchestrator.text_llm_backend must be chatgpt_playwright")
+    if text_llm_backend not in TEXT_LLM_BACKENDS:
+        raise ValueError("orchestrator.text_llm_backend must be " + "|".join(TEXT_LLM_BACKENDS))
     api_budget_guard = orchestrator.get("api_budget_guard", "warn")
     if api_budget_guard not in {"off", "warn", "block"}:
         raise ValueError("orchestrator.api_budget_guard must be off|warn|block")
+    recap_mode = orchestrator.get("recap_mode", "off")
+    if recap_mode not in {"off", "auto", "full", "quick", "merge", "skip"}:
+        raise ValueError("orchestrator.recap_mode must be off|auto|full|quick|merge|skip")
+    merge_threshold = float(orchestrator.get("recap_merge_threshold", 0.15))
+    quick_threshold = float(orchestrator.get("recap_quick_threshold", 0.35))
+    full_threshold = float(orchestrator.get("recap_full_threshold", 0.70))
+    if not 0 <= merge_threshold <= quick_threshold <= full_threshold <= 1:
+        raise ValueError("orchestrator recap thresholds must satisfy 0 <= merge <= quick <= full <= 1")
+    quick_target_ratio = float(orchestrator.get("quick_target_ratio", 0.12))
+    if not 0.08 <= quick_target_ratio <= 0.15:
+        raise ValueError("orchestrator.quick_target_ratio must be between 0.08 and 0.15")
+    quick_min_coverage = float(orchestrator.get("quick_min_coverage", 0.45))
+    if not 0 <= quick_min_coverage <= 1:
+        raise ValueError("orchestrator.quick_min_coverage must be between 0 and 1")
 
     warnings: list[str] = []
     ingest = resolved.setdefault("ingest", {})
     tts = resolved.setdefault("tts", {})
     review = resolved.setdefault("review", {})
-    if review.get("llm_backend", "chatgpt_playwright") != "chatgpt_playwright":
-        raise ValueError("review.llm_backend must be chatgpt_playwright")
+    if review.get("llm_backend", "chatgpt_playwright") not in TEXT_LLM_BACKENDS:
+        raise ValueError("review.llm_backend must be " + "|".join(TEXT_LLM_BACKENDS))
 
     asr_policy = ingest.get("asr_policy", "preset")
     if asr_policy not in {"preset", "local_first", "openai_hybrid", "manual"}:
@@ -58,9 +74,10 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
         if asr_policy == "local_first" and ingest.get("aligner") in {None, "none"}:
             ingest["aligner"] = "whisperx"
         ingest["max_vision_frames"] = 0
+        ingest["vision_provider"] = "off"
         if tts.get("pronunciation_suggest_backend") is None:
             tts["pronunciation_suggest_backend"] = "off"
-        warnings.append("low_cost disables OpenAI vision and uses local-first ASR; KO translation may still require API unless translate_mode=none")
+        warnings.append("low_cost disables vision and uses local-first ASR; translation cost follows ingest.translation_provider")
     elif quality_mode == "max_quality":
         if asr_policy in {"preset", "openai_hybrid"}:
             ingest["asr_policy"] = "openai_hybrid"
@@ -72,14 +89,16 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
             tts["pronunciation_suggest_backend"] = "chatgpt_playwright"
 
     review["llm_backend"] = text_llm_backend
-    review_fallback_configured = bool(review.get("openai_fallback_model"))
+    # OpenAI fallback wraps only the Playwright client; gateway runs never trigger it.
+    review_fallback_configured = bool(review.get("openai_fallback_model")) and text_llm_backend == "chatgpt_playwright"
     review_fallback_blocked = review_fallback_configured and api_budget_guard == "block"
 
     stages = {
         "ingest": describe_ingest(ingest),
         "review": {
             "backend": text_llm_backend,
-            "cost": "playwright_session" if text_llm_backend == "chatgpt_playwright" else text_llm_backend,
+            "cost": TEXT_LLM_COST[text_llm_backend],
+            "llm_model": review.get("llm_model") if text_llm_backend == "ninerouter" else None,
             "openai_fallback_model": review.get("openai_fallback_model"),
             "openai_fallback_configured": review_fallback_configured,
             "openai_fallback_allowed": review_fallback_configured and not review_fallback_blocked,
@@ -88,6 +107,7 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
         },
         "tts": describe_tts(tts),
         "preflight": {"backend": resolved.get("preflight", {}).get("classifier", "heuristic"), "cost": "local"},
+        "episode_planner": {"backend": "deterministic", "cost": "local"},
         "visual_index": {"backend": resolved.get("visual_index", {}).get("embedding_mode", "off"), "cost": "local"},
         "match": {"backend": resolved.get("match", {}).get("semantic_mode", "off"), "cost": "local"},
         "render": {"backend": "ffmpeg", "cost": "local"},
@@ -104,23 +124,42 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
 def describe_ingest(ingest: dict[str, Any]) -> dict[str, Any]:
     asr_provider = ingest.get("asr_provider", "faster-whisper")
     translate_mode = ingest.get("translate_mode", "ko-en")
+    translation_provider = ingest.get("translation_provider", "openai_api")
     vision_frames = int(ingest.get("max_vision_frames", 0) or 0)
+    vision_provider = ingest.get("vision_provider", "openai")
     openai_uses: list[str] = []
     if str(asr_provider).startswith("openai"):
         openai_uses.append("asr")
-    if translate_mode not in {"none", "off", None}:
+    if translate_mode not in {"none", "off", None} and translation_provider == "openai_api":
         openai_uses.append("translation")
-    if vision_frames > 0:
+    if vision_frames > 0 and vision_provider == "openai":
         openai_uses.append("vision")
     return {
         "asr_policy": ingest.get("asr_policy", "preset"),
         "asr_provider": asr_provider,
         "aligner": ingest.get("aligner", "none"),
         "translate_mode": translate_mode,
+        "translation_provider": translation_provider,
+        "translation_required": bool(ingest.get("translation_required", False)),
         "max_vision_frames": vision_frames,
-        "backend": "openai_api" if openai_uses else "local",
+        "vision_provider": vision_provider,
+        "backend": (
+            "openai_api"
+            if openai_uses
+            else translation_provider
+            if translate_mode not in {"none", "off", None} and translation_provider in TEXT_LLM_BACKENDS
+            else "local"
+        ),
         "openai_uses": openai_uses,
-        "cost": "paid_api" if openai_uses else "local",
+        "cost": (
+            "paid_api"
+            if openai_uses
+            else "subscription_browser"
+            if translate_mode not in {"none", "off", None} and translation_provider == "chatgpt_playwright"
+            else "gateway"
+            if translate_mode not in {"none", "off", None} and translation_provider == "ninerouter"
+            else "local"
+        ),
     }
 
 def describe_tts(tts: dict[str, Any]) -> dict[str, Any]:
@@ -132,13 +171,15 @@ def describe_tts(tts: dict[str, Any]) -> dict[str, Any]:
         )
     except TtsProviderError:
         available_providers = []
+    provider_mode = tts.get("provider_mode", "auto")
+    is_vieneu = provider_mode == "vieneu"
     return {
-        "provider_mode": tts.get("provider_mode", "auto"),
+        "provider_mode": provider_mode,
         "available_providers": available_providers,
         "text_normalization": tts.get("text_normalization", "vi"),
         "pronunciation_suggest_backend": tts.get("pronunciation_suggest_backend", "off"),
-        "backend": "paid_tts_provider",
-        "cost": "paid_audio_cacheable",
+        "backend": "local_vieneu_onnx" if is_vieneu else "paid_tts_provider",
+        "cost": "local_compute" if is_vieneu else "paid_audio_cacheable",
     }
 
 def build_cost_summary(

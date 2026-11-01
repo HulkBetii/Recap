@@ -10,21 +10,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.media import MediaError, normalize_audio, probe_duration, require_ffmpeg
-from common.schema import ReviewBeat, TtsManifestEntry, TtsMeta, validate_review_script, write_json
+from common.integrity import file_hash
+from common.narration_qa import BLOCKING_NARRATION_QA_CODES, analyze_narration_content
+from common.schema import ReviewBeat, TtsManifestEntry, TtsMeta, write_json
 from tts.cache import TtsCache, build_cache_key, stable_hash
 from tts.concat import concat_voiceover
 from tts.cost import estimate_cost, real_ratio
 from tts.providers import (
+    CAPCUT_MODEL,
     DEFAULT_OPENAI_MODEL,
     DEFAULT_OPENAI_VOICE,
     ProviderMode,
     TtsProviderClient,
     TtsProviderError,
+    resolve_capcut_voice,
     resolve_provider_order,
 )
 from tts.pronunciation_qa import analyze_pronunciation_risks
 from tts.sanitize import normalize_tts_script
 from tts.timing import build_timings
+from tts.vieneu_provider import (
+    DEFAULT_VIENEU_BACKEND,
+    DEFAULT_VIENEU_MODEL,
+    DEFAULT_VIENEU_PRECISION,
+    DEFAULT_VIENEU_STYLE,
+    validate_vieneu_settings,
+    vieneu_package_version,
+)
 
 DEFAULT_MODEL = "eleven_multilingual_v2"
 DEFAULT_PROVIDER_MODE: ProviderMode = "auto"
@@ -44,11 +56,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-audio", required=True, type=Path)
     parser.add_argument("--output-timing", required=True, type=Path)
     parser.add_argument("--voice-id", required=True)
-    parser.add_argument("--provider-mode", choices=["auto", "ai33", "genmax", "openai"], default=DEFAULT_PROVIDER_MODE)
+    parser.add_argument(
+        "--provider-mode",
+        choices=["auto", "ai33", "genmax", "openai", "vieneu", "capcut"],
+        default=DEFAULT_PROVIDER_MODE,
+    )
     parser.add_argument("--genmax-voice-id", default=None)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--openai-model", default=DEFAULT_OPENAI_MODEL)
     parser.add_argument("--openai-voice", default=DEFAULT_OPENAI_VOICE)
+    parser.add_argument("--vieneu-style", choices=["tu_nhien", "tin_tuc", "doc_truyen"], default=DEFAULT_VIENEU_STYLE)
+    parser.add_argument("--vieneu-backend", choices=["onnx"], default=DEFAULT_VIENEU_BACKEND)
+    parser.add_argument("--vieneu-precision", choices=["int8", "fp32"], default=DEFAULT_VIENEU_PRECISION)
+    parser.add_argument("--vieneu-model", default=DEFAULT_VIENEU_MODEL)
+    parser.add_argument("--vieneu-threads", default=0, type=int)
     parser.add_argument("--speed", default=DEFAULT_SPEED, type=float)
     parser.add_argument("--inter-beat-pause", default=DEFAULT_INTER_BEAT_PAUSE, type=float)
     parser.add_argument("--concurrency", default=DEFAULT_CONCURRENCY, type=int)
@@ -78,6 +99,21 @@ def load_review_script(path: Path) -> list[ReviewBeat]:
         raise TtsError("review_script.json must be a JSON array")
     beats = [ReviewBeat.model_validate(item) for item in data]
     return sorted(beats, key=lambda item: item.beat_id)
+
+def validate_review_script_content(beats: list[ReviewBeat]) -> None:
+    issues = analyze_narration_content(beats)
+    blocking = [
+        issue
+        for issue in issues
+        if issue.get("level") == "error" or issue.get("code") in BLOCKING_NARRATION_QA_CODES
+    ]
+    if not blocking:
+        return
+    details = "; ".join(
+        f"{item.get('code')}: {item.get('message')} (beats={item.get('beat_ids', [])})"
+        for item in blocking[:8]
+    )
+    raise TtsError(f"review_script content QA failed: {details}")
 
 
 def load_film_duration(path: Path | None) -> tuple[float | None, list[str]]:
@@ -112,6 +148,11 @@ async def synthesize_one(
     model: str,
     openai_model: str,
     openai_voice: str,
+    vieneu_style: str,
+    vieneu_backend: str,
+    vieneu_precision: str,
+    vieneu_model: str,
+    vieneu_threads: int,
     provider_config: dict[str, object],
     speed: float,
     normalize: bool,
@@ -140,6 +181,11 @@ async def synthesize_one(
             model=model,
             openai_model=openai_model,
             openai_voice=openai_voice,
+            vieneu_style=vieneu_style,
+            vieneu_backend=vieneu_backend,
+            vieneu_precision=vieneu_precision,
+            vieneu_model=vieneu_model,
+            vieneu_threads=vieneu_threads,
             speed=speed,
             provider_mode=provider_mode,
             output_path=raw_path,
@@ -186,6 +232,18 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
 
     openai_model = getattr(args, "openai_model", DEFAULT_OPENAI_MODEL)
     openai_voice = getattr(args, "openai_voice", DEFAULT_OPENAI_VOICE)
+    vieneu_style = getattr(args, "vieneu_style", DEFAULT_VIENEU_STYLE)
+    vieneu_backend = getattr(args, "vieneu_backend", DEFAULT_VIENEU_BACKEND)
+    vieneu_precision = getattr(args, "vieneu_precision", DEFAULT_VIENEU_PRECISION)
+    vieneu_model = getattr(args, "vieneu_model", DEFAULT_VIENEU_MODEL)
+    vieneu_threads = int(getattr(args, "vieneu_threads", 0))
+    if args.provider_mode == "vieneu":
+        validate_vieneu_settings(
+            backend=vieneu_backend,
+            precision=vieneu_precision,
+            style=vieneu_style,
+            threads=vieneu_threads,
+        )
     provider_order = resolve_provider_order(
         args.provider_mode,
         voice_id=args.voice_id,
@@ -200,11 +258,36 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         "openai_model": openai_model,
         "openai_voice": openai_voice,
     }
+    if args.provider_mode == "vieneu":
+        provider_config["vieneu"] = {
+            "package_version": vieneu_package_version(),
+            "mode": "v3turbo",
+            "backend": vieneu_backend,
+            "precision": vieneu_precision,
+            "model": vieneu_model,
+            "voice_id": args.voice_id,
+            "style": vieneu_style,
+            "threads": vieneu_threads,
+            "apply_watermark": True,
+            "speed_method": "ffmpeg_atempo",
+        }
+    capcut_voice_type: str | None = None
+    if args.provider_mode == "capcut":
+        capcut_voice = resolve_capcut_voice(args.voice_id)
+        capcut_voice_type = capcut_voice.voice_type
+        provider_config["capcut"] = {
+            "voice_type": capcut_voice.voice_type,
+            "resource_id": capcut_voice.resource_id,
+            "model": CAPCUT_MODEL,
+            "speed_method": "ssml_prosody_rate",
+        }
 
     require_ffmpeg()
     beats = load_review_script(review_script)
     if not beats:
         raise TtsError("review_script.json is empty")
+    validate_review_script_content(beats)
+    review_script_hash = file_hash(review_script)
     text_normalization = getattr(args, "tts_text_normalization", "vi")
     lexicon_path = getattr(args, "tts_pronunciation_lexicon", None)
     lexicon_path = lexicon_path.expanduser().resolve() if lexicon_path else None
@@ -268,6 +351,11 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
             model=args.model,
             openai_model=openai_model,
             openai_voice=openai_voice,
+            vieneu_style=vieneu_style,
+            vieneu_backend=vieneu_backend,
+            vieneu_precision=vieneu_precision,
+            vieneu_model=vieneu_model,
+            vieneu_threads=vieneu_threads,
             provider_config=provider_config,
             speed=args.speed,
             normalize=normalize,
@@ -319,6 +407,12 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
     elif primary_provider == "genmax":
         primary_voice_id = args.genmax_voice_id or args.voice_id
         primary_model = args.model
+    elif primary_provider == "vieneu":
+        primary_voice_id = args.voice_id
+        primary_model = vieneu_model
+    elif primary_provider == "capcut":
+        primary_voice_id = capcut_voice_type or args.voice_id
+        primary_model = CAPCUT_MODEL
     else:
         primary_voice_id = args.voice_id
         primary_model = args.model
@@ -353,6 +447,7 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         fallback_count=fallback_count,
         openai_model=openai_model,
         openai_voice=openai_voice,
+        review_script_hash=review_script_hash,
     )
     write_json(output_timing.with_name("tts_meta.json"), meta)
     return timings, meta

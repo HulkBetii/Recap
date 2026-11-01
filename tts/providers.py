@@ -4,17 +4,28 @@ import asyncio
 import json
 import logging
 import os
+import random
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, TypeVar
 
-ProviderMode = Literal["auto", "ai33", "genmax", "openai"]
+from tts.capcut import CapCutClient, CapCutError, CapCutVoice, load_voice_catalog
+from tts.vieneu_provider import (
+    DEFAULT_VIENEU_BACKEND,
+    DEFAULT_VIENEU_MODEL,
+    DEFAULT_VIENEU_PRECISION,
+    DEFAULT_VIENEU_STYLE,
+    VieneuSynthesizer,
+)
+
+ProviderMode = Literal["auto", "ai33", "genmax", "openai", "vieneu", "capcut"]
 
 AI33_BASE_URL = "https://api.ai33.pro"
 GENMAX_BASE_URL = "https://api.genmax.io"
@@ -34,6 +45,15 @@ OPENAI_VI_INSTRUCTIONS = (
 POLL_RETRYABLE_ERROR_PREFIXES = tuple(
     [f"HTTP {code}:" for code in sorted(RETRYABLE_HTTP_CODES)] + ["Network error:"]
 )
+CAPCUT_MODEL = "capcut-sami-tts-v3"
+# Retry schedule from trans-zh dubbing, where provider server_busy is a normal condition, not a failure.
+CAPCUT_RETRY_MAX_ATTEMPTS = 20
+CAPCUT_RETRY_BASE_S = 3.0
+CAPCUT_RETRY_CAP_S = 120.0
+CAPCUT_RETRY_NOISY_AFTER = 3
+CAPCUT_WAIT_TIMEOUT_S = 180.0
+
+T = TypeVar("T")
 
 
 class TtsProviderError(RuntimeError):
@@ -61,8 +81,13 @@ def resolve_provider_order(
     environ: Mapping[str, str] | None = None,
 ) -> list[str]:
     env = environ if environ is not None else os.environ
-    if provider_mode not in {"auto", "ai33", "genmax", "openai"}:
+    if provider_mode not in {"auto", "ai33", "genmax", "openai", "vieneu", "capcut"}:
         raise TtsProviderError(f"unsupported provider_mode: {provider_mode}")
+    if provider_mode == "vieneu":
+        return ["vieneu"]
+    if provider_mode == "capcut":
+        resolve_capcut_voice(voice_id)
+        return ["capcut"]
     if provider_mode == "ai33":
         if not env.get("VIVOO_API_KEY", "").strip():
             raise TtsProviderError("VIVOO_API_KEY env var is required for provider_mode=ai33")
@@ -100,6 +125,11 @@ class TtsProviderClient:
         model: str,
         openai_model: str = DEFAULT_OPENAI_MODEL,
         openai_voice: str = DEFAULT_OPENAI_VOICE,
+        vieneu_style: str = DEFAULT_VIENEU_STYLE,
+        vieneu_backend: str = DEFAULT_VIENEU_BACKEND,
+        vieneu_precision: str = DEFAULT_VIENEU_PRECISION,
+        vieneu_model: str = DEFAULT_VIENEU_MODEL,
+        vieneu_threads: int = 0,
         speed: float,
         provider_mode: ProviderMode,
         output_path: Path,
@@ -120,6 +150,22 @@ class TtsProviderClient:
                 elif provider == "genmax":
                     result = await self._synthesize_genmax(text, genmax_voice_id or voice_id, model, output_path)
                     actual_model = result.model or model
+                elif provider == "vieneu":
+                    result = await self._synthesize_vieneu(
+                        text,
+                        voice_id,
+                        vieneu_style,
+                        vieneu_backend,
+                        vieneu_precision,
+                        vieneu_model,
+                        vieneu_threads,
+                        speed,
+                        output_path,
+                    )
+                    actual_model = result.model or vieneu_model
+                elif provider == "capcut":
+                    result = await self._synthesize_capcut(text, voice_id, speed, output_path)
+                    actual_model = result.model or CAPCUT_MODEL
                 else:
                     result = await self._synthesize_openai(
                         text,
@@ -157,6 +203,148 @@ class TtsProviderClient:
     ) -> ProviderResult:
         await asyncio.to_thread(synthesize_openai, text, voice_id, model, speed, output_path)
         return ProviderResult(provider="openai", voice_id=voice_id, audio_url="openai://audio/speech", model=model)
+
+    async def _synthesize_vieneu(
+        self,
+        text: str,
+        voice_id: str,
+        style: str,
+        backend: str,
+        precision: str,
+        model: str,
+        threads: int,
+        speed: float,
+        output_path: Path,
+    ) -> ProviderResult:
+        synthesizer: Any = getattr(self, "_vieneu_synthesizer", None)
+        if synthesizer is None:
+            synthesizer = VieneuSynthesizer()
+            self._vieneu_synthesizer = synthesizer
+        await asyncio.to_thread(
+            synthesizer.synthesize,
+            text=text,
+            voice_id=voice_id,
+            style=style,
+            backend=backend,
+            precision=precision,
+            model=model,
+            threads=threads,
+            speed=speed,
+            output_path=output_path,
+        )
+        return ProviderResult(provider="vieneu", voice_id=voice_id, audio_url="vieneu://local", model=model)
+
+    async def _synthesize_capcut(self, text: str, voice_id: str, speed: float, output_path: Path) -> ProviderResult:
+        provider: CapCutProvider | None = getattr(self, "_capcut_provider", None)
+        if provider is None:
+            provider = CapCutProvider()
+            self._capcut_provider = provider
+        return await asyncio.to_thread(
+            provider.synthesize,
+            text=text,
+            voice_id=voice_id,
+            speed=speed,
+            output_path=output_path,
+        )
+
+
+def resolve_capcut_voice(voice_id: str) -> CapCutVoice:
+    """Resolve a CapCut voice_type or display name from voices.json; unknown or ambiguous voices fail."""
+    target = voice_id.strip().casefold()
+    if not target:
+        raise TtsProviderError("CapCut voice_id cannot be empty")
+    catalog = load_voice_catalog()
+    if not catalog:
+        raise TtsProviderError("CapCut voice catalog tts/capcut/voices.json is missing or unreadable")
+    for field in ("voice_type", "display_name"):
+        matches = {
+            (voice.voice_type, voice.resource_id): voice
+            for voice in catalog
+            if getattr(voice, field).casefold() == target
+        }
+        if len(matches) > 1:
+            options = ", ".join(f"{voice_type} ({resource_id})" for voice_type, resource_id in sorted(matches))
+            raise TtsProviderError(f"CapCut voice {voice_id!r} is ambiguous; use one voice_type: {options}")
+        if matches:
+            voice = next(iter(matches.values()))
+            if not voice.resource_id.strip():
+                raise TtsProviderError(f"CapCut voice {voice.voice_type} has no resource_id in voices.json")
+            return voice
+    raise TtsProviderError(
+        f"Unknown CapCut voice: {voice_id!r}; use a voice_type or display_name from tts/capcut/voices.json"
+    )
+
+
+class CapCutProvider:
+    """Explicit free CapCut TTS adapter: retries only transient CapCut errors and never falls back."""
+
+    def __init__(
+        self,
+        client_factory: Callable[[], CapCutClient] = CapCutClient,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        max_attempts: int = CAPCUT_RETRY_MAX_ATTEMPTS,
+        wait_timeout_s: float = CAPCUT_WAIT_TIMEOUT_S,
+    ) -> None:
+        self._client_factory = client_factory
+        self._client: CapCutClient | None = None
+        self._lock = threading.Lock()
+        self._sleep = sleep
+        self._max_attempts = max_attempts
+        self._wait_timeout_s = wait_timeout_s
+
+    def synthesize(self, *, text: str, voice_id: str, speed: float, output_path: Path) -> ProviderResult:
+        if speed <= 0:
+            raise TtsProviderError("CapCut speed must be > 0")
+        voice = resolve_capcut_voice(voice_id)
+        client = self._get_client()
+        rate = f"{speed:.2f}"
+        task_id, token = self._call(
+            "task creation",
+            lambda: client.synthesize(text, voice=voice.voice_type, resource_id=voice.resource_id, rate=rate),
+        )
+        result = self._call(f"task {task_id}", lambda: client.wait(task_id, token, timeout=self._wait_timeout_s))
+        audio_url = str(result["audio_url"])
+        self._call("audio download", lambda: client.download(audio_url, output_path))
+        return ProviderResult(provider="capcut", voice_id=voice.voice_type, audio_url=audio_url, model=CAPCUT_MODEL)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._client is not None:
+                self._client.close()
+                self._client = None
+
+    def _get_client(self) -> CapCutClient:
+        with self._lock:
+            if self._client is None:
+                self._client = self._client_factory()
+            return self._client
+
+    def _call(self, label: str, operation: Callable[[], T]) -> T:
+        delay = CAPCUT_RETRY_BASE_S
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                return operation()
+            except CapCutError as exc:
+                if not exc.transient:
+                    raise TtsProviderError(f"CapCut {label} failed: {exc}") from exc
+                if attempt == self._max_attempts:
+                    raise TtsProviderError(f"CapCut {label} still failing after {attempt} attempts: {exc}") from exc
+                wait_s = delay + random.random()
+                log = logging.getLogger("tts.providers")
+                level = logging.WARNING if attempt >= CAPCUT_RETRY_NOISY_AFTER else logging.DEBUG
+                log.log(
+                    level,
+                    "CapCut %s is temporarily unavailable; retrying in %.1fs (attempt %d/%d): %s",
+                    label,
+                    wait_s,
+                    attempt,
+                    self._max_attempts,
+                    exc,
+                )
+                self._sleep(wait_s)
+                delay = min(delay * 2, CAPCUT_RETRY_CAP_S)
+        raise AssertionError("CapCut retry loop exhausted unexpectedly")
 
 
 def synthesize_openai(text: str, voice_id: str, model: str, speed: float, output_path: Path) -> None:

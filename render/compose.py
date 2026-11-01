@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from common.media import run_command
+from render.cut import format_fps, video_encoder_args
 
 if TYPE_CHECKING:
     from render.cut import RenderParams
@@ -78,15 +79,10 @@ def pad_video_by_tail(*, video_path: Path, output_path: Path, work_dir: Path, sh
         str(last_frame),
         "-an",
         "-vf",
-        f"scale={params.width}:{params.height},fps={params.fps:g},format=yuv420p",
+        f"scale={params.width}:{params.height},fps={format_fps(params.fps)},format=yuv420p",
         "-frames:v",
         str(pad_frames),
-        "-c:v",
-        "libx264",
-        "-preset",
-        params.preset,
-        "-crf",
-        str(params.crf),
+        *video_encoder_args(params),
         "-pix_fmt",
         "yuv420p",
         str(tail_clip),
@@ -143,3 +139,27 @@ def mux_voiceover(video_path: Path, voiceover_path: Path, output_path: Path, aud
         str(output_path),
     ]
     run_command(command)
+
+
+def mux_master_audio(video_path: Path, master_audio_path: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    run_command([
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video_path),
+        "-i",
+        str(master_audio_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "copy",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ])

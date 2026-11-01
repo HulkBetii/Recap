@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from common.schema import FilmMapSegment, ReviewBeat
+from common.schema import FilmMapSegment, NonStoryRange, ReviewBeat
 from review.non_story import drop_non_story_beats
 
 
@@ -50,3 +50,14 @@ def test_hook_credit_like_beat_is_kept_with_warning() -> None:
     assert len(filtered) == 1
     assert report.dropped_beat_ids == []
     assert "hook beat" in report.warnings[0]
+
+def test_drop_beat_overlapping_anime_non_story_range() -> None:
+    film_map = [seg(0, 72, 90, "students walk through the city")]
+    beats = [beat(0, 72, 90, "Mở đầu yên lặng trong khu phố.")]
+    ranges = [NonStoryRange(start_s=72, end_s=162, label="opening_theme", confidence=1.0)]
+
+    filtered, report = drop_non_story_beats(beats, film_map, duration_s=300, tail_s=40, non_story_ranges=ranges)
+
+    assert filtered == []
+    assert report.dropped_beat_ids == [0]
+    assert "opening_theme" in report.decisions[0].reason

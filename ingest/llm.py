@@ -13,13 +13,34 @@ TRANSLATION_UNAVAILABLE = "[translation unavailable]"
 VISION_UNAVAILABLE = "[vision unavailable]"
 
 T = TypeVar("T")
+PERMANENT_OPENAI_ERROR_CODES = {"insufficient_quota", "credit_balance_exhausted", "invalid_api_key", "model_not_found"}
 
 
-def retry_call(action: Callable[[], T], *, attempts: int = 3, base_delay: float = 1.0) -> T:
+class VisionUnavailableError(RuntimeError):
+    """No further frame can succeed with this client (no credits, rejected key or unknown model)."""
+
+
+def is_permanent_openai_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status in {401, 403, 404}:
+        return True
+    markers = {str(getattr(exc, "code", "") or ""), str(getattr(exc, "type", "") or "")}
+    return bool(markers & PERMANENT_OPENAI_ERROR_CODES)
+
+
+def retry_call(
+    action: Callable[[], T],
+    *,
+    attempts: int = 3,
+    base_delay: float = 1.0,
+    stop_on: tuple[type[Exception], ...] = (),
+) -> T:
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
             return action()
+        except stop_on:
+            raise
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             if attempt < attempts - 1:
@@ -42,22 +63,51 @@ class OpenAIIngestClient:
         *,
         batch_size: int = 20,
         logger: logging.Logger | None = None,
+        source_language: str = "ko",
     ) -> tuple[list[TranslatedSegment], int]:
         translated: list[TranslatedSegment] = []
         warnings_count = 0
         for offset in range(0, len(segments), batch_size):
             batch = segments[offset : offset + batch_size]
+            missing_ids = {str(item.id) for item in batch}
+            mapping: dict[str, str] = {}
             try:
-                mapping = retry_call(lambda: self._translate_batch(batch))
+                mapping = retry_call(lambda: self._translate_batch(batch, source_language=source_language))
             except Exception as exc:  # noqa: BLE001
-                warnings_count += len(batch)
                 if logger:
                     logger.warning("translation batch failed: %s", exc)
-                mapping = {str(item.id): TRANSLATION_UNAVAILABLE for item in batch}
+                mapping = {}
+            else:
+                missing_ids = {
+                    str(item.id)
+                    for item in batch
+                    if not self._translated_text(mapping, item)
+                }
+                if missing_ids and logger:
+                    logger.info(
+                        "translation batch returned %d/%d ids; retrying missing segments individually",
+                        len(batch) - len(missing_ids),
+                        len(batch),
+                    )
+            if missing_ids:
+                for segment in batch:
+                    segment_id = str(segment.id)
+                    if segment_id not in missing_ids:
+                        continue
+                    try:
+                        single_mapping = retry_call(lambda s=segment: self._translate_batch([s], source_language=source_language))
+                        text = self._translated_text(single_mapping, segment)
+                        if text:
+                            mapping[segment_id] = text
+                            missing_ids.discard(segment_id)
+                            continue
+                    except Exception as exc:  # noqa: BLE001
+                        if logger:
+                            logger.warning("translation segment %s failed: %s", segment.id, exc)
+            warnings_count += len(missing_ids)
             for segment in batch:
-                text = str(mapping.get(str(segment.id)) or mapping.get(segment.id) or "").strip()
+                text = self._translated_text(mapping, segment)
                 if not text:
-                    warnings_count += 1
                     text = TRANSLATION_UNAVAILABLE
                 translated.append(
                     TranslatedSegment(
@@ -70,18 +120,31 @@ class OpenAIIngestClient:
                 )
         return translated, warnings_count
 
-    def describe_frame(self, frame_path: Path) -> str:
-        return retry_call(lambda: self._describe_frame(frame_path))
+    def _translated_text(self, mapping: dict[str, str], segment: TranscriptSegment) -> str:
+        text = str(mapping.get(str(segment.id)) or mapping.get(segment.id) or "").strip()
+        return text
 
-    def _translate_batch(self, batch: list[TranscriptSegment]) -> dict[str, str]:
+    def describe_frame(self, frame_path: Path) -> str:
+        return retry_call(lambda: self._describe_frame_or_stop(frame_path), stop_on=(VisionUnavailableError,))
+
+    def _describe_frame_or_stop(self, frame_path: Path) -> str:
+        try:
+            return self._describe_frame(frame_path)
+        except Exception as exc:  # noqa: BLE001 - classified below, everything else is re-raised for retry
+            if is_permanent_openai_error(exc):
+                raise VisionUnavailableError(f"OpenAI vision cannot continue: {exc}") from exc
+            raise
+
+    def _translate_batch(self, batch: list[TranscriptSegment], *, source_language: str = "ko") -> dict[str, str]:
         payload = [{"id": item.id, "ko": item.ko} for item in batch]
+        source_name = {"ko": "Korean", "ja": "Japanese", "vi": "Vietnamese"}.get(source_language, source_language)
         response = self.client.chat.completions.create(
             model=self.translate_model,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "Translate Korean drama transcript segments to natural English. "
+                        f"Translate {source_name} transcript segments to natural English. "
                         "Return only a JSON object mapping each id to translated text. "
                         "Do not merge, split, omit, or renumber segments."
                     ),

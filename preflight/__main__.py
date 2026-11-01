@@ -6,9 +6,10 @@ import logging
 import shutil
 from pathlib import Path
 
+from common.inputs import load_anime_context, load_manual_non_story_ranges
 from common.media import require_ffmpeg
-from common.integrity import atomic_write_json
-from common.schema import write_json
+from common.integrity import atomic_write_json, file_hash
+from common.schema import NonStoryRange, write_json
 from preflight.detect import PreflightError, build_video_profile
 from preflight.integrity import PREFLIGHT_CACHE_VERSION, preflight_identity
 
@@ -22,10 +23,52 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--classifier", default="heuristic", choices=["heuristic", "openclip"])
     parser.add_argument("--confidence-threshold", default=0.75, type=float)
     parser.add_argument("--uncertain-threshold", default=0.55, type=float)
+    parser.add_argument("--manual-ranges", default=None, type=Path, help="Optional YAML/JSON file containing strict manual non-story ranges")
+    parser.add_argument("--anime-context", default=None, type=Path, help="Optional anime context YAML/JSON; its non_story_ranges are merged")
     parser.add_argument("--work-dir", default=Path("work/preflight"), type=Path)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
+
+def resolve_optional_file(path: Path | None, *, label: str) -> Path | None:
+    if path is None:
+        return None
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        raise PreflightError(f"{label} file does not exist: {resolved}")
+    return resolved
+
+def load_manual_ranges(manual_ranges_path: Path | None, anime_context_path: Path | None) -> list[NonStoryRange]:
+    ranges: list[NonStoryRange] = []
+    if manual_ranges_path is not None:
+        ranges.extend(load_manual_non_story_ranges(manual_ranges_path))
+    if anime_context_path is not None:
+        context = load_anime_context(anime_context_path)
+        ranges.extend(NonStoryRange.model_validate(item.model_dump(mode="json")) for item in context.non_story_ranges)
+    return ranges
+
+def merge_manual_ranges(profile, ranges: list[NonStoryRange]):  # type: ignore[no-untyped-def]
+    if not ranges:
+        return profile
+    existing = list(profile.non_story_ranges)
+    appended: list[NonStoryRange] = []
+    seen = {(round(item.start_s, 3), round(item.end_s, 3), item.label) for item in existing}
+    for item in ranges:
+        if item.end_s > profile.duration_s + 1e-6:
+            raise PreflightError(f"manual non-story range exceeds media duration: {item.label} {item.start_s}-{item.end_s}s")
+        if item.start_s >= profile.duration_s:
+            raise PreflightError(f"manual non-story range starts after media duration: {item.label} {item.start_s}s")
+        key = (round(item.start_s, 3), round(item.end_s, 3), item.label)
+        if key in seen:
+            continue
+        seen.add(key)
+        appended.append(item)
+    if not appended:
+        return profile
+    warnings = list(profile.warnings)
+    warnings.append(f"merged {len(appended)} manual non-story range(s)")
+    merged_ranges = sorted(existing + appended, key=lambda item: (item.start_s, item.end_s, item.label))
+    return profile.model_copy(update={"non_story_ranges": merged_ranges, "warnings": warnings})
 
 def run_preflight(args: argparse.Namespace) -> int:
     input_path = args.input.expanduser().resolve()
@@ -39,6 +82,12 @@ def run_preflight(args: argparse.Namespace) -> int:
         raise PreflightError("--sample-every-s must be > 0")
     if not 0 <= args.uncertain_threshold <= args.confidence_threshold <= 1:
         raise PreflightError("thresholds must satisfy 0 <= uncertain <= confidence <= 1")
+    if not hasattr(args, "manual_ranges"):
+        args.manual_ranges = None
+    if not hasattr(args, "anime_context"):
+        args.anime_context = None
+    manual_ranges_path = resolve_optional_file(args.manual_ranges, label="manual ranges")
+    anime_context_path = resolve_optional_file(args.anime_context, label="anime context")
     require_ffmpeg()
     input_hash, config_hash = preflight_identity(
         input_path,
@@ -47,6 +96,8 @@ def run_preflight(args: argparse.Namespace) -> int:
         sample_every_s=args.sample_every_s,
         confidence_threshold=args.confidence_threshold,
         uncertain_threshold=args.uncertain_threshold,
+        manual_ranges_hash=file_hash(manual_ranges_path),
+        anime_context_hash=file_hash(anime_context_path),
     )
     identity_path = work_dir / "cache_identity.json"
     cache_current = False
@@ -71,6 +122,7 @@ def run_preflight(args: argparse.Namespace) -> int:
         confidence_threshold=args.confidence_threshold,
         uncertain_threshold=args.uncertain_threshold,
     )
+    profile = merge_manual_ranges(profile, load_manual_ranges(manual_ranges_path, anime_context_path))
     profile = profile.model_copy(
         update={
             "input_hash": input_hash,

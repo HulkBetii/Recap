@@ -7,6 +7,7 @@ import pytest
 
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from review.__main__ import ReviewError, build_parser, build_review_with_client, resolve_chatgpt_profile_dir
+from review.playwright_chat import PlaywrightChatError
 
 
 class FakeReviewClient:
@@ -37,9 +38,13 @@ class FakeReviewClient:
                 ],
                 ensure_ascii=False,
             )
+        if "Regenerate only this one" in prompt and "length:" in prompt:
+            current = json.loads(prompt.split("CURRENT_BEAT:\n", 1)[1].split("\n", 1)[0])
+            return json.dumps({"beat_id": current["beat_id"], "narration": current["narration"] + " Chi tiết thêm."}, ensure_ascii=False)
         if "Regenerate only this one" in prompt:
             return json.dumps({"beat_id": 1, "narration": "Minh lần theo dấu vết và nhận ra cả nhà đang che giấu một bí mật."}, ensure_ascii=False)
-        if "Review this Vietnamese recap" in prompt and not any("Regenerate only" in call for call in self.calls):
+        qa_rewrites = [call for call in self.calls if "Regenerate only" in call and "length:" not in call]
+        if "Review this Vietnamese recap" in prompt and not qa_rewrites:
             return json.dumps(
                 {"pass": False, "issues": [{"beat_id": 1, "type": "accuracy", "suggestion": "Làm rõ theo film_map"}], "notes": "needs fix"},
                 ensure_ascii=False,
@@ -136,6 +141,61 @@ def test_qa_ignores_invalid_beat_ids(tmp_path) -> None:
     assert meta.qa_report[0]["issues"] == []
 
 
+def test_qa_rewrite_transport_failure_keeps_current_beat(tmp_path) -> None:
+    class RewriteFailureClient(FakeReviewClient):
+        async def ask(self, prompt: str) -> str:
+            self.calls.append(prompt)
+            if "keys: glossary, outline, hook" in prompt:
+                return json.dumps(
+                    {
+                        "glossary": [{"name": "Minh", "role": "nhân vật chính"}],
+                        "outline": [
+                            {"from_seg_id": 3, "to_seg_id": 3, "summary": "hook"},
+                            {"from_seg_id": 0, "to_seg_id": 1, "summary": "mở đầu"},
+                        ],
+                        "hook": [3],
+                    },
+                    ensure_ascii=False,
+                )
+            if "JSON array of objects" in prompt:
+                return json.dumps(
+                    [
+                        {"beat_id": 0, "narration": "Một bí mật kinh hoàng mở ra."},
+                        {"beat_id": 1, "narration": "Minh bắt đầu phát hiện mọi thứ không bình thường."},
+                    ],
+                    ensure_ascii=False,
+                )
+            if "Regenerate only this one" in prompt:
+                raise PlaywrightChatError(
+                    "No new assistant response appeared after 600s",
+                    code="response_timeout",
+                    retryable=True,
+                    fallback_eligible=True,
+                    attempts=2,
+                )
+            if "Review this Vietnamese recap" in prompt:
+                qa_calls = sum("Review this Vietnamese recap" in call for call in self.calls)
+                if qa_calls == 1:
+                    return json.dumps(
+                        {"pass": False, "issues": [{"beat_id": 1, "type": "accuracy", "suggestion": "Làm rõ theo film_map"}], "notes": "needs fix"},
+                        ensure_ascii=False,
+                    )
+                return json.dumps({"pass": True, "issues": [], "notes": "ok"}, ensure_ascii=False)
+            return json.dumps({"pass": True, "issues": [], "notes": "ok"}, ensure_ascii=False)
+
+    film_map_path = write_film_map(tmp_path)
+    args = make_args(tmp_path, film_map_path)
+    args.max_qa_iterations = 1
+
+    import asyncio
+
+    beats, meta = asyncio.run(build_review_with_client(args, RewriteFailureClient()))
+
+    assert (tmp_path / "review_script.json").exists()
+    assert beats[1].narration == "Minh bắt đầu phát hiện mọi thứ không bình thường."
+    assert any("qa rewrite skipped for beat 1" in warning for warning in meta.warnings)
+
+
 @pytest.mark.parametrize("backend", ["openai_api", "off"])
 def test_review_cli_rejects_non_playwright_backends(backend: str) -> None:
     with pytest.raises(SystemExit):
@@ -152,3 +212,15 @@ def test_review_cli_defaults_to_locked_auto_yt_profile() -> None:
 def test_review_runtime_rejects_any_other_profile(tmp_path) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(ReviewError, match="profile is locked"):
         resolve_chatgpt_profile_dir(tmp_path / "other-profile")
+
+
+def test_repeated_asr_warnings_are_collapsed() -> None:
+    from review.inputs import summarize_asr_warnings
+
+    summary = summarize_asr_warnings(
+        ["short segment merged near 88.879s", "short segment merged near 90.900s", "whisperx alignment failed: oom"]
+    )
+    assert summary == [
+        "ASR warning: short segment merged near <t>s x2 (details in film_map.meta.json)",
+        "ASR warning: whisperx alignment failed: oom",
+    ]

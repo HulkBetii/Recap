@@ -19,10 +19,19 @@ def require_ffmpeg() -> None:
 
 
 def run_command(args: list[str]) -> None:
-    result = subprocess.run(args, capture_output=True, text=True, check=False)
+    result = subprocess.run(args, capture_output=True, check=False)
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
     if result.returncode != 0:
-        message = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        message = stderr.strip() or stdout.strip() or "unknown error"
         raise MediaError(message)
+
+def _decode_process_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def probe_duration(input_path: Path) -> float:
@@ -38,14 +47,15 @@ def probe_duration(input_path: Path) -> float:
             str(input_path),
         ],
         capture_output=True,
-        text=True,
         check=False,
     )
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
     if result.returncode != 0:
-        message = result.stderr.strip() or "ffprobe failed"
+        message = stderr.strip() or "ffprobe failed"
         raise MediaError(message)
     try:
-        payload: dict[str, Any] = json.loads(result.stdout)
+        payload: dict[str, Any] = json.loads(stdout)
         return float(payload["format"]["duration"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise MediaError("could not read media duration with ffprobe") from exc
@@ -68,7 +78,7 @@ def probe_video_stream(input_path: Path) -> dict[str, Any]:
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=width,height,codec_name,r_frame_rate,avg_frame_rate,duration",
+            "stream=width,height,codec_name,r_frame_rate,avg_frame_rate,duration,nb_frames",
             "-show_entries",
             "format=duration",
             "-of",
@@ -76,24 +86,28 @@ def probe_video_stream(input_path: Path) -> dict[str, Any]:
             str(input_path),
         ],
         capture_output=True,
-        text=True,
         check=False,
     )
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
     if result.returncode != 0:
-        message = result.stderr.strip() or "ffprobe failed"
+        message = stderr.strip() or "ffprobe failed"
         raise MediaError(message)
     try:
-        payload: dict[str, Any] = json.loads(result.stdout)
+        payload: dict[str, Any] = json.loads(stdout)
         stream = payload["streams"][0]
         rate_text = stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0/1"
         fps = _parse_rate(rate_text)
         duration = stream.get("duration") or payload.get("format", {}).get("duration")
+        frame_count_text = stream.get("nb_frames")
+        frame_count = int(frame_count_text) if frame_count_text not in {None, "N/A"} else None
         return {
             "width": int(stream["width"]),
             "height": int(stream["height"]),
             "codec": str(stream.get("codec_name") or "unknown"),
             "fps": fps,
             "duration": float(duration),
+            "frame_count": frame_count,
         }
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise MediaError("could not read video stream with ffprobe") from exc
@@ -113,17 +127,47 @@ def has_audio_stream(input_path: Path) -> bool:
             str(input_path),
         ],
         capture_output=True,
-        text=True,
         check=False,
     )
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
     if result.returncode != 0:
-        message = result.stderr.strip() or "ffprobe failed"
+        message = stderr.strip() or "ffprobe failed"
         raise MediaError(message)
     try:
-        payload: dict[str, Any] = json.loads(result.stdout)
+        payload: dict[str, Any] = json.loads(stdout)
         return bool(payload.get("streams"))
     except json.JSONDecodeError as exc:
         raise MediaError("could not read audio streams with ffprobe") from exc
+
+
+def probe_audio_stream_count(input_path: Path) -> int:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "json",
+            str(input_path),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
+    if result.returncode != 0:
+        message = stderr.strip() or "ffprobe failed"
+        raise MediaError(message)
+    try:
+        payload: dict[str, Any] = json.loads(stdout)
+        return len(payload.get("streams", []))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise MediaError("could not count audio streams with ffprobe") from exc
 
 
 def extract_audio(input_path: Path, output_path: Path) -> None:
@@ -157,6 +201,21 @@ def extract_frame(input_path: Path, timestamp: float, output_path: Path) -> None
         "2",
         str(output_path),
     ])
+
+
+def write_image(output_path: Path, frame: Any) -> bool:
+    """Encode an OpenCV frame and write it through Python, which keeps non-ASCII Windows paths intact.
+
+    ``cv2.imwrite`` converts the path with the ANSI code page on Windows, so a film named in
+    Vietnamese produces mojibake file names that no longer match the paths recorded in JSON.
+    """
+    import cv2
+
+    ok, encoded = cv2.imencode(output_path.suffix or ".jpg", frame)
+    if not ok:
+        return False
+    output_path.write_bytes(encoded.tobytes())
+    return True
 
 
 def normalize_audio(input_path: Path, output_path: Path) -> None:

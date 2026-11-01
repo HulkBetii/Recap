@@ -6,17 +6,30 @@ import shutil
 import subprocess
 import sys
 import time
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Callable
 
-from common.integrity import file_hash, media_identity_hash
+from common.integrity import file_hash, media_identity_hash, stable_hash
+from common.llm_gateway import (
+    DEFAULT_GATEWAY_MODEL,
+    GATEWAY_BACKEND,
+    GATEWAY_KEY_ENV,
+    check_gateway_health,
+    probe_gateway_model,
+    resolve_gateway_api_key,
+)
 from common.media import require_ffmpeg
+from common.runtime import dependency_version_violations
 from common.schema import (
     BeatTiming,
     EdlMeta,
     EdlPlacement,
+    EpisodeMemory,
+    EpisodeMeta,
     FilmMapMeta,
     FilmMapSegment,
     RenderMeta,
@@ -43,14 +56,18 @@ from orchestrator.config import add_option
 from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
+from shots.features import available_face_detector_version
+from shots.overlays import OVERLAY_DETECTOR_VERSION
+from episode_planner.integrity import EPISODE_PLANNER_CACHE_VERSION, episode_planner_config_hash, episode_planner_input_hashes
 from tts.providers import TtsProviderError, resolve_provider_order
+from tts.vieneu_provider import VieneuProviderError, require_vieneu_runtime, validate_vieneu_settings
 from visual_index.integrity import metadata_is_current, validate_visual_index_artifacts, visual_index_config_hash
 from match.version import MATCH_ALGORITHM_VERSION
 from ingest.integrity import INGEST_CACHE_VERSION, ingest_config_hash
 from preflight.integrity import PREFLIGHT_CACHE_VERSION, preflight_identity
 from review.integrity import REVIEW_CACHE_VERSION, build_review_identity
 from review.style import DEFAULT_STYLE_SAMPLE
-from storymap.cache import stable_hash as storymap_stable_hash
+from storymap.cache import STORYMAP_CACHE_VERSION, stable_hash as storymap_stable_hash
 
 class OrchestratorError(RuntimeError):
     pass
@@ -65,6 +82,7 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "preflight": StageSpec("preflight", ("video_profile",), "video_profile"),
     "ingest": StageSpec("ingest", ("film_map", "film_map_meta"), "film_map_meta"),
     "storymap": StageSpec("storymap", ("story_map", "story_map_meta", "story_map_qa"), "story_map_meta"),
+    "episode_planner": StageSpec("episode_planner", ("episode_meta", "episode_memory"), "episode_meta"),
     "review": StageSpec("review", ("review_script", "review_meta"), "review_meta"),
     "tts": StageSpec("tts", ("voiceover", "beats_timing", "tts_meta"), "tts_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
@@ -72,6 +90,26 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "match": StageSpec("match", ("edl", "edl_meta", "edl_qa", "edl_sync_qa", "edl_visual_qa", "edl_review_html"), "edl_meta"),
     "render": StageSpec("render", ("recap", "render_meta"), "render_meta"),
 }
+
+NO_VIDEO_PROFILE_HASH = "no-video-profile"
+SHOTS_FEATURE_CONFIG_KEYS = (
+    "sample_frames",
+    "frame_sampling",
+    "face_detection",
+    "min_brightness",
+    "min_shot_len",
+    "end_credit_guard",
+    "end_credit_tail_s",
+    "end_credit_threshold",
+    "overlay_guard",
+    "skip_intro",
+    "skip_outro",
+    "downscale",
+    "scene_threshold",
+    "scene_scale_width",
+    "scene_min_gap",
+    "max_shot_len",
+)
 
 
 def load_json(path: Path) -> Any:
@@ -82,8 +120,114 @@ def output_paths(paths: RunPaths, stage: str) -> list[Path]:
     return [getattr(paths, name) for name in STAGE_SPECS[stage].outputs]
 
 
+def episode_planner_enabled(config: dict[str, Any]) -> bool:
+    section = config.get("orchestrator", {})
+    return str(section.get("recap_mode", "off")) != "off"
+
+
+def read_episode_meta(paths: RunPaths) -> EpisodeMeta | None:
+    if not paths.episode_meta.is_file():
+        return None
+    return EpisodeMeta.model_validate(load_json(paths.episode_meta))
+
+
+def effective_review_section(paths: RunPaths, config: dict[str, Any]) -> dict[str, Any]:
+    section = deepcopy(config.get("review", {}))
+    planner_meta = read_episode_meta(paths)
+    if planner_meta is None:
+        return section
+    orchestrator = config.get("orchestrator", {})
+    if not section.get("context_file") and paths.episode_memory.is_file():
+        section["context_file"] = str(paths.episode_memory)
+    if planner_meta.recap_mode == "quick":
+        quick_ratio = planner_meta.quick_target_ratio or float(orchestrator.get("quick_target_ratio", 0.12))
+        if section.get("target_ratio", "auto") == "auto":
+            section["target_ratio"] = quick_ratio
+        quick_min_coverage = float(orchestrator.get("quick_min_coverage", 0.45))
+        if float(section.get("min_coverage", 0.0)) > quick_min_coverage:
+            section["min_coverage"] = quick_min_coverage
+        if int(section.get("max_qa_iterations", 3)) > 1:
+            section["max_qa_iterations"] = 1
+        if int(section.get("max_qa_rewrites_per_iteration", 6)) > 2:
+            section["max_qa_rewrites_per_iteration"] = 2
+    return section
+
+
 def all_outputs_exist(paths: RunPaths, stage: str) -> bool:
     return all(path.is_file() for path in output_paths(paths, stage))
+
+
+def shots_video_profile_hash(paths: RunPaths, config: dict[str, Any]) -> str:
+    profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) else None
+    if profile_path is None or not profile_path.is_file():
+        return NO_VIDEO_PROFILE_HASH
+    return stable_hash(profile_path.read_text(encoding="utf-8"))
+
+
+def shots_non_profile_identity_current(
+    paths: RunPaths,
+    film: Path,
+    config: dict[str, Any],
+    meta: ShotsMeta,
+    *,
+    require_cache: bool,
+) -> bool:
+    section = config.get("shots", {})
+    try:
+        if Path(meta.src).expanduser().resolve() != film.expanduser().resolve():
+            return False
+    except OSError:
+        return False
+    if meta.detector != str(section.get("detector", "adaptive")):
+        return False
+    expected = {
+        "sample_frames": int(section.get("sample_frames", 5)),
+        "frame_sampling": str(section.get("frame_sampling", "per-shot")),
+        "face_detection": str(section.get("face_detection", "on")),
+        "min_brightness": float(section.get("min_brightness", 0.06)),
+        "min_shot_len": float(section.get("min_shot_len", 0.4)),
+        "end_credit_guard": bool(section.get("end_credit_guard", False)),
+        "end_credit_tail_s": float(section.get("end_credit_tail_s", 600.0)),
+        "end_credit_threshold": float(section.get("end_credit_threshold", 0.60)),
+        "overlay_guard": bool(section.get("overlay_guard", True)),
+        "skip_intro": float(section.get("skip_intro", 0.0)),
+        "skip_outro": float(section.get("skip_outro", 0.0)),
+        "downscale": str(section.get("downscale", "auto")),
+        "scene_threshold": float(section.get("scene_threshold", 0.3)),
+        "scene_scale_width": int(section.get("scene_scale_width", 640)),
+        "scene_min_gap": float(section.get("scene_min_gap", 0.3)),
+        "max_shot_len": float(section.get("max_shot_len", 0.0)),
+    }
+    if any(meta.feature_config.get(key) != expected[key] for key in SHOTS_FEATURE_CONFIG_KEYS):
+        return False
+    # Shots computed while a detector was missing (e.g. OpenCV 5 dropped Haar) must rerun once a
+    # better detector loads, otherwise face_count=0 survives the environment fix.
+    if expected["face_detection"] == "on" and meta.model_versions.get("face_detector") != available_face_detector_version():
+        return False
+    if expected["overlay_guard"] and meta.model_versions.get("overlay_detector") != OVERLAY_DETECTOR_VERSION:
+        return False
+    if not require_cache:
+        return True
+    required_cache = [paths.work_dir / "shots" / "detection.json", paths.work_dir / "shots" / "features.json"]
+    if expected["end_credit_guard"]:
+        required_cache.append(paths.work_dir / "shots" / "end_credit_marking.json")
+    if expected["overlay_guard"]:
+        required_cache.append(paths.work_dir / "shots" / "overlay_marking.json")
+    return all(path.is_file() for path in required_cache)
+
+
+def shots_profile_only_needed(paths: RunPaths, film: Path, config: dict[str, Any]) -> bool:
+    if not all_outputs_exist(paths, "shots"):
+        return False
+    try:
+        validate_stage(paths, "shots")
+        meta = ShotsMeta.model_validate(load_json(paths.shots_meta))
+    except (OrchestratorError, OSError, ValueError):
+        return False
+    return (
+        meta.video_profile_hash != shots_video_profile_hash(paths, config)
+        and shots_non_profile_identity_current(paths, film, config, meta, require_cache=True)
+    )
 
 
 def validate_stage(paths: RunPaths, stage: str) -> None:
@@ -96,6 +240,11 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
         elif stage == "storymap":
             meta = StoryMapMeta.model_validate(load_json(paths.story_map_meta))
             validate_story_map([StorySection.model_validate(item) for item in load_json(paths.story_map)], duration=meta.duration_s)
+        elif stage == "episode_planner":
+            meta = EpisodeMeta.model_validate(load_json(paths.episode_meta))
+            memory = EpisodeMemory.model_validate(load_json(paths.episode_memory))
+            if meta.series_id != memory.current.series_id or meta.episode_key != memory.current.episode_key:
+                raise ValueError("episode_meta and episode_memory current identity do not match")
         elif stage == "review":
             film_map = [FilmMapSegment.model_validate(item) for item in load_json(paths.film_map)]
             beats = [ReviewBeat.model_validate(item) for item in load_json(paths.review_script)]
@@ -157,6 +306,8 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
                 sample_every_s=float(section.get("sample_every_s", 5.0)),
                 confidence_threshold=float(section.get("confidence_threshold", 0.75)),
                 uncertain_threshold=float(section.get("uncertain_threshold", 0.55)),
+                manual_ranges_hash=file_hash(Path(str(section["manual_ranges"]))) if section.get("manual_ranges") else None,
+                anime_context_hash=file_hash(Path(str(section["anime_context"]))) if section.get("anime_context") else None,
             )
             profile = VideoProfile.model_validate(load_json(paths.video_profile))
             if profile.cache_version != PREFLIGHT_CACHE_VERSION or profile.input_hash != expected_input or profile.config_hash != expected_config:
@@ -177,6 +328,7 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
             profile_payload = VideoProfile.model_validate(load_json(profile_path)).model_dump(mode="json") if profile_path else None
             expected_config = storymap_stable_hash(
                 {
+                    "cache_version": STORYMAP_CACHE_VERSION,
                     "film_map": storymap_stable_hash(load_json(paths.film_map)),
                     "video_profile": storymap_stable_hash(profile_payload),
                     "content_type": section.get("content_type", "movie"),
@@ -185,25 +337,59 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
             )
             meta = StoryMapMeta.model_validate(load_json(paths.story_map_meta))
             if (
-                meta.cache_version != "storymap-v1"
+                meta.cache_version != STORYMAP_CACHE_VERSION
                 or meta.film_map_hash != file_hash(paths.film_map)
                 or meta.video_profile_hash != file_hash(profile_path)
                 or meta.config_hash != expected_config
             ):
                 return False
+        if stage == "episode_planner" and film is not None and config is not None:
+            section = config.get("orchestrator", {})
+            profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file() else None
+            anime_context_setting = config.get("preflight", {}).get("anime_context") or config.get("review", {}).get("context_file")
+            anime_context_path = Path(str(anime_context_setting)).expanduser().resolve() if anime_context_setting else None
+            series_manifest_setting = section.get("series_manifest")
+            series_manifest_path = Path(str(series_manifest_setting)).expanduser().resolve() if series_manifest_setting else None
+            expected_hashes = episode_planner_input_hashes(
+                film=film,
+                film_map_path=paths.film_map,
+                story_map_path=paths.story_map if paths.story_map.is_file() else None,
+                video_profile_path=profile_path,
+                anime_context_path=anime_context_path,
+                series_manifest_path=series_manifest_path,
+            )
+            expected_section = deepcopy(section)
+            if expected_section.get("recap_mode") == "off":
+                expected_section["recap_mode"] = "auto"
+            expected_config = episode_planner_config_hash(expected_section)
+            meta = EpisodeMeta.model_validate(load_json(paths.episode_meta))
+            if (
+                meta.cache_version != EPISODE_PLANNER_CACHE_VERSION
+                or meta.source_hash != expected_hashes["source_hash"]
+                or meta.film_map_hash != expected_hashes["film_map_hash"]
+                or meta.story_map_hash != expected_hashes["story_map_hash"]
+                or meta.video_profile_hash != expected_hashes["video_profile_hash"]
+                or meta.anime_context_hash != expected_hashes["anime_context_hash"]
+                or meta.series_manifest_hash != expected_hashes["series_manifest_hash"]
+                or meta.config_hash != expected_config
+            ):
+                return False
         if stage == "review" and config is not None:
-            section = config.get("review", {})
+            section = effective_review_section(paths, config)
             story_setting = section.get("story_map", "auto")
             story_path = paths.story_map if story_setting == "auto" and paths.story_map.is_file() else (Path(str(story_setting)) if story_setting not in {None, "auto"} else None)
             profile_path = paths.video_profile if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file() else None
             style_setting = section.get("style_sample")
             style_path = Path(str(style_setting)).expanduser().resolve() if style_setting else DEFAULT_STYLE_SAMPLE
+            context_setting = section.get("context_file")
+            context_path = Path(str(context_setting)).expanduser().resolve() if context_setting else None
             identity = build_review_identity(
                 film_map_path=paths.film_map,
                 settings=section,
                 style_sample_path=style_path,
                 story_map_path=story_path,
                 video_profile_path=profile_path,
+                context_file_path=context_path,
             )
             meta = ReviewMeta.model_validate(load_json(paths.review_meta))
             if (
@@ -212,20 +398,16 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
                 or meta.film_map_meta_hash != identity.film_map_meta_hash
                 or meta.story_map_hash != identity.story_map_hash
                 or meta.video_profile_hash != identity.video_profile_hash
+                or meta.context_file_hash != identity.context_file_hash
                 or meta.config_hash != identity.config_hash
             ):
                 return False
-        if stage == "shots" and config is not None:
-            section = config.get("shots", {})
+        if stage == "shots" and film is not None and config is not None:
             meta = ShotsMeta.model_validate(load_json(paths.shots_meta))
-            expected_guard = bool(section.get("end_credit_guard", False))
-            if bool(meta.feature_config.get("end_credit_guard", False)) != expected_guard:
+            if not shots_non_profile_identity_current(paths, film, config, meta, require_cache=False):
                 return False
-            if expected_guard:
-                if float(meta.feature_config.get("end_credit_tail_s", 0.0)) != float(section.get("end_credit_tail_s", 600.0)):
-                    return False
-                if float(meta.feature_config.get("end_credit_threshold", 0.0)) != float(section.get("end_credit_threshold", 0.60)):
-                    return False
+            if meta.video_profile_hash != shots_video_profile_hash(paths, config):
+                return False
         if stage == "visual_index" and film is not None and config is not None:
             section = config.get("visual_index", {})
             config_hash = visual_index_config_hash(
@@ -256,14 +438,18 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--input", str(film), "--output", str(paths.video_profile)]
         section = config.get("preflight", {})
         if section.get("enabled", True):
-            for key in ("max_intro_s", "sample_every_s", "classifier", "confidence_threshold", "uncertain_threshold", "log_level"):
+            for key in ("max_intro_s", "sample_every_s", "classifier", "confidence_threshold", "uncertain_threshold", "manual_ranges", "anime_context", "log_level"):
                 add_option(command, key, section.get(key))
         else:
             command += ["--classifier", "heuristic"]
     elif stage == "ingest":
         command += ["--input", str(film), "--output", str(paths.film_map)]
-        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "source_language", "translate_mode", "vision_model", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
+        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "translation_provider", "translation_batch_size", "translation_batch_max_attempts", "translation_concurrency", "translation_base_url", "translation_chatgpt_profile_dir", "translation_chatgpt_session_file", "translation_reply_timeout_s", "translation_playwright_max_attempts", "translation_playwright_recovery_timeout_s", "translation_min_success_ratio", "source_language", "translate_mode", "vision_provider", "vision_model", "vision_resize_long_edge", "vision_batch_size", "vision_concurrency", "vision_base_url", "device", "asr_batch_size", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
             add_option(command, key, section.get(key))
+        if section.get("translation_headless", False):
+            command.append("--translation-headless")
+        if section.get("translation_required", False):
+            command.append("--translation-required")
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file():
             command += ["--video-profile", str(paths.video_profile)]
         if not section.get("vad_filter", True):
@@ -274,7 +460,42 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--video-profile", str(paths.video_profile)]
         for key in ("content_type", "target_story_sections", "log_level"):
             add_option(command, key, section.get(key))
+    elif stage == "episode_planner":
+        section = config.get("orchestrator", {})
+        command += [
+            "--source-path",
+            str(film),
+            "--film-map",
+            str(paths.film_map),
+            "--output-meta",
+            str(paths.episode_meta),
+            "--output-memory",
+            str(paths.episode_memory),
+        ]
+        if config.get("preflight", {}).get("enabled", True) and paths.video_profile.is_file():
+            command += ["--video-profile", str(paths.video_profile)]
+        if paths.story_map.is_file():
+            command += ["--story-map", str(paths.story_map)]
+        anime_context_setting = config.get("preflight", {}).get("anime_context") or config.get("review", {}).get("context_file")
+        if anime_context_setting:
+            command += ["--anime-context", str(anime_context_setting)]
+        for key in (
+            "series_manifest",
+            "series_memory_dir",
+            "episode_key",
+            "episode_number",
+            "recap_full_threshold",
+            "recap_quick_threshold",
+            "recap_merge_threshold",
+            "quick_target_ratio",
+            "quick_min_coverage",
+            "log_level",
+        ):
+            add_option(command, key, section.get(key))
+        if section.get("recap_mode") not in {None, "off"}:
+            add_option(command, "recap_mode", section.get("recap_mode"))
     elif stage == "review":
+        section = effective_review_section(paths, config)
         command += ["--film-map", str(paths.film_map), "--output", str(paths.review_script)]
         story_map_setting = section.get("story_map", "auto")
         if story_map_setting == "auto" and paths.story_map.is_file():
@@ -285,19 +506,36 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
-        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "playwright_max_attempts", "playwright_recovery_timeout_s", "openai_fallback_model", "log_level"):
+        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "context_file", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "llm_model", "llm_base_url", "playwright_max_attempts", "playwright_recovery_timeout_s", "openai_fallback_model", "log_level"):
             add_option(command, key, section.get(key))
         if config.get("orchestrator", {}).get("api_budget_guard") == "block":
             command.append("--block-openai-fallback")
         command.append("--style-qa" if section.get("style_qa", True) else "--no-style-qa")
-        command.append("--opening-coherence-qa" if section.get("opening_coherence_qa", section.get("content_type") == "movie") else "--no-opening-coherence-qa")
+        command.append("--opening-coherence-qa" if section.get("opening_coherence_qa", section.get("content_type") in {"movie", "anime_movie"}) else "--no-opening-coherence-qa")
         command.append("--micro-beats" if section.get("micro_beats", False) else "--no-micro-beats")
         command.append("--drop-non-story-beats" if section.get("drop_non_story_beats", True) else "--no-drop-non-story-beats")
         if section.get("headless"):
             command.append("--headless")
     elif stage == "tts":
         command += ["--review-script", str(paths.review_script), "--output-audio", str(paths.voiceover), "--output-timing", str(paths.beats_timing)]
-        for key in ("voice_id", "provider_mode", "genmax_voice_id", "model", "openai_model", "openai_voice", "speed", "inter_beat_pause", "concurrency", "cost_per_1k_chars", "log_level"):
+        for key in (
+            "voice_id",
+            "provider_mode",
+            "genmax_voice_id",
+            "model",
+            "openai_model",
+            "openai_voice",
+            "vieneu_style",
+            "vieneu_backend",
+            "vieneu_precision",
+            "vieneu_model",
+            "vieneu_threads",
+            "speed",
+            "inter_beat_pause",
+            "concurrency",
+            "cost_per_1k_chars",
+            "log_level",
+        ):
             add_option(command, key, section.get(key))
         add_option(command, "tts_text_normalization", section.get("text_normalization"))
         add_option(command, "tts_pronunciation_lexicon", section.get("pronunciation_lexicon"))
@@ -320,6 +558,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         for key in ("detector", "min_shot_len", "sample_frames", "frame_sampling", "face_detection", "min_brightness", "end_credit_tail_s", "end_credit_threshold", "skip_intro", "skip_outro", "downscale", "scene_threshold", "scene_scale_width", "scene_min_gap", "max_shot_len", "log_level"):
             add_option(command, key, section.get(key))
         command.append("--end-credit-guard" if section.get("end_credit_guard", False) else "--no-end-credit-guard")
+        command.append("--overlay-guard" if section.get("overlay_guard", True) else "--no-overlay-guard")
     elif stage == "visual_index":
         command += ["--film", str(film), "--shots", str(paths.shots), "--output", str(paths.shot_visual_index), "--asset-dir", str(paths.visual_index_dir)]
         for key in ("embedding_mode", "embedding_model", "device", "batch_size", "keyframes_per_shot", "frame_sampling", "log_level"):
@@ -372,7 +611,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--no-review-html")
     elif stage == "render":
         command += ["--edl", str(paths.edl), "--voiceover", str(paths.voiceover), "--film", str(film), "--output", str(paths.recap)]
-        for key in ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s", "log_level"):
+        for key in ("width", "height", "fps", "fit", "crf", "preset", "encoder", "nvenc_cq", "concurrency", "audio_delay_s", "log_level"):
             add_option(command, key, section.get(key))
     else:
         raise OrchestratorError(f"unknown stage: {stage}")
@@ -398,11 +637,44 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
     ingest_needs_openai = bool(ingest_policy.get("openai_uses")) if ingest_policy else True
     if "ingest" in will_run and ingest_needs_openai and not os.getenv("OPENAI_API_KEY") and not dry_run:
         raise OrchestratorError("OPENAI_API_KEY is required to run ingest")
-    if "review" in will_run and not dry_run:
-        profile = Path(str(config["review"].get("chatgpt_profile_dir"))).expanduser()
+    ingest_config = config.get("ingest", {})
+    ingest_translates = "ingest" in will_run and not dry_run and ingest_config.get("translate_mode") not in {"none", "off", None}
+    if ingest_translates and ingest_config.get("translation_provider") == "chatgpt_playwright":
+        profile = Path(str(ingest_config.get("translation_chatgpt_profile_dir"))).expanduser()
         if not profile.exists():
-            raise OrchestratorError(f"ChatGPT profile dir does not exist for review: {profile}")
-    if "tts" in will_run and not dry_run:
+            raise OrchestratorError(f"ChatGPT profile dir does not exist for ingest translation: {profile}")
+    if ingest_translates and ingest_config.get("translation_provider") == GATEWAY_BACKEND:
+        require_gateway_ready(
+            purpose="ingest translation",
+            model=ingest_config.get("translate_model"),
+            base_url=ingest_config.get("translation_base_url"),
+        )
+    if (
+        "ingest" in will_run
+        and not dry_run
+        and ingest_config.get("vision_provider") == GATEWAY_BACKEND
+        and int(ingest_config.get("max_vision_frames") or 0) > 0
+    ):
+        require_gateway_ready(
+            purpose="ingest vision",
+            model=ingest_config.get("vision_model"),
+            base_url=ingest_config.get("vision_base_url"),
+        )
+    recap_mode = str(config.get("orchestrator", {}).get("recap_mode", "off"))
+    defer_episode_downstream = "episode_planner" in selected and recap_mode in {"auto", "merge", "skip"}
+    if "review" in will_run and not dry_run and not defer_episode_downstream:
+        review_config = config["review"]
+        if review_config.get("llm_backend") == GATEWAY_BACKEND:
+            require_gateway_ready(
+                purpose="review",
+                model=review_config.get("llm_model") or DEFAULT_GATEWAY_MODEL,
+                base_url=review_config.get("llm_base_url"),
+            )
+        else:
+            profile = Path(str(review_config.get("chatgpt_profile_dir"))).expanduser()
+            if not profile.exists():
+                raise OrchestratorError(f"ChatGPT profile dir does not exist for review: {profile}")
+    if "tts" in will_run and not dry_run and not defer_episode_downstream:
         tts_config = config["tts"]
         if not tts_config.get("voice_id"):
             raise OrchestratorError("tts.voice_id must be set in config")
@@ -414,6 +686,27 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
             )
         except TtsProviderError as exc:
             raise OrchestratorError(str(exc)) from exc
+        if tts_config.get("provider_mode") == "vieneu":
+            try:
+                validate_vieneu_settings(
+                    backend=str(tts_config.get("vieneu_backend", "onnx")),
+                    precision=str(tts_config.get("vieneu_precision", "int8")),
+                    style=str(tts_config.get("vieneu_style", "doc_truyen")),
+                    threads=int(tts_config.get("vieneu_threads", 0)),
+                )
+                require_vieneu_runtime()
+            except VieneuProviderError as exc:
+                raise OrchestratorError(str(exc)) from exc
+
+
+def require_gateway_ready(*, purpose: str, model: str | None, base_url: str | None) -> None:
+    if resolve_gateway_api_key() is None:
+        raise OrchestratorError(f"{GATEWAY_KEY_ENV} must be set to run {purpose} through {GATEWAY_BACKEND}")
+    health = check_gateway_health(model=model, base_url=base_url)
+    if health.model_available:
+        health = probe_gateway_model(model=model or DEFAULT_GATEWAY_MODEL, base_url=base_url)
+    if not health.model_available:
+        raise OrchestratorError(f"{GATEWAY_BACKEND} is not ready for {purpose}: {health.reason}")
 
 
 def runtime_module_available(module: str) -> bool:
@@ -446,6 +739,9 @@ def validate_runtime_requirements(will_run: set[str], config: dict[str, Any]) ->
     if "match" in will_run and match.get("visual_mode") == "rerank":
         modules.update({"torch", "transformers", "PIL"})
         cuda_required = cuda_required or match.get("visual_device") == "cuda"
+    tts = config.get("tts", {})
+    if "tts" in will_run and tts.get("provider_mode") == "vieneu":
+        modules.update({"vieneu", "onnxruntime", "soundfile"})
     missing = sorted(module for module in modules if not runtime_module_available(module))
     if missing:
         raise OrchestratorError(
@@ -453,14 +749,31 @@ def validate_runtime_requirements(will_run: set[str], config: dict[str, Any]) ->
         )
     if cuda_required and not runtime_cuda_available():
         raise OrchestratorError("production runtime requires CUDA, but torch.cuda.is_available() is false")
+    violations = runtime_dependency_violations()
+    if violations:
+        raise OrchestratorError(
+            "installed packages violate the project pins: " + "; ".join(violations)
+            + ". Run the pipeline from the project venv (.venv\\Scripts\\python.exe) instead of a shared interpreter"
+        )
+
+
+def runtime_dependency_violations() -> list[str]:
+    return dependency_version_violations()
+
+
+def utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def run_subprocess(command: list[str], log_path: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
     with log_path.open("a", encoding="utf-8") as log_file:
-        log_file.write("$ " + " ".join(command) + "\n")
+        # Timestamped markers separate stages and resumed runs in the shared run.log the UI tails.
+        log_file.write(f"[{utc_timestamp()}] $ " + " ".join(command) + "\n")
         log_file.flush()
         result = subprocess.run(command, stdout=log_file, stderr=subprocess.STDOUT, text=True, check=False)
+        log_file.write(f"[{utc_timestamp()}] exit={result.returncode} after {time.perf_counter() - started:.1f}s\n")
     if result.returncode != 0:
         raise OrchestratorError(f"stage command failed with exit code {result.returncode}: {' '.join(command)}")
 
@@ -478,18 +791,29 @@ def run_stage(
     executor: Callable[[list[str], Path], None] = run_subprocess,
 ) -> StageSummary:
     command = build_command(stage, paths, film, config, force, python_exe=python_exe)
+    if stage == "shots" and not force and shots_profile_only_needed(paths, film, config):
+        command.append("--profile-only")
     outputs = [str(path) for path in output_paths(paths, stage)]
     if not force and not run_anyway and outputs_valid(paths, stage, film=film, config=config):
         return StageSummary(stage=stage, status="skipped", duration_s=0.0, command=command, outputs=outputs)
     if dry_run:
         return StageSummary(stage=stage, status="planned", duration_s=0.0, command=command, outputs=outputs)
     paths.run_dir.mkdir(parents=True, exist_ok=True)
+    started_at = utc_timestamp()
     started = time.perf_counter()
     executor(command, paths.run_log)
     if stage == "review" and paths.review_meta.is_file() and not paths.review_meta_alias.exists():
         shutil.copyfile(paths.review_meta, paths.review_meta_alias)
     validate_stage(paths, stage)
-    return StageSummary(stage=stage, status="ran", duration_s=round(time.perf_counter() - started, 3), command=command, outputs=outputs)
+    return StageSummary(
+        stage=stage,
+        status="ran",
+        duration_s=round(time.perf_counter() - started, 3),
+        command=command,
+        outputs=outputs,
+        started_at=started_at,
+        finished_at=utc_timestamp(),
+    )
 
 
 def ordered_selected(selected: set[str]) -> list[str]:

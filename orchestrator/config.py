@@ -13,10 +13,31 @@ except ImportError:  # pragma: no cover - exercised only without optional dep
     yaml = None  # type: ignore[assignment]
 
 STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "visual_index", "match", "render")
-TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator"}
+TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator", "postprocess", "series_recap"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "orchestrator": {"python": None, "log_level": "INFO", "quality_mode": "balanced", "text_llm_backend": "chatgpt_playwright", "api_budget_guard": "warn", "auto_fallback": False, "fallback_on_timecode_warn": True, "fallback_ingest_asr_provider": "openai-gpt4o-hybrid", "fallback_max_vision_frames": 0, "runtime_preflight": False},
+    "orchestrator": {
+        "python": None,
+        "log_level": "INFO",
+        "quality_mode": "balanced",
+        "text_llm_backend": "chatgpt_playwright",
+        "api_budget_guard": "warn",
+        "auto_fallback": False,
+        "fallback_on_timecode_warn": True,
+        "fallback_ingest_asr_provider": "openai-gpt4o-hybrid",
+        "fallback_max_vision_frames": 0,
+        "runtime_preflight": False,
+        "series_manifest": None,
+        "episode_key": None,
+        "episode_number": None,
+        "series_memory_dir": None,
+        "recap_mode": "off",
+        "recap_full_threshold": 0.70,
+        "recap_quick_threshold": 0.35,
+        "recap_merge_threshold": 0.15,
+        "quick_target_ratio": 0.12,
+        "quick_min_coverage": 0.45,
+    },
     "preflight": {
         "enabled": True,
         "max_intro_s": 240.0,
@@ -24,6 +45,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "classifier": "heuristic",
         "confidence_threshold": 0.75,
         "uncertain_threshold": 0.55,
+        "manual_ranges": None,
+        "anime_context": None,
         "log_level": "INFO",
     },
     "ingest": {
@@ -32,9 +55,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_vision_frames": 200,
         "max_visual_gap_s": 20.0,
         "translate_model": "gpt-4.1-mini",
+        "translation_provider": "openai_api",
+        "translation_batch_size": 80,
+        "translation_batch_max_attempts": 2,
+        "translation_concurrency": 1,
+        "translation_base_url": None,
+        "translation_chatgpt_profile_dir": str(CHATGPT_PLAYWRIGHT_PROFILE_DIR),
+        "translation_chatgpt_session_file": None,
+        "translation_reply_timeout_s": 600,
+        "translation_playwright_max_attempts": 2,
+        "translation_playwright_recovery_timeout_s": 60,
+        "translation_headless": False,
+        "translation_required": False,
+        "translation_min_success_ratio": 0.0,
         "source_language": "ko",
         "translate_mode": "ko-en",
+        "vision_provider": "openai",
         "vision_model": "gpt-4.1-mini",
+        "vision_resize_long_edge": 768,
+        "vision_batch_size": 1,
+        "vision_concurrency": 3,
+        "vision_base_url": None,
+        "asr_batch_size": 0,
         "device": "cpu",
         "asr_provider": "faster-whisper",
         "aligner": "none",
@@ -70,6 +112,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "target_beat_audio_s": 12.0,
         "max_beat_audio_s": 18.0,
         "story_map": "auto",
+        "context_file": None,
         "review_intent_output": None,
         "tts_cps": 15,
         "min_coverage": 0.85,
@@ -81,6 +124,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "chat_title": None,
         "reply_timeout_s": 600,
         "llm_backend": "chatgpt_playwright",
+        "llm_model": None,
+        "llm_base_url": None,
         "playwright_max_attempts": 2,
         "playwright_recovery_timeout_s": 60,
         "openai_fallback_model": None,
@@ -102,6 +147,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "model": "eleven_multilingual_v2",
         "openai_model": "gpt-4o-mini-tts",
         "openai_voice": "coral",
+        "vieneu_style": "doc_truyen",
+        "vieneu_backend": "onnx",
+        "vieneu_precision": "int8",
+        "vieneu_model": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+        "vieneu_threads": 0,
         "speed": 1.0,
         "inter_beat_pause": 0.15,
         "concurrency": 3,
@@ -127,6 +177,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "end_credit_guard": False,
         "end_credit_tail_s": 600.0,
         "end_credit_threshold": 0.60,
+        "overlay_guard": True,
         "skip_intro": 0.0,
         "skip_outro": 0.0,
         "downscale": "auto",
@@ -211,8 +262,55 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fit": "cover",
         "crf": 20,
         "preset": "medium",
+        "encoder": "auto",
+        "nvenc_cq": 24,
         "concurrency": 4,
         "audio_delay_s": 0.0,
+        "log_level": "INFO",
+    },
+    "postprocess": {
+        "enabled": False,
+        "profile": "dynamic_anime",
+        "seed": 1234,
+        "audio_assets": "data/audio_library/audio_assets.yaml",
+        "edit_overrides": "auto",
+        "log_level": "INFO",
+    },
+    "series_recap": {
+        "scope": "end_to_end",
+        "format": "compact",
+        "detail_level": "standard",
+        "tts_cps": 15.0,
+        "target_total_min_s": 2100.0,
+        "target_total_max_s": 2700.0,
+        "target_total_hard_cap_s": 3000.0,
+        "episode_min_s": 90.0,
+        "episode_normal_s": 180.0,
+        "episode_high_s": 300.0,
+        "arc_size": 3,
+        "mode_target_ratios": {
+            "full": 0.12,
+            "quick": 0.06,
+            "merge": 0.015,
+            "skip": 0.0,
+        },
+        "llm_backend": "chatgpt_playwright",
+        "llm_model": None,
+        "llm_base_url": None,
+        "chatgpt_profile_dir": str(CHATGPT_PLAYWRIGHT_PROFILE_DIR),
+        "reply_timeout_s": 600,
+        "playwright_max_attempts": 2,
+        "playwright_recovery_timeout_s": 60,
+        "qa_max_revisions": 1,
+        # Parallel gateway requests for arc drafts/revisions/seams; Playwright always runs one at a time.
+        "composer_concurrency": 2,
+        # Episodes ingested at once; 2 peaked at 10.9 GB VRAM on a 12 GB card in the R8 benchmark.
+        "episode_concurrency": 1,
+        "headless": False,
+        "min_clip": 3.0,
+        "max_clip": 5.0,
+        "min_visual_clip": 0.6,
+        "clip_profile": "legacy",
         "log_level": "INFO",
     },
 }
@@ -257,14 +355,39 @@ def load_config(path: Path | None) -> dict[str, Any]:
     if unknown:
         raise ConfigError(f"unknown config section(s): {', '.join(sorted(unknown))}")
     merged = deep_merge(DEFAULT_CONFIG, data)
+    normalize_yaml_enum_literals(merged)
     apply_content_type_match_defaults(merged, data)
     return merged
+
+def normalize_yaml_enum_literals(config: dict[str, Any]) -> None:
+    normalize_bool_enum(config, "orchestrator", "recap_mode", false_value="off")
+    normalize_bool_enum(config, "ingest", "transcript_correction", false_value="off")
+    normalize_bool_enum(config, "ingest", "vision_provider", false_value="off")
+    normalize_bool_enum(config, "match", "visual_mode", false_value="off")
+    normalize_bool_enum(config, "shots", "face_detection", false_value="off", true_value="on")
+
+def normalize_bool_enum(
+    config: dict[str, Any],
+    section_name: str,
+    key: str,
+    *,
+    false_value: str,
+    true_value: str | None = None,
+) -> None:
+    section = config.get(section_name, {})
+    if not isinstance(section, dict):
+        return
+    value = section.get(key)
+    if value is False:
+        section[key] = false_value
+    elif value is True and true_value is not None:
+        section[key] = true_value
 
 def apply_content_type_match_defaults(config: dict[str, Any], raw_overrides: dict[str, Any]) -> None:
     review = config.get("review", {})
     match = config.get("match", {})
     raw_match = raw_overrides.get("match", {}) if isinstance(raw_overrides.get("match", {}), dict) else {}
-    if review.get("content_type") != "episode":
+    if review.get("content_type") not in {"episode", "anime_series"}:
         return
     if "match_strategy" not in raw_match:
         match["match_strategy"] = "hybrid"

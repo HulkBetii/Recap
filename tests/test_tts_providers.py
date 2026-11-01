@@ -40,6 +40,11 @@ class OpenAiFallbackClient(FallbackClient):
         return ProviderResult(provider="openai", voice_id=voice_id, audio_url="openai://ok", model=model)
 
 
+class VieneuFailureClient(TtsProviderClient):
+    async def _synthesize_vieneu(self, *args, **kwargs) -> ProviderResult:  # type: ignore[no-untyped-def]
+        raise TtsProviderError("local model unavailable")
+
+
 def test_provider_auto_falls_back_to_genmax(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     import asyncio
 
@@ -122,6 +127,36 @@ def test_explicit_provider_modes_require_only_their_own_key(mode, key, expected)
         genmax_voice_id="genmax-voice",
         environ={key: "configured"},
     ) == expected
+
+
+def test_explicit_vieneu_provider_requires_no_api_key() -> None:
+    assert resolve_provider_order(
+        "vieneu",
+        voice_id="Ngọc Linh",
+        genmax_voice_id=None,
+        environ={},
+    ) == ["vieneu"]
+
+
+def test_explicit_vieneu_failure_does_not_fallback_to_paid_providers(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import asyncio
+
+    monkeypatch.setenv("VIVOO_API_KEY", "ai33")
+    monkeypatch.setenv("GENMAX_API_KEY", "genmax")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+
+    with pytest.raises(TtsProviderError, match="local model unavailable"):
+        asyncio.run(
+            VieneuFailureClient().synthesize(
+                text="hello",
+                voice_id="Ngọc Linh",
+                genmax_voice_id="gxvoice",
+                model="m",
+                speed=1.0,
+                provider_mode="vieneu",
+                output_path=tmp_path / "out.mp3",
+            )
+        )
 
 
 def test_provider_order_rejects_unknown_mode() -> None:

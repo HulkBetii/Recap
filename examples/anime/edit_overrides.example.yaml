@@ -1,0 +1,15 @@
+version: 1
+beats:
+  - beat_id: 0
+    mood: tension
+    track_id: music-tension
+    freeze: true
+  - beat_id: 6
+    disable_effects: true
+placements:
+  - placement_index: 3
+    zoom_start: 1.03
+    zoom_end: 1.08
+    pan_x: -0.02
+    aspect_ratio: 2.35
+    ramp: false

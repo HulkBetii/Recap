@@ -57,3 +57,26 @@ def test_siglip_text_preprocessing_uses_fixed_64_tokens() -> None:
     assert call["padding"] == "max_length"
     assert call["max_length"] == 64
     assert call["truncation"] is True
+
+
+class PooledOutput:
+    """Shape of transformers 5 get_*_features results: a ModelOutput, not a tensor."""
+
+    def __init__(self, rows):  # type: ignore[no-untyped-def]
+        self.last_hidden_state = None
+        self.pooler_output = FakeTensor(rows)
+
+
+class PooledOutputModel:
+    def get_text_features(self, **_inputs):  # type: ignore[no-untyped-def]
+        return PooledOutput([[0.0, 3.0]])
+
+
+def test_text_features_accept_transformers5_pooled_output() -> None:
+    encoder = object.__new__(TransformerVisualEncoder)
+    encoder.device = "cpu"
+    encoder.processor = FakeProcessor()
+    encoder.model = PooledOutputModel()
+    encoder.torch = FakeTorch()
+
+    assert encoder.encode_texts(["query"], batch_size=1) == [[0.0, 1.0]]

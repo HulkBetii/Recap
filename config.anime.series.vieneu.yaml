@@ -1,0 +1,235 @@
+orchestrator:
+  quality_mode: balanced
+  text_llm_backend: ninerouter
+  api_budget_guard: block
+  auto_fallback: false
+  fallback_on_timecode_warn: true
+  fallback_ingest_asr_provider: openai-gpt4o-hybrid
+  fallback_max_vision_frames: 0
+  runtime_preflight: false
+  recap_mode: auto
+  recap_full_threshold: 0.70
+  recap_quick_threshold: 0.35
+  recap_merge_threshold: 0.15
+  quick_target_ratio: 0.12
+  quick_min_coverage: 0.45
+  log_level: INFO
+
+preflight:
+  enabled: true
+  max_intro_s: 240
+  sample_every_s: 5
+  classifier: heuristic
+  confidence_threshold: 0.75
+  uncertain_threshold: 0.55
+  manual_ranges: null
+  anime_context: null
+  log_level: INFO
+
+ingest:
+  whisper_model: large-v3
+  gap_threshold: 4.0
+  max_vision_frames: 0
+  max_visual_gap_s: 20
+  translate_model: ag/gemini-3.8-flash-high
+  translation_provider: ninerouter
+  translation_concurrency: 2
+  translation_batch_size: 80
+  translation_batch_max_attempts: 2
+  translation_chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
+  translation_chatgpt_session_file: null
+  translation_reply_timeout_s: 600
+  translation_playwright_max_attempts: 2
+  translation_playwright_recovery_timeout_s: 60
+  translation_headless: false
+  translation_required: true
+  translation_min_success_ratio: 0.95
+  source_language: ja
+  translate_mode: ja-en
+  vision_provider: "off"
+  vision_model: gpt-4.1-mini
+  vision_resize_long_edge: 768
+  vision_batch_size: 1
+  device: cuda
+  asr_policy: preset
+  asr_provider: faster-whisper
+  aligner: whisperx
+  timecode_quality: strict
+  max_segment_s: 30
+  merge_gap_s: 0
+  vad_filter: true
+  openai_transcribe_model: gpt-4o-mini-transcribe
+  openai_chunk_s: 20
+  alignment_device: cuda
+  transcript_correction: "off"
+  correction_model: gpt-4.1-mini
+  drop_non_korean_intro_s: 0
+  drop_visual_before_s: 0
+  log_level: INFO
+
+storymap:
+  enabled: true
+  content_type: anime_series
+  target_story_sections: 6
+  log_level: INFO
+
+review:
+  content_type: anime_series
+  hook_mode: cold_open
+  target_ratio: auto
+  tts_cps: 15
+  min_coverage: 0.85
+  max_qa_iterations: 3
+  max_qa_rewrites_per_iteration: 6
+  opening_coherence_qa: false
+  micro_beats: false
+  target_beat_audio_s: 12
+  max_beat_audio_s: 18
+  story_map: auto
+  context_file: null
+  chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
+  chat_session_policy: auto
+  reply_timeout_s: 600
+  llm_backend: ninerouter
+  llm_model: ag/gemini-3.8-flash-high
+  playwright_max_attempts: 2
+  playwright_recovery_timeout_s: 60
+  openai_fallback_model: null
+  style_sample: examples/style/viral_recap_vi.cleaned.txt
+  style_preset: viral-recap-vi
+  style_strength: strong
+  style_qa: true
+  target_sentence_chars: 160
+  max_sentence_chars: 220
+  drop_non_story_beats: true
+  non_story_tail_s: 300
+  headless: false
+  log_level: INFO
+
+tts:
+  voice_id: "Ngọc Linh"
+  provider_mode: vieneu
+  genmax_voice_id: null
+  model: eleven_multilingual_v2
+  openai_model: gpt-4o-mini-tts
+  openai_voice: coral
+  vieneu_style: doc_truyen
+  vieneu_backend: onnx
+  vieneu_precision: int8
+  vieneu_model: pnnbao-ump/VieNeu-TTS-v3-Turbo
+  vieneu_threads: 0
+  speed: 0.9
+  inter_beat_pause: 0.15
+  concurrency: 3
+  normalize: true
+  text_normalization: vi
+  pronunciation_lexicon: examples/anime/solo_leveling_vi_pronunciation.yaml
+  pronunciation_qa: true
+  pronunciation_suggest_backend: null
+  log_level: INFO
+
+shots:
+  detector: ffmpeg-scene
+  min_shot_len: 0.4
+  sample_frames: 5
+  frame_sampling: batch
+  face_detection: "off"
+  min_brightness: 0.06
+  end_credit_guard: true
+  end_credit_tail_s: 600
+  end_credit_threshold: 0.60
+  downscale: auto
+  scene_threshold: 0.3
+  scene_scale_width: 640
+  scene_min_gap: 0.3
+  max_shot_len: 8
+  log_level: INFO
+
+visual_index:
+  enabled: false
+  log_level: INFO
+
+match:
+  min_clip: 3.0
+  max_clip: 5.0
+  min_visual_clip: 0.6
+  widen_margin: 15
+  max_widen: 3
+  allow_dark_fallback: true
+  content_anchors: true
+  allow_repeat: true
+  allow_speedfit: false
+  exclude_non_story: true
+  exclude_end_credits: true
+  max_repeat_per_beat: 2
+  max_repeat_ratio_per_beat: 0.35
+  min_repeat_alternative_score_ratio: 0.75
+  adjacent_shot_repeat_penalty: 0.50
+  opening_guard_s: 120
+  opening_max_repeat_ratio: 0.20
+  opening_max_repeat_per_shot: 1
+  opening_min_unique_shots: 4
+  opening_story_visual_start: true
+  opening_allow_short_fill: true
+  seed: 1234
+  w_motion: 0.65
+  w_face: 0.0
+  w_bright: 0.12
+  w_reuse: 0.35
+  w_semantic: 0.25
+  w_visual: 0.0
+  min_semantic_score: 0.22
+  match_strategy: chronological
+  chronology_weight: 0.75
+  max_source_drift_s: 12
+  semantic_mode: bge-m3
+  semantic_model: BAAI/bge-m3
+  semantic_device: auto
+  semantic_batch_size: 16
+  visual_mode: "off"
+  visual_index: auto
+  review_html: true
+  log_level: INFO
+
+render:
+  width: 1920
+  height: 1080
+  fps: source  # keep the source rate; 25->30 duplicated 1 frame in 5
+  fit: cover
+  crf: 20
+  preset: medium
+  concurrency: 4
+  audio_delay_s: 0.0
+  log_level: INFO
+
+series_recap:
+  scope: end_to_end
+  format: episode_arc_chaptered
+  detail_level: detailed
+  llm_backend: ninerouter
+  llm_model: ag/gemini-3.8-flash-high
+  tts_cps: 17.0
+  target_total_min_s: 2100
+  target_total_max_s: 2700
+  target_total_hard_cap_s: 3000
+  episode_min_s: 90
+  episode_normal_s: 180
+  episode_high_s: 300
+  arc_size: 3
+  mode_target_ratios:
+    full: 0.22
+    quick: 0.14
+    merge: 0.05
+    skip: 0.0
+  chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
+  reply_timeout_s: 600
+  playwright_max_attempts: 2
+  playwright_recovery_timeout_s: 60
+  qa_max_revisions: 1
+  # Two episodes ingest at once (-32% ingest time, 10.9 GB peak VRAM on a 12 GB card).
+  episode_concurrency: 2
+  headless: false
+  min_clip: 3.0
+  max_clip: 5.0
+  min_visual_clip: 0.6
+  log_level: INFO

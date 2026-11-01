@@ -95,6 +95,12 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
   3. Explicitly asked to research a specific topic.
 - These MCP rules govern coding-agent tools only. They do not override Recap's runtime Playwright-first backend policy; the production ChatGPT Playwright adapter and its OpenAI fallback gates are defined in `AGENTS.md`.
 
+## 9. Local Web UI
+- TypeScript must run in strict mode. Avoid `any`; validate backend payloads at the API boundary and keep server state in TanStack Query rather than duplicating it in component state.
+- React components should stay presentation-focused. Job execution, path authorization, artifact validation, and secret handling belong in the FastAPI backend.
+- UI mutations must use typed API helpers and the local startup token. Never place API keys, raw prompts, arbitrary filesystem paths, or shell commands in browser storage.
+- Keep the interface keyboard accessible and responsive. Use the project CSS variables and local font assets instead of external font/CDN dependencies.
+
 ---
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 

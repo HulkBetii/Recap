@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from orchestrator.config import load_config
@@ -31,6 +32,17 @@ def test_tts_cost_policy_lists_only_available_auto_providers(monkeypatch) -> Non
     assert policy.stages["tts"]["available_providers"] == ["ai33", "openai"]
 
 
+def test_vieneu_cost_policy_is_local() -> None:
+    config = load_config(None)
+    config["tts"].update({"provider_mode": "vieneu", "voice_id": "Ngọc Linh"})
+
+    _resolved, policy = resolve_cost_policy(config)
+
+    assert policy.stages["tts"]["available_providers"] == ["vieneu"]
+    assert policy.stages["tts"]["backend"] == "local_vieneu_onnx"
+    assert policy.stages["tts"]["cost"] == "local_compute"
+
+
 def test_low_cost_policy_uses_local_asr_and_disables_vision() -> None:
     config = load_config(None)
     config["orchestrator"]["quality_mode"] = "low_cost"
@@ -40,7 +52,20 @@ def test_low_cost_policy_uses_local_asr_and_disables_vision() -> None:
     assert resolved["ingest"]["asr_policy"] == "local_first"
     assert resolved["ingest"]["asr_provider"] == "faster-whisper"
     assert resolved["ingest"]["max_vision_frames"] == 0
+    assert resolved["ingest"]["vision_provider"] == "off"
     assert policy.stages["ingest"]["openai_uses"] == []
+
+def test_practical_anime_policy_uses_openai_translation_only() -> None:
+    _resolved, policy = resolve_cost_policy(load_config(Path("config.anime.series.practical.yaml")))
+
+    assert policy.stages["ingest"]["openai_uses"] == ["translation"]
+    assert policy.stages["ingest"]["vision_provider"] == "off"
+
+def test_localvision_anime_policy_keeps_vision_local() -> None:
+    _resolved, policy = resolve_cost_policy(load_config(Path("config.anime.series.localvision.yaml")))
+
+    assert policy.stages["ingest"]["openai_uses"] == ["translation"]
+    assert policy.stages["ingest"]["vision_provider"] == "local_qwen2_5_vl"
 
 
 def test_budget_guard_blocks_low_cost_openai_usage() -> None:
@@ -102,14 +127,24 @@ def test_direct_review_backend_is_rejected(backend: str) -> None:
         "config.vi.stable.yaml",
         "config.vi.low_openai.yaml",
         "config.vi.balanced.auto.yaml",
+        "config.anime.series.practical.yaml",
+        "config.anime.series.vieneu.yaml",
+        "config.anime.series.vieneu.enhanced.yaml",
+        "config.anime.series.localvision.yaml",
     ],
 )
-def test_shipped_presets_keep_playwright_as_review_primary(preset: str) -> None:
+def test_shipped_presets_use_gateway_as_review_primary(preset: str) -> None:
+    raw = yaml.safe_load(Path(preset).read_text(encoding="utf-8"))
     resolved, policy = resolve_cost_policy(load_config(Path(preset)))
 
-    assert policy.text_llm_backend == "chatgpt_playwright"
-    assert resolved["review"]["llm_backend"] == "chatgpt_playwright"
+    assert policy.text_llm_backend == "ninerouter"
+    assert resolved["review"]["llm_backend"] == "ninerouter"
+    assert resolved["review"]["llm_model"]
+    assert policy.stages["review"]["openai_fallback_configured"] is False
+    # Playwright stays selectable by config, so the locked profile path is still shipped.
     assert Path(resolved["review"]["chatgpt_profile_dir"]) == CHATGPT_PLAYWRIGHT_PROFILE_DIR
+    if "series_recap" in raw:
+        assert resolved["series_recap"]["llm_backend"] == "ninerouter"
 
 
 def test_invalid_quality_mode_fails() -> None:

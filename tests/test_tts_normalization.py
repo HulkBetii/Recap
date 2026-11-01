@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from tts.cache import build_cache_key
 from tts.sanitize import load_pronunciation_lexicon, normalize_tts_text
@@ -37,6 +38,16 @@ def test_custom_lexicon_overrides_default(tmp_path) -> None:
     item = normalize_tts_text("AI xuất hiện.", mode="vi", lexicon=lexicon)
 
     assert item.tts_text == "a i custom xuất hiện."
+
+def test_solo_leveling_lexicon_normalizes_jinwoo_aliases() -> None:
+    path = Path("examples/anime/solo_leveling_vi_pronunciation.yaml")
+    lexicon = load_pronunciation_lexicon(path)
+
+    item = normalize_tts_text("Sung Jinwoo bảo vệ Jin Woo.", mode="vi", lexicon=lexicon)
+
+    assert item.tts_text == "Sung Chin U bảo vệ Chin U."
+    assert "lexicon:Sung Jinwoo" in item.rules_applied
+    assert "lexicon:Jin Woo" in item.rules_applied
 
 
 def test_cache_key_uses_normalized_tts_text() -> None:

@@ -7,12 +7,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_PACKAGES = {
     "common*",
+    "episode_planner*",
     "ingest*",
     "match*",
     "orchestrator*",
+    "postprocess*",
     "preflight*",
+    "recap_ui*",
     "render*",
     "review*",
+    "series_composer*",
+    "series_match*",
+    "series_recap*",
     "shots*",
     "storymap*",
     "tts*",
@@ -29,6 +35,15 @@ EXCLUDED_TOP_LEVEL = {
     "build*",
     "dist*",
     "*.egg-info*",
+}
+QUALITY_DEV_TOOLS = {
+    "ruff",
+    "tach",
+}
+UI_RUNTIME_TOOLS = {
+    "fastapi",
+    "uvicorn",
+    "psutil",
 }
 
 
@@ -53,3 +68,43 @@ def test_movie_visual_extra_is_union_of_required_visual_runtime_groups() -> None
 
     assert set(extras["movie-visual"]) == expected
     assert all("open-clip" not in dependency.lower() for dependency in extras["movie-visual"])
+
+def test_dev_extra_includes_quality_gate_tools() -> None:
+    extras = load_pyproject()["project"]["optional-dependencies"]
+    dev_dependencies = {dependency.split(">=", 1)[0].split("==", 1)[0] for dependency in extras["dev"]}
+
+    assert QUALITY_DEV_TOOLS <= dev_dependencies
+
+def test_ui_extra_includes_local_web_runtime() -> None:
+    extras = load_pyproject()["project"]["optional-dependencies"]
+    ui_dependencies = {dependency.split(">=", 1)[0].split("==", 1)[0] for dependency in extras["ui"]}
+
+    assert UI_RUNTIME_TOOLS <= ui_dependencies
+
+def test_ruff_starts_with_check_only_critical_rules() -> None:
+    config = load_pyproject()["tool"]["ruff"]
+
+    assert config["target-version"] == "py311"
+    assert config["lint"]["select"] == ["E9", "F63", "F7", "F82"]
+
+def test_pytest_disables_tach_plugin_by_default() -> None:
+    config = load_pyproject()["tool"]["pytest"]["ini_options"]
+
+    assert "-p" in config["addopts"]
+    assert "no:tach" in config["addopts"]
+
+def test_tach_tracks_runtime_boundaries() -> None:
+    with (ROOT / "tach.toml").open("rb") as handle:
+        config = tomllib.load(handle)
+
+    modules = {module["path"]: set(module.get("depends_on", [])) for module in config["modules"]}
+
+    assert set(modules) == {item.removesuffix("*") for item in RUNTIME_PACKAGES}
+    assert modules["common"] == set()
+    assert modules["recap_ui"] == {"common", "orchestrator", "postprocess", "series_recap", "tts"}
+    assert modules["match"] == {"common", "visual_index"}
+    assert modules["series_composer"] == {"common", "review"}
+    assert modules["series_match"] == {"common"}
+    assert modules["postprocess"] == {"common"}
+    assert modules["series_recap"] == {"common", "orchestrator", "postprocess", "tts"}
+    assert {"ingest", "match", "review", "tts"} <= modules["orchestrator"]

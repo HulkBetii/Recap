@@ -16,17 +16,22 @@ class FramePlacement:
 class QuantizeError(ValueError):
     pass
 
+TIMELINE_TOLERANCE_S = 0.05
+
 def quantize_placements(placements: list[EdlPlacement], fps: float) -> list[FramePlacement]:
     if fps <= 0:
         raise QuantizeError("fps must be greater than zero")
     ordered = sorted(placements, key=lambda item: (item.tl_start, item.tl_end, item.beat_id, item.shot_index))
     frame_placements: list[FramePlacement] = []
     previous_end: int | None = None
+    previous_tl_end: float | None = None
     for index, placement in enumerate(ordered):
         f_start = round(placement.tl_start * fps)
         f_end = round(placement.tl_end * fps)
         if previous_end is not None:
-            if abs(f_start - previous_end) > 1:
+            assert previous_tl_end is not None
+            timeline_gap_s = placement.tl_start - previous_tl_end
+            if abs(timeline_gap_s) > TIMELINE_TOLERANCE_S + 1e-9:
                 raise QuantizeError(f"timeline has frame gap or overlap before placement #{index}")
             f_start = previous_end
         if f_end <= f_start:
@@ -41,6 +46,7 @@ def quantize_placements(placements: list[EdlPlacement], fps: float) -> list[Fram
             duration_s=frame_count / fps,
         ))
         previous_end = f_end
+        previous_tl_end = placement.tl_end
     if frame_placements:
         total_frames = round(ordered[-1].tl_end * fps)
         if frame_placements[-1].f_end != total_frames:

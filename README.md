@@ -1,6 +1,13 @@
 # Recap
 
-`Recap` là pipeline tạo video recap review từ một tập phim. Hiện project đang xây **Giai đoạn 1 — Ingest & Hiểu phim**.
+`Recap` là pipeline local tạo video recap review tiếng Việt từ phim gốc: transcript có timecode → kịch bản recap → TTS → chọn footage → render video 16:9 1080p, tắt tiếng gốc, không caption.
+
+Pipeline hiện có hai chế độ:
+
+- **Một video** (`python run.py`): GĐ0 `preflight` → GĐ1 `ingest` → `storymap` → `episode_planner` (khi bật `orchestrator.recap_mode`) → GĐ2 `review` → GĐ3 `tts`; song song GĐ4 `shots` → GĐ4.5 `visual_index` (tùy chọn); cuối cùng GĐ5 `match` → GĐ6 `render`.
+- **Cả season** (`python -m series_recap`): từng tập chạy tới `episode_planner` cùng `shots`, sau đó `series_composer` → `tts` → `series_match` → `postprocess` (chỉ preset enhanced) → `render`.
+
+Mỗi stage là một CLI `python -m <stage>` độc lập, giao tiếp qua file JSON. Contract, quyết định đã khóa và policy chi phí nằm trong `AGENTS.md`; tiến độ nằm trong `PROJECT_LOG.md`. Local Web UI (`python -m recap_ui`) điều khiển các CLI này.
 
 ## GĐ1 làm gì
 
@@ -17,19 +24,79 @@ Yêu cầu:
 
 - Python 3.11+
 - `ffmpeg` và `ffprobe` có trong `PATH`
-- `OPENAI_API_KEY`
+- GĐ1 dịch/vision, GĐ2 review và Composer (mọi preset hiện tại): 9router chạy local ở `http://localhost:20128/v1` (đổi bằng `NINEROUTER_URL`) và biến môi trường `NINEROUTER_API_KEY`. Đặt key một lần bằng `setx NINEROUTER_API_KEY "<key>"`; không ghi key vào config hay git. Orchestrator kiểm key, `/models` và probe thật model trước khi chạy stage nặng.
+- ChatGPT Playwright profile `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1` chỉ cần khi chọn backend `chatgpt_playwright`
+- GĐ3 TTS: preset production/example dùng CapCut (`provider_mode: capcut`, giọng `BV074_streaming`, không cần key); `provider_mode: auto` dùng `VIVOO_API_KEY` (AI33), `GENMAX_API_KEY` hoặc `OPENAI_API_KEY`; VieNeu chạy local không cần key
+- `OPENAI_API_KEY` chỉ bắt buộc khi preset dùng OpenAI cho dịch, vision, ASR hoặc fallback đã cấu hình
+
+Chạy trong `.venv` riêng, dựng bằng `uv`. Python toàn cục dùng chung với project khác dễ lệch phiên bản (`transformers` 5, OpenCV 5…); preflight sẽ báo lỗi khi gói đã cài lệch yêu cầu của `recap`.
 
 ```powershell
-py -3.11 -m venv .venv
+uv venv .venv --python 3.11
+uv pip install --python .venv\Scripts\python.exe torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+uv pip install --python .venv\Scripts\python.exe -e ".[dev,ui,movie-visual,video-profile,tts-vieneu]"
 .\.venv\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
 ```
+
+Máy không có GPU NVIDIA bỏ dòng cài torch CUDA và chỉ cài các extra cần dùng, ví dụ `uv pip install --python .venv\Scripts\python.exe -e ".[dev]"`. GĐ6 tự dùng NVENC khi mã hóa thử thành công, nếu không thì dùng libx264.
+
+## Local Web UI
+
+UI local chạy FastAPI + React/Vite trên `127.0.0.1`, điều khiển nguyên các CLI hiện có và không upload video qua browser.
+
+Thiết lập lần đầu:
+
+```powershell
+python -m pip install -e ".[dev,ui]"
+npm --prefix web ci
+npm --prefix web run build
+```
+
+Mở UI production bằng launcher một lần bấm:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_recap_ui.ps1
+```
+
+Hoặc chạy trực tiếp:
+
+```powershell
+python -m recap_ui --host 127.0.0.1 --port 8765 --open
+```
+
+Development mode chạy FastAPI ở cổng `8765`, Vite ở `5173` và proxy `/api`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_recap_ui.ps1 -Dev
+```
+
+- Job state nằm trong `data/recap_ui/recap_ui.db`; artifact pipeline vẫn nằm trong `runs/` và giữ nguyên contract/cache cũ.
+- V1 chạy một pipeline job tại một thời điểm, các job còn lại xếp FIFO. Resume không truyền `--force`.
+- UI chỉ nhận path/artifact token dưới các filesystem root đã cấu hình; API key chỉ hiển thị trạng thái configured/available, không trả giá trị secret.
+- Final delivery QA tách riêng process success với pass/warn/block của translation, timecode, Composer, EDL, source coverage và render media. Với season recap, duration chỉ block khi render thực tế thấp hơn `target_total_min_s`; vượt target max/hard cap vẫn được giao.
+
+### Workflow UX V1.1
+
+- UI mặc định dùng tiếng Việt; nút chuyển sang English được lưu trong trình duyệt. Log và nội dung artifact luôn giữ nguyên ngôn ngữ nguồn.
+- Wizard mới đi theo bốn bước `Nguồn & đầu ra -> Preset -> Preflight -> Xác nhận`. Sau khi chọn source/manifest, UI inspect duration, thứ tự episode, source thiếu/trùng và gợi ý tên trước khi tạo plan.
+- `Tên hiển thị` có thể dùng Unicode và chỉ phục vụ UI. `Tên thư mục run` là slug an toàn dài 1-80 ký tự; hai giá trị không thay thế nhau. Thứ tự fallback tên hiển thị là tên người dùng nhập, `series_title` trong manifest, rồi tên source/thư mục run.
+- Basic giữ nguyên preset và không gửi override. Advanced đóng mặc định, chỉ gửi các field allowlist mà người dùng thật sự thay đổi và có thể reset về preset.
+- Duration dưới `target_total_min_s` là blocker. Vượt preferred max hoặc hard-cap chỉ là cảnh báo planning màu amber và không chặn giao video cuối.
+- Trang Runs tách `managed` job khỏi existing/artifact-only run. Artifact-only được xem QA, artifact, EDL, voiceover và video nhưng không resume/rerun; hãy tạo managed job mới qua wizard nếu cần chạy pipeline.
+- SQLite operational state dùng schema v2; migration từ v1 giữ nguyên job/run cũ và bổ sung `display_title` nullable cho job và registered run.
+- Picker và inspect chỉ dùng opaque path token: `GET /api/fs/listing`, `POST /api/inspect/single`, `POST /api/inspect/series`. UI lấy host/port hiện tại từ browser/server metadata, không hardcode `127.0.0.1:8765`; server production vẫn chỉ bind loopback và kiểm tra same-origin.
+- Các thay đổi UX này không đổi CLI, JSON contract, stage order, cache/resume, FIFO queue hoặc Playwright-first policy.
 
 
 ## Chạy toàn pipeline bằng `run.py`
 
-Orchestrator chạy 6 stage bằng một lệnh, tôn trọng cache của từng stage và ghi toàn bộ artifact vào `--run-dir`. GĐ4 `shots` chạy song song với chuỗi GĐ1→GĐ3, sau đó GĐ5/GĐ6 chạy khi đủ input.
+Orchestrator chạy 6 stage bằng một lệnh, tôn trọng cache của từng stage và ghi toàn bộ artifact vào `--run-dir`. GĐ4 `shots` chạy song song với chuỗi GĐ1→GĐ3, GĐ4.5 `visual_index` chạy song song với review, sau đó GĐ5/GĐ6 chạy khi đủ input. `summary.json` ghi trạng thái và thời gian từng stage, kể cả khi run lỗi.
+
+GĐ4 mặc định bật `shots.overlay_guard`: tự loại các shot dính chữ chèn cứng có giới hạn thời gian (ví dụ quảng cáo của site phim), và cảnh báo trong `shots.meta.json` khi nguồn có phụ đề cứng từ 20% thời lượng trở lên. GĐ6 render theo fps nguồn (`render.fps: source`) và chọn encoder bằng `render.encoder: auto`.
+
+Phim bộ (`python -m series_recap`): `series_recap.episode_concurrency: 2` (đã đặt sẵn trong các preset anime season, trừ `localvision`) cho 2 tập ingest cùng lúc; `episode_planner` vẫn chạy theo thứ tự tập. Với 9router, Composer viết nháp các arc song song (`composer_concurrency`, mặc định 2).
+
+Báo cáo review pipeline và số đo trước/sau: `docs/pipeline-review/`.
 
 ```powershell
 python run.py `
@@ -85,6 +152,63 @@ python run.py --input path\to\video-vi.mp4 --run-dir runs\movie-vi01 --config co
 - GĐ5 dùng `match_strategy=chronological`, `w_semantic=0.15`, `audio_delay_s=0.0`; semantic/story/intent chỉ làm tie-breaker, không kéo footage lệch nhịp nguồn.
 - Không dùng cutoff intro cố định; GĐ0 `preflight` detect non-story/intro theo từng video.
 - Với nguồn tiếng Việt, `config.vi.stable.yaml` dùng `source_language=vi`, `translate_mode=none` và `aligner=whisperx`; GĐ1 giữ transcript Việt trực tiếp trong `film_map.json` và forced-align bằng WhisperX khi runtime có sẵn.
+
+Anime recap V1 có hai preset local:
+
+```powershell
+python run.py --input path\to\anime.mp4 --run-dir runs\anime-series01 --config config.anime.series.yaml
+python run.py --input path\to\anime-movie.mp4 --run-dir runs\anime-movie01 --config config.anime.movie.yaml
+python -m series_recap --manifest examples\anime\series_manifest.example.yaml --config config.anime.series.practical.yaml --episodes 1-12
+python -m series_recap --manifest examples\anime\series_manifest.example.yaml --config config.anime.series.vieneu.yaml --episodes 1-12
+python -m series_recap --manifest examples\anime\series_manifest.example.yaml --config config.anime.series.vieneu.enhanced.yaml --episodes 1-12
+```
+
+- `config.anime.series.yaml`: `content_type=anime_series`, `source_language=ja`, `translate_mode=ja-en`, `shots.face_detection=off`, `match.w_face=0.0`, `match.w_visual=0.0`, `exclude_non_story=true`, `orchestrator.recap_mode=auto`.
+- `config.anime.series.practical.yaml`: preset season 12 tap thuc dung. OpenAI API chi dung cho JA->EN transcript translation (`translation_required=true`, `translation_min_success_ratio=0.95`), `vision_provider="off"` va `max_vision_frames=0`; review/composer/QA dung ChatGPT Playwright, ASR/shots/match/render local, TTS dung provider configured.
+- `config.anime.series.vieneu.yaml`: preset season dung 9router de dich JA->EN theo batch 80 segment co cache/resume, `api_budget_guard=block`, va local VieNeu v3 Turbo ONNX/int8, giong nu Bac `Ngọc Linh`, style `doc_truyen`, speed `0.9`; khong fallback sang paid translation/TTS provider. Rieng season planning dung `series_recap.tts_cps=17.0`, hieu chinh tu run Tensei S01 co 63,107 ky tu trong 3,674.842 giay (`17.17` ky tu/giay), de bam sat target 35-45 phut; `review.tts_cps=15` va cac anime preset generic khong doi.
+- `config.anime.series.vieneu.enhanced.yaml`: opt-in preset ke thua duong VieNeu tren, bat `series_recap.clip_profile=dynamic_anime` va stage offline `postprocess`. Preset cu va run legacy khong doi hanh vi.
+- Solo Leveling uses `examples/anime/solo_leveling_vi_pronunciation.yaml` to normalize `Sung Jinwoo`/`Jinwoo` aliases to the Vietnamese TTS form `Sung Chin U`/`Chin U` before synthesis.
+- `config.anime.series.localvision.yaml`: opt-in local Qwen vision (`vision_provider=local_qwen2_5_vl`, `Qwen/Qwen2.5-VL-7B-Instruct`, `max_vision_frames=30`, resize long edge 768). Cai optional deps bang `python -m pip install -e ".[anime-vision]"`; neu local model/deps thieu thi ingest warning va tiep tuc khong co visual gap descriptions.
+- Khong dung Playwright cho batch vision automation; Playwright chi la duong text/review/composer/QA. Batch vision chay qua 9router (`vision_provider: ninerouter`), OpenAI API co cap ro rang, hoac local model opt-in.
+- `config.anime.movie.yaml`: `content_type=anime_movie`, cùng ingest defaults tiếng Nhật, `hook_mode=setup`, và cùng posture strict OP/ED/preview guard.
+- `preflight.manual_ranges` và `preflight.anime_context` nhận YAML/JSON local, rồi merge vào `video_profile.non_story_ranges`; `review.context_file` nạp cùng anime context để giữ glossary, continuity và spoiler guard nhất quán.
+- Anime context là metadata local only, không dùng AniList/API. OP/ED/theme/preview/recap zones phải đi qua manual ranges hoặc detector tin cậy, không hardcode duration.
+
+- Anime dai tap dung `series_manifest.yaml` local lam source of truth cho `series_id`, `episode_key`, `episode_number`, `title`, `source_path`, `arc`, `spoiler_limit_episode`; xem `examples/anime/series_manifest.example.yaml`.
+- Khi `orchestrator.recap_mode=auto`, `episode_planner` ghi `episode_meta.json`, `episode_memory.json` va append `series_memory_index.jsonl`. Mode: `>=0.70 full`, `0.35-0.69 quick`, `0.15-0.34 merge`, `<0.15 skip`.
+- `quick` tu ha review `target_ratio` ve `0.12` va tap trung "dieu can nho cho tap sau"; `merge/skip` van ingest/storymap/memory nhung short-circuit review/TTS/match/render.
+- Season recap V1 dung CLI rieng de ra mot video chung cho nhieu tap:
+
+```powershell
+python -m series_recap --manifest examples\anime\series_manifest.example.yaml --config config.anime.series.yaml --episodes 1-3
+```
+
+- Mac dinh anime series dung `series_recap.format=episode_arc_chaptered` va `detail_level=detailed`: mot script/voiceover/EDL tong, nhung composer viet theo arc khoang 3 tap de recap season dai khong bi roi rac. `episode_chaptered` va `compact` van co san cho batch ngan hoac season summary ngan.
+- Anime series preset dat target 12 tap 24 phut vao khoang 35-45 phut (`target_total_min_s=2100`, `target_total_max_s=2700`) va hard cap 50 phut (`target_total_hard_cap_s=3000`). Moi tap canon non-skip van co budget rieng (`episode_min_s=90`, `episode_normal_s=180`, `episode_high_s=300`, `arc_size=3`).
+- Cac target ratio cu `quick=0.14`, `full=0.22`, `merge=0.05`, `skip=0.0` va `series_recap.tts_cps=24.0` van giu cho `episode_chaptered`/tham chieu, nhung mode detailed moi uu tien season/arc target plan.
+- `series_recap` khong noi raw video truoc. Moi tap duoc chay episode-first toi `episode_planner` + `shots`; legacy chain la `series_composer -> tts -> series_match -> render`, con preset enhanced chen `postprocess` giua `series_match` va `render`.
+- Artifact moi gom `series_event_bank.json`, `series_review_script.json`, `series_tts_script.json`, `series_chapters.json`, `youtube_chapters.txt`, va `edl.source_map.json`. `edl.json` van dung contract cu, nhung `src` co the tro toi nhieu tap; GĐ6 render voi `--source-map` de cat dung file nguon.
+- Detailed season recap ghi them `series_arc_plan.json` va `series_composer.qa.json` de audit ngan sach arc/episode, prompt count, revision count va QA warnings.
+- Neu `preflight.manual_ranges` khong duoc set trong config, `series_recap` tu tim sidecar canh manifest theo convention `manual_ranges.<episode_key>.yaml|yml|json` de giu OP/ED/preview guard rieng tung tap.
+- Manual sidecars accept `end_card` for terminal non-story frames. Storymap v2 treats every non-story range as a hard boundary and splits coarse story sections around OP/ED/preview/end-card gaps.
+- Series resume uses the versioned internal `work/stage_manifest.json`. Composer, TTS, YouTube chapters, match, optional postprocess, and render fingerprint direct inputs and validate output signatures before skipping. Enhanced postprocess identity includes EDL/script/timing/event bank/shots/config/override/audio asset identities; render keeps video temp clips separate from music/SFX/master caches, so replacing music does not re-encode footage.
+- Series matching uses `series-v2`: each `source_ref` gets a separate candidate pool and fair quota in event order. Normal clips target `min_clip` (default 3s), while `min_visual_clip` is the hard floor; impossible multi-event beats fail with event IDs instead of silently dropping footage. `edl.qa.json` records requested/covered/fallback/missing events and short-fallback diagnostics.
+- Enhanced matching uses `series-v3-dynamic-anime`: event-aware clip ranges are 1.5-2.4s for hook/conflict/action, 1.8-3.0s for setup/investigation/neutral, and 2.5-4.0s for reveal/climax/ending. Candidate residuals rotate round-robin; adjacent same-shot or contiguous-source reuse is allowed only after alternatives run out and is always reported in `edl.qa.json`. Long candidates are inset 0.75s from real shot boundaries when the remaining span still meets the event minimum, avoiding fade/black transition heads while preserving short valid clips.
+
+### Anime Season Enhanced Post-Production V1
+
+- Put user-provided royalty-free assets under `data/audio_library/` and create `data/audio_library/audio_assets.yaml` from `examples/audio/audio_assets.example.yaml`. V1 never downloads audio. Enhanced preflight requires a loopable `default` music track, a `whoosh`, an `impact`, valid license metadata, existing files, and the required FFmpeg filters.
+- Optional `edit_overrides.yaml` beside the series manifest can override beat/placement mood, track, transform, ramp, freeze, or disable effects. Precedence is placement override, beat override, auto planner, then defaults. See `examples/anime/edit_overrides.example.yaml`.
+- `postprocess` keeps `edl.json` unchanged and writes `edit_plan.json`, `edit_plan.meta.json`, `edit_plan.qa.json`, and `audio_attribution.txt`. Planning is deterministic and offline; no LLM/API is called.
+- Visual planning uses light zoom/pan, mood grade, limited 2.35:1 masks, key-beat push-ins, transition-only three-slice ramps, and guarded 0.45s freeze frames. Ramps apply to bridge/transition beats, multi-episode beats, and the beat opening each episode chapter; reveal/climax and freeze-carrying placements are excluded. Source extensions stay inside the same indexed shot; skipped effects and bound checks are recorded in QA.
+- Music covers the full visual timeline, changes only at beat boundaries, crossfades for 1.5s, and uses default fallback with warnings. Whoosh/impact cues are throttled. `audio_delay_s` delays voiceover only; music and SFX stay locked to picture.
+- Enhanced render maps only video-only footage plus the generated master mix, verifies exactly one output audio stream, and always records `original_audio_included=false`. Crop, grade, speed changes, and short cuts are editorial styling only; they do not guarantee avoidance of Content ID or copyright claims.
+- Run the offline acceptance smoke with `python -m scripts.enhanced_render_smoke --work-dir work/enhanced-render-smoke`. It synthesizes source audio, voiceover, music and SFX, then checks 1080p/30fps frame lock, one audio stream, source-tone suppression, nonblack frames, zoom and freeze behavior. The full local release gate runs this smoke when media smoke is enabled.
+- Generate an AI33 technical-test pack from `examples/audio/ai33_anime_cinematic_pack.yaml` with `python -m scripts.generate_ai33_audio_assets --dry-run`. Live generation requires a rotated key in `VIVOO_API_KEY` plus `--confirm-live`; the 10,000-credit guard blocks later forecastable submissions above budget, while the first music canary has unknown cost and can itself exceed that value. The lifetime spend journal and `--resume` avoid recharging validated assets. Ambiguous paid-POST network failures are not retried automatically.
+- AI33 generator output is restricted to repository `work/` and defaults to `work/ai33-audio-library/`: `audio_assets.test.yaml`, `generation_report.json`, media files, and `NOT_FOR_PRODUCTION.txt`. Downloads use guarded AI33/Suno HTTPS redirects with credential stripping. These files are test-only and must not be copied to `data/audio_library/audio_assets.yaml` until commercial-use rights and a license URL are independently verified; AI-generated does not mean royalty-free.
+- Run the Tensei real-media acceptance with `python -m scripts.enhanced_real_media_smoke --audio-assets work/ai33-audio-library/audio_assets.test.yaml`. It audits full-season dynamic matching/postprocess output in an isolated work directory and renders a frame-locked 90-second real-footage excerpt without modifying production artifacts. The report validates rolling cue density, measurable zoom/freeze when the full plan supports those cues, non-silent music and scheduled SFX, video-only footage caches, one final audio stream, and exact cached-master audio packet identity; an acceptance-only freeze override may be created under `work/` when the first 90 seconds lacks an automatic freeze.
+- On Windows, `series_recap` configures CLI output as UTF-8 before printing dry-run plans, so Unicode preset values such as `Ngọc Linh` do not fail under a legacy `cp1252` terminal.
+- The browser API returns opaque DTOs only: plans expose `run_name`, placeholder `command_preview`, logical DAG/output names, and a sanitized dry-run summary; jobs expose IDs/status/timestamps without argv, config snapshots, process metadata, or absolute paths. Resume/rerun still resolve internal argv and config snapshots by job ID. Local Qwen vision is constructed lazily only after a cache miss and selected visual gaps.
 
 Tùy chọn resume/debug:
 
@@ -143,19 +267,31 @@ python -m pytest -q
 ```
 
 Test hiện tại dùng mock/unit, chưa yêu cầu clip thật. Khi có clip ngắn, chạy lệnh GĐ1 ở trên để smoke test real pipeline.
+
+## Quality tooling
+
+Development installs include `ruff` and `tach`:
+
+```powershell
+python -m pip install -e ".[dev]"
+python -m ruff check .
+python -m tach check --dependencies
+```
+
+`ruff` is check-only and starts with critical syntax/name rules so it can run on the existing codebase without a repo-wide formatting diff. Tach records the desired runtime package boundaries in `tach.toml`; release gate runs Tach as a blocking check and writes `work/release-gate/tach-report.txt`. Tach's pytest plugin is disabled by default so `python -m pytest -q` keeps running the full test selection.
 ## Chạy GĐ2
 
 GĐ2 nhận `film_map.json` và tạo `review_script.json` + `review_script.meta.json`.
 
-GĐ2 là tác vụ LLM nặng nên luôn dùng ChatGPT qua Playwright persistent browser làm backend chính. Chạy thẳng `openai_api` hoặc tắt backend bằng `off` không còn được hỗ trợ; hai giá trị legacy này sẽ báo lỗi config.
+GĐ2 chạy qua backend `ninerouter` (9router gateway, model `ag/gemini-3.8-flash-high`) trong mọi preset hiện tại; `chatgpt_playwright` vẫn chọn được. Hai backend không tự fallback sang nhau. Chạy thẳng `openai_api` hoặc tắt backend bằng `off` không còn được hỗ trợ; hai giá trị legacy này sẽ báo lỗi config. Với 9router, narration được chia batch khoảng 8.000 ký tự và beat quá ngắn so với mục tiêu được viết lại một lần.
 
-OpenAI review fallback là opt-in qua `review.openai_fallback_model`. Fallback chỉ được phép khi Playwright đã hết retry/recovery với lỗi browser được phân loại là cho phép fallback, `api_budget_guard` không phải `block`, và `OPENAI_API_KEY` tồn tại. Playwright thành công không khởi tạo OpenAI client và không yêu cầu API key.
+OpenAI review fallback là opt-in qua `review.openai_fallback_model` và chỉ áp dụng cho đường Playwright. Fallback chỉ được phép khi Playwright đã hết retry/recovery với lỗi browser được phân loại là cho phép fallback, `api_budget_guard` không phải `block`, và `OPENAI_API_KEY` tồn tại. Playwright thành công không khởi tạo OpenAI client và không yêu cầu API key.
 
-Config mặc định:
+Config trong preset hiện tại (code mặc định vẫn là `chatgpt_playwright`):
 
 ```yaml
 orchestrator:
-  text_llm_backend: chatgpt_playwright
+  text_llm_backend: ninerouter
   api_budget_guard: warn
 review:
   playwright_max_attempts: 2
@@ -202,6 +338,31 @@ Manifest GĐ2 hash nội dung `film_map`, metadata, story map, video profile, st
 GĐ3 nhận `review_script.json` và tạo `audio/<beat_id>.mp3`, `voiceover.mp3`, `beats_timing.json`, `tts_meta.json`.
 
 Provider mặc định là `auto`: thử AI33.PRO Vivoo V3, sau đó Genmax khi có key + voice riêng, rồi OpenAI `gpt-4o-mini-tts` khi có `OPENAI_API_KEY`. Production preset dùng Genmax voice `VU16byTywsWv5JpI8rbc`; provider thiếu key được bỏ qua, và GĐ3 fail-fast nếu không có provider nào.
+
+VieNeu-TTS 3.2.3 là provider local opt-in cho tiếng Việt. Nó chạy v3 Turbo qua ONNX/int8 trên CPU, không cần API key và không được tự động chèn vào `auto` để giữ nguyên hành vi các preset hiện có. Cài optional extra (extra này pin Gradio/Hugging Face để không xung đột với Transformers của project):
+
+```powershell
+python -m pip install -e ".[tts-vieneu]"
+```
+
+Chạy VieNeu bằng giọng nữ miền Bắc `Ngọc Linh`, style kể chuyện. Lần chạy đầu có thể tải model/voice từ Hugging Face (~285 MiB); preflight chỉ báo runtime, không tự tải model ngầm:
+
+```powershell
+python -m tts `
+  --review-script out\review_script.json `
+  --output-audio out\voiceover.mp3 `
+  --output-timing out\beats_timing.json `
+  --voice-id "Ngọc Linh" `
+  --provider-mode vieneu `
+  --vieneu-style doc_truyen `
+  --vieneu-backend onnx `
+  --vieneu-precision int8 `
+  --vieneu-model pnnbao-ump/VieNeu-TTS-v3-Turbo `
+  --film-meta out\film_map.meta.json `
+  --work-dir work\tts
+```
+
+VieNeu synthesis is serialized within one TTS process, writes a temporary WAV, converts it to a real MP3 with ffmpeg (including `atempo` for non-1.0 speed), and then follows the existing normalization/cache/resume path. The SDK watermark remains enabled. Voice cloning and GPU batching are intentionally out of scope for this integration.
 
 Env vars:
 
@@ -275,7 +436,7 @@ python -m shots `
   --work-dir work\shots
 ```
 
-Face detection v1 dùng Haar cascade bundled trong OpenCV. Nếu không cần face metrics:
+Face detection dùng YuNet (`shots/models/face_detection_yunet_2023mar.onnx`, đóng gói sẵn), Haar chỉ là dự phòng. Nếu không cần face metrics:
 
 ```powershell
 python -m shots --input path\to\film.mp4 --output out\shots.json --face-detection off
@@ -390,8 +551,8 @@ Nguyên tắc GĐ5:
 - Cai embedding deps khi dung `bge-m3`: `pip install -e ".[semantic-embed]"`.
 - `edl.qa.json` ghi provider/model/device/cache hits, từng beat chọn shot nào, semantic rank/score, `expected_src_position`, `source_drift_s`, `chronology_score` và warning `low semantic match`/`high source drift`.
 - `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse/drift và warnings theo beat.
-- Face l? ?i?m c?ng m?m, kh?ng l?c c?ng.
-- Placement m?c ??nh 1:1 speed `1.0`.
+- Face là điểm cộng mềm, không lọc cứng.
+- Placement mặc định 1:1 speed `1.0`.
 - `min_visual_clip` mac dinh `0.6s` de tranh flash-cut; pause gap ngan duoc absorb bang source capacity hoac slowdown toi da 10% tren hai clip ke nhau, va placement dai hon `max_clip` se duoc split lien tuc cung source/shot.
 - Khi thiếu footage, GĐ5 tính diversity capacity theo tối đa một clip `max_clip` cho mỗi shot. Nó thử shot usable rồi shot story chỉ bị loại vì tối trong cùng source window trước khi widen, và không vượt quá `max_widen`.
 - Repeat fallback ưu tiên phần source chưa dùng của các shot đã chọn, tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier, rồi mới dùng span có overlap thấp nhất.
@@ -403,7 +564,7 @@ Nguyên tắc GĐ5:
 
 ## Chạy GĐ6
 
-GĐ6 nhận `edl.json`, `voiceover.mp3`, `film.mp4` và tạo `recap.mp4` + `render.meta.json`. Stage này chỉ render offline bằng `ffmpeg/ffprobe`, tắt hoàn toàn tiếng gốc và không tạo caption/nhạc nền.
+GĐ6 nhận `edl.json`, `voiceover.mp3`, nguồn video và tạo `recap.mp4` + `render.meta.json`. Legacy path chỉ mux voiceover như trước. Khi cùng có `--edit-plan` và `--audio-assets`, enhanced path áp visual plan và master mix music/SFX offline. Cả hai đường đều tắt hoàn toàn audio nguồn và không tạo caption.
 
 ```powershell
 python -m render `
@@ -420,10 +581,13 @@ python -m render `
 
 Nguyên tắc GĐ6:
 
-- Frame-lock toàn cục: quantize mốc timeline theo frame trước khi cắt để tránh trôi sync.
+- Frame-lock toàn cục: quantize mốc timeline theo frame trước khi cắt; filter time-transform rồi sample FPS, clone-pad khi cần và trim theo số frame tuyệt đối để tránh hụt một frame ở biên timestamp.
 - Mỗi placement được re-encode thành temp clip video-only cùng resolution/fps/codec/pix_fmt.
-- Temp clip dùng cache trong `work/render/temp_clips/`; thêm `--force` để render lại toàn bộ cache GĐ6.
+- Temp clip dùng cache trong `work/render/temp_clips/`; mỗi cache hit được probe media và clip mới chỉ commit atomically sau khi FFmpeg hoàn tất. Thêm `--force` để render lại toàn bộ cache GĐ6.
 - Concat temp clips bằng demuxer `-c copy`, sau đó mux `voiceover.mp3` thành audio duy nhất.
+- Enhanced path dùng `work/render/audio_cache/` riêng cho music, SFX và master mix; thay audio asset không invalidate `work/render/temp_clips/` nếu visual edit không đổi.
+- `--edit-plan` và `--audio-assets` phải đi cùng nhau. Final mux chỉ map video-only và một master audio stream; `audio_delay_s` chỉ áp lên voiceover trước khi duck/mix.
+- GĐ6 kiểm tra frame count và duration của video-only concat với timeline đã quantize trước khi tail-pad; concat thiếu clip phải fail rõ thay vì đóng băng frame cuối để bù hàng phút.
 - Nếu video-only concat ngắn hơn voiceover, GĐ6 chỉ encode một tail freeze-frame clip ngắn rồi concat copy; không re-encode toàn bộ video-only trong đường bình thường.
 - `render.meta.json` ghi duration video/audio, số temp clips, cache hits và warnings.
 
@@ -527,7 +691,7 @@ Long local ASR now overlaps chunks and atomically caches validated per-chunk tra
 - GĐ2 defaults to two Playwright attempts with a 60-second same-response recovery window. Only classified browser timeout/disconnect failures may reach the opt-in OpenAI fallback; login, profile, config, parse, validation, and programming errors fail directly.
 - `api_budget_guard=block` still allows Playwright but blocks OpenAI fallback in every quality mode. ASR/vision/TTS remain local or dedicated-provider workflows because Playwright cannot reliably produce timestamped transcript, frame-analysis, or audio contracts.
 - Local runtime artifacts are ignored: `.env`, `data/`, `runs/`, `work/`, and `out/` must not be committed.
-- Movie mode is independent per video. Series mode should later add shared glossary/entity bible and episode summaries rather than relying on one giant chat history.
+- Movie mode is independent per video. Anime series Episode V1 stays episode-first and uses `episode_memory.json` plus `series_memory_index.jsonl` instead of relying on one giant chat history.
 
 
 ## GĐ0 Video Profile / Intro Detection

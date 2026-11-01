@@ -1,9 +1,13 @@
 ﻿from __future__ import annotations
 
+import ctypes
+import gc
+import importlib.util
 import json
 import os
 import re
 import subprocess
+import sys
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -15,6 +19,42 @@ LOCAL_ASR_CHUNK_SECONDS = 600.0
 LOCAL_ASR_CHUNK_OVERLAP_SECONDS = 2.0
 
 
+CUBLAS_DLLS = ("cudart64_12.dll", "cublasLt64_12.dll", "cublas64_12.dll")
+
+
+def release_gpu_memory() -> None:
+    """Return cached CUDA memory once ASR/alignment models are gone.
+
+    PyTorch's caching allocator keeps WhisperX tensors reserved until the process exits; on a
+    2-hour film that held ~12 GB VRAM through translation and vision, blocking other GPU stages.
+    """
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available() and torch.cuda.is_initialized():
+        torch.cuda.empty_cache()
+
+
+def register_cuda_runtime_dlls(device: str) -> None:
+    """Preload torch's bundled cuBLAS so CTranslate2 can use it on Windows.
+
+    CTranslate2 resolves cublas64_12.dll by name at first GPU use and does not honour
+    os.add_dll_directory, so GPU faster-whisper otherwise only works when an unrelated
+    import happened to load torch (which preloads these DLLs) first.
+    """
+    if device != "cuda" or sys.platform != "win32":
+        return
+    spec = importlib.util.find_spec("torch")
+    if spec is None or spec.origin is None:
+        return
+    torch_lib = Path(spec.origin).parent / "lib"
+    if not torch_lib.is_dir():
+        return
+    os.add_dll_directory(str(torch_lib))
+    for name in CUBLAS_DLLS:
+        if (torch_lib / name).is_file():
+            ctypes.CDLL(str(torch_lib / name))
+
+
 def _transcribe_with_model(
     model: object,
     audio_path: Path,
@@ -23,13 +63,18 @@ def _transcribe_with_model(
     vad_filter: bool,
     offset_s: float = 0.0,
     start_id: int = 0,
+    batch_size: int = 0,
 ) -> list[TranscriptSegment]:
+    # Batched decoding defaults to one segment per ~30s VAD window; keep segment timestamps so
+    # source spans stay sentence-sized for WhisperX and footage matching.
+    options: dict[str, object] = {"batch_size": batch_size, "without_timestamps": False} if batch_size > 0 else {}
     raw_segments, _info = model.transcribe(
         str(audio_path),
         language=language,
         word_timestamps=False,
         vad_filter=vad_filter,
         condition_on_previous_text=False,
+        **options,
     )
     segments: list[TranscriptSegment] = []
     for raw in raw_segments:
@@ -94,6 +139,7 @@ def _chunk_cache_payload_is_valid(
     device: str,
     language: str,
     vad_filter: bool,
+    batch_size: int = 0,
 ) -> bool:
     expected = {
         "source": source_identity,
@@ -104,7 +150,23 @@ def _chunk_cache_payload_is_valid(
         "language": language,
         "vad_filter": vad_filter,
     }
-    return all(payload.get(key) == value for key, value in expected.items()) and isinstance(payload.get("segments"), list)
+    # Chunks cached before batched ASR existed carry no batch_size and were sequential (0).
+    return (
+        all(payload.get(key) == value for key, value in expected.items())
+        and payload.get("batch_size", 0) == batch_size
+        and isinstance(payload.get("segments"), list)
+    )
+
+
+def _load_whisper(whisper_model: str, device: str, batch_size: int):  # type: ignore[no-untyped-def]
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel(whisper_model, device=device)
+    if batch_size <= 0:
+        return model
+    from faster_whisper import BatchedInferencePipeline
+
+    return BatchedInferencePipeline(model=model)
 
 
 def _normalize_transcript_text(text: str) -> str:
@@ -146,12 +208,12 @@ def transcribe_korean(
     duration: float | None = None,
     chunks_dir: Path | None = None,
     chunk_s: float = LOCAL_ASR_CHUNK_SECONDS,
+    batch_size: int = 0,
 ) -> list[TranscriptSegment]:
-    from faster_whisper import WhisperModel
-
+    register_cuda_runtime_dlls(device)
     if duration is None or chunks_dir is None or duration <= chunk_s:
-        model = WhisperModel(whisper_model, device=device)
-        return _transcribe_with_model(model, audio_path, language=language, vad_filter=vad_filter)
+        model = _load_whisper(whisper_model, device, batch_size)
+        return _transcribe_with_model(model, audio_path, language=language, vad_filter=vad_filter, batch_size=batch_size)
 
     segments: list[TranscriptSegment] = []
     model = None
@@ -182,19 +244,21 @@ def transcribe_korean(
                     device=device,
                     language=language,
                     vad_filter=vad_filter,
+                    batch_size=batch_size,
                 ):
                     cached_segments = [TranscriptSegment.model_validate(item) for item in payload["segments"]]
             except (json.JSONDecodeError, OSError, TypeError, ValueError):
                 cached_segments = None
         if cached_segments is None:
             _extract_audio_chunk(audio_path, chunk_path, start, length)
-            model = model or WhisperModel(whisper_model, device=device)
+            model = model or _load_whisper(whisper_model, device, batch_size)
             cached_segments = _transcribe_with_model(
                 model,
                 chunk_path,
                 language=language,
                 vad_filter=vad_filter,
                 offset_s=start,
+                batch_size=batch_size,
             )
             _write_json_atomic(
                 transcript_path,
@@ -206,6 +270,7 @@ def transcribe_korean(
                     "device": device,
                     "language": language,
                     "vad_filter": vad_filter,
+                    "batch_size": batch_size,
                     "segments": [segment.model_dump(mode="json") for segment in cached_segments],
                 },
             )

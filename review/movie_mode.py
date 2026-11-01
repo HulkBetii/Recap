@@ -11,12 +11,40 @@ MOVIE_AUTO_MAX_RATIO = 0.26
 EPISODE_AUTO_RATIO = 0.33
 OPENING_WINDOW_S = 120.0
 STORY_START_TOLERANCE_S = 10.0
+EPISODE_CONTENT_TYPES = {"episode", "anime_series"}
+MOVIE_CONTENT_TYPES = {"movie", "anime_movie"}
+SUPPORTED_CONTENT_TYPES = EPISODE_CONTENT_TYPES | MOVIE_CONTENT_TYPES
+
+def content_family(content_type: str) -> str:
+    if content_type in MOVIE_CONTENT_TYPES:
+        return "movie"
+    if content_type in EPISODE_CONTENT_TYPES:
+        return "episode"
+    raise ValueError("content_type must be episode, movie, anime_series, or anime_movie")
+
+def is_movie_content(content_type: str) -> bool:
+    return content_family(content_type) == "movie"
 
 
 def story_start_from_profile(profile: VideoProfile | None) -> float:
     if profile is None:
         return 0.0
-    starts = [item.end_s for item in profile.non_story_ranges if item.start_s <= 5.0 and item.label in {"intro_opening", "opening", "intro", "title_card", "studio_logo"}]
+    starts = [
+        item.end_s
+        for item in profile.non_story_ranges
+        if item.start_s <= 5.0
+        and item.label in {
+            "intro_opening",
+            "opening",
+            "intro",
+            "opening_theme",
+            "recap_previous_episode",
+            "title_card",
+            "studio_logo",
+            "eyecatch",
+            "sponsor_card",
+        }
+    ]
     return round(max(starts), 3) if starts else 0.0
 
 @dataclass(frozen=True)
@@ -33,12 +61,11 @@ class OpeningCoherenceResult:
 
 
 def resolve_content_defaults(content_type: str, hook_mode: str | None, opening_coherence_qa: bool | None) -> tuple[str, bool]:
-    if content_type not in {"episode", "movie"}:
-        raise ValueError("content_type must be episode or movie")
-    resolved_hook = hook_mode or ("setup" if content_type == "movie" else "cold_open")
+    family = content_family(content_type)
+    resolved_hook = hook_mode or ("setup" if family == "movie" else "cold_open")
     if resolved_hook not in {"cold_open", "setup", "off"}:
         raise ValueError("hook_mode must be cold_open, setup, or off")
-    resolved_opening_qa = (content_type == "movie") if opening_coherence_qa is None else opening_coherence_qa
+    resolved_opening_qa = (family == "movie") if opening_coherence_qa is None else opening_coherence_qa
     return resolved_hook, resolved_opening_qa
 
 
@@ -49,7 +76,7 @@ def resolve_target_ratio(target_ratio: str | float, *, content_type: str, film_m
     if raw != "auto":
         return AutoDurationResult(float(raw), 0.0, "fixed")
     score = compute_complexity_score(film_map, duration_s)
-    if content_type == "movie":
+    if is_movie_content(content_type):
         ratio = MOVIE_AUTO_MIN_RATIO + (MOVIE_AUTO_MAX_RATIO - MOVIE_AUTO_MIN_RATIO) * score
     else:
         ratio = EPISODE_AUTO_RATIO
@@ -75,7 +102,7 @@ def compute_complexity_score(film_map: list[FilmMapSegment], duration_s: float) 
 def apply_hook_mode(outline_result: OutlineResult, *, content_type: str, hook_mode: str, film_map: list[FilmMapSegment], story_start_s: float = 0.0) -> OutlineResult:
     if not outline_result.outline:
         return outline_result
-    if content_type != "movie" or hook_mode != "setup":
+    if not is_movie_content(content_type) or hook_mode != "setup":
         return outline_result
     opening_end_s = max(OPENING_WINDOW_S, story_start_s + OPENING_WINDOW_S)
     opening_ids = {seg.id for seg in film_map if seg.tc_end > story_start_s and seg.tc_start <= opening_end_s}
@@ -90,7 +117,7 @@ def apply_hook_mode(outline_result: OutlineResult, *, content_type: str, hook_mo
 
 
 def check_opening_coherence(beats: list[ReviewBeat], *, content_type: str, hook_mode: str, opening_window_s: float = OPENING_WINDOW_S, story_start_s: float = 0.0) -> OpeningCoherenceResult:
-    if content_type != "movie":
+    if not is_movie_content(content_type):
         return OpeningCoherenceResult(True, [], [])
     if not beats:
         return OpeningCoherenceResult(False, ["missing opening beat"], ["opening coherence failed: missing opening beat"])

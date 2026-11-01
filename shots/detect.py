@@ -117,18 +117,26 @@ def run_ffmpeg_scene(input_path: Path, *, duration: float, threshold: float, sca
             "-",
         ],
         capture_output=True,
-        text=True,
         check=False,
     )
+    stderr = _decode_process_output(result.stderr)
+    stdout = _decode_process_output(result.stdout)
     if result.returncode != 0:
-        message = result.stderr.strip() or result.stdout.strip() or "ffmpeg scene detection failed"
+        message = stderr.strip() or stdout.strip() or "ffmpeg scene detection failed"
         raise RuntimeError(message.splitlines()[-1])
     boundaries: list[float] = []
-    for line in result.stderr.splitlines() + result.stdout.splitlines():
+    for line in stderr.splitlines() + stdout.splitlines():
         match = _SHOWINFO_PTS_RE.search(line)
         if match:
             boundaries.append(float(match.group(1)))
     return boundaries_to_scenes(boundaries, duration=duration, min_gap=min_gap)
+
+def _decode_process_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 def boundaries_to_scenes(boundaries: list[float], *, duration: float, min_gap: float) -> list[tuple[float, float]]:
     points = [0.0]

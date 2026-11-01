@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from common.integrity import file_hash, stable_hash
+from ingest.playwright_translation import TRANSLATION_PARSER_VERSION, TRANSLATION_PROMPT_VERSION
 
 INGEST_CACHE_VERSION = "ingest-v1"
 INGEST_PREPROCESSING_VERSION = "film-map-v1"
@@ -14,9 +15,16 @@ INGEST_CONFIG_FIELDS = (
     "max_vision_frames",
     "max_visual_gap_s",
     "translate_model",
+    "translation_provider",
+    "translation_batch_size",
+    "translation_required",
+    "translation_min_success_ratio",
     "source_language",
     "translate_mode",
+    "vision_provider",
     "vision_model",
+    "vision_resize_long_edge",
+    "vision_batch_size",
     "device",
     "asr_provider",
     "aligner",
@@ -40,8 +48,15 @@ def _value(settings: Mapping[str, Any] | object, name: str, default: Any = None)
     return getattr(settings, name, default)
 
 
+def translation_model_identity(settings: Mapping[str, Any] | object) -> str:
+    if _value(settings, "translation_provider", "openai_api") == "chatgpt_playwright":
+        return "chatgpt-web"
+    return str(_value(settings, "translate_model", "gpt-4.1-mini"))
+
+
 def ingest_config_hash(settings: Mapping[str, Any] | object) -> str:
     payload = {name: _value(settings, name) for name in INGEST_CONFIG_FIELDS}
+    payload["translate_model"] = translation_model_identity(settings)
     for name in (
         "gap_threshold",
         "max_visual_gap_s",
@@ -50,13 +65,23 @@ def ingest_config_hash(settings: Mapping[str, Any] | object) -> str:
         "openai_chunk_s",
         "drop_non_korean_intro_s",
         "drop_visual_before_s",
+        "translation_min_success_ratio",
     ):
         if payload.get(name) is not None:
             payload[name] = float(payload[name])
     if payload.get("max_vision_frames") is not None:
         payload["max_vision_frames"] = int(payload["max_vision_frames"])
+    if payload.get("vision_resize_long_edge") is not None:
+        payload["vision_resize_long_edge"] = int(payload["vision_resize_long_edge"])
+    if payload.get("vision_batch_size") is not None:
+        payload["vision_batch_size"] = int(payload["vision_batch_size"])
+    payload["translation_required"] = bool(payload.get("translation_required"))
     if payload.get("transcript_correction") in {None, False}:
         payload["transcript_correction"] = "off"
+    batch_size = int(_value(settings, "asr_batch_size", 0) or 0)
+    if batch_size > 0:
+        # Only batched runs key on it, so sequential caches keep their identity.
+        payload["asr_batch_size"] = batch_size
     transcript_input = _value(settings, "transcript_input")
     glossary = _value(settings, "glossary")
     payload.update(
@@ -75,8 +100,10 @@ def audio_cache_key(input_hash: str) -> str:
 
 def transcript_cache_key(audio_key: str, settings: Mapping[str, Any] | object) -> str:
     transcript_input = _value(settings, "transcript_input")
+    batch_size = int(_value(settings, "asr_batch_size", 0) or 0)
     return stable_hash(
         {
+            **({"asr_batch_size": batch_size} if batch_size > 0 else {}),
             "audio_key": audio_key,
             "asr_provider": _value(settings, "asr_provider"),
             "whisper_model": _value(settings, "whisper_model"),
@@ -115,8 +142,14 @@ def translation_cache_key(transcript_hash: str, settings: Mapping[str, Any] | ob
         {
             "transcript_hash": transcript_hash,
             "translate_mode": _value(settings, "translate_mode"),
-            "translate_model": _value(settings, "translate_model"),
-            "translation_pipeline": "segment-stable-v1",
+            "translate_model": translation_model_identity(settings),
+            "translation_provider": _value(settings, "translation_provider", "openai_api"),
+            "translation_batch_size": _value(settings, "translation_batch_size", 80),
+            "translation_required": bool(_value(settings, "translation_required", False)),
+            "translation_min_success_ratio": _value(settings, "translation_min_success_ratio", 0.0),
+            "translation_prompt_version": TRANSLATION_PROMPT_VERSION,
+            "translation_parser_version": TRANSLATION_PARSER_VERSION,
+            "translation_pipeline": "segment-stable-v2",
         }
     )
 
@@ -136,7 +169,10 @@ def vision_cache_key(
             "gap_threshold": _value(settings, "gap_threshold"),
             "max_vision_frames": _value(settings, "max_vision_frames"),
             "max_visual_gap_s": _value(settings, "max_visual_gap_s"),
+            "vision_provider": _value(settings, "vision_provider", "openai"),
             "vision_model": _value(settings, "vision_model"),
+            "vision_resize_long_edge": _value(settings, "vision_resize_long_edge", 768),
+            "vision_batch_size": _value(settings, "vision_batch_size", 1),
             "drop_visual_before_s": _value(settings, "drop_visual_before_s"),
             "vision_pipeline": "silent-gap-profile-v2",
         }

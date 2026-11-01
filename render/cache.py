@@ -4,7 +4,7 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def stable_hash(data: object) -> str:
@@ -21,19 +21,41 @@ class RenderCache:
         self.work_dir = work_dir
         self.force = force
         self.temp_dir = self.work_dir / "temp_clips"
+        self.audio_dir = self.work_dir / "audio_cache"
         self.cache_hits: list[str] = []
 
     def prepare(self) -> None:
         if self.force and self.work_dir.exists():
             shutil.rmtree(self.work_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.audio_dir.mkdir(parents=True, exist_ok=True)
 
     def temp_path(self, cache_key: str) -> Path:
         return self.temp_dir / f"{cache_key}.mp4"
 
-    def get_cached_temp(self, cache_key: str) -> Path | None:
+    def get_cached_temp(self, cache_key: str, validator: Callable[[Path], bool] | None = None) -> Path | None:
         path = self.temp_path(cache_key)
-        if path.is_file():
+        if path.is_file() and (validator is None or validator(path)):
+            self.cache_hits.append(path.relative_to(self.work_dir).as_posix())
+            return path
+        return None
+
+    def prune_temp_clips(self, keep: set[Path]) -> int:
+        """Delete temp clips the latest successful render did not use; returns how many were removed."""
+        keep_resolved = {path.resolve() for path in keep}
+        removed = 0
+        for path in self.temp_dir.glob("*.mp4"):
+            if path.resolve() not in keep_resolved:
+                path.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
+    def audio_path(self, kind: str, cache_key: str) -> Path:
+        return self.audio_dir / f"{kind}-{cache_key}.m4a"
+
+    def get_cached_audio(self, kind: str, cache_key: str) -> Path | None:
+        path = self.audio_path(kind, cache_key)
+        if path.is_file() and path.stat().st_size > 0:
             self.cache_hits.append(path.relative_to(self.work_dir).as_posix())
             return path
         return None

@@ -1,6 +1,6 @@
 orchestrator:
   quality_mode: low_cost
-  text_llm_backend: chatgpt_playwright
+  text_llm_backend: ninerouter
   api_budget_guard: block
   auto_fallback: false
   fallback_on_timecode_warn: true
@@ -49,6 +49,8 @@ storymap:
   target_story_sections: 7
   log_level: INFO
 review:
+  llm_backend: ninerouter
+  llm_model: ag/gemini-3.8-flash-high
   content_type: movie
   hook_mode: setup
   target_ratio: auto
@@ -155,7 +157,7 @@ match:
 render:
   width: 1920
   height: 1080
-  fps: 30
+  fps: source  # keep the source rate; 25->30 duplicated 1 frame in 5
   fit: cover
   crf: 20
   preset: medium

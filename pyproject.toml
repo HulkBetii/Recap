@@ -9,11 +9,15 @@ description = "Auto movie recap pipeline"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.7,<3",
+    "httpx>=0.27,<1",
+    "packaging>=23",
     "openai>=1.109,<2",
     "faster-whisper>=1.0,<2",
     "playwright>=1.40,<2",
     "scenedetect>=0.6,<1",
-    "opencv-python-headless>=4.9,<5",
+    # scenedetect requires the GUI build `opencv-python` unpinned; pin that same distribution below 5
+    # (OpenCV 5 drops CascadeClassifier) instead of installing a second, conflicting `cv2` provider.
+    "opencv-python>=4.9,<5",
     "numpy>=1.26,<3",
     "PyYAML>=6,<7",
 ]
@@ -21,6 +25,18 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8,<10",
+    "ruff>=0.15,<1",
+    "tach>=0.35,<1",
+]
+ui = [
+    "fastapi>=0.135,<1",
+    "uvicorn>=0.35,<1",
+    "psutil>=7,<8",
+]
+tts-vieneu = [
+    "vieneu==3.2.3",
+    "gradio>=5.49.1,<6",
+    "huggingface-hub>=0.34,<1",
 ]
 asr-align = [
     "torch>=2.8",
@@ -37,6 +53,12 @@ video-profile = [
     "Pillow>=10,<12",
 ]
 visual-index = [
+    "torch>=2.8",
+    "transformers>=4.53,<5",
+    "Pillow>=10,<12",
+    "safetensors>=0.4,<1",
+]
+anime-vision = [
     "torch>=2.8",
     "transformers>=4.53,<5",
     "Pillow>=10,<12",
@@ -59,12 +81,18 @@ py-modules = ["run"]
 where = ["."]
 include = [
     "common*",
+    "episode_planner*",
     "ingest*",
     "match*",
     "orchestrator*",
+    "postprocess*",
     "preflight*",
+    "recap_ui*",
     "render*",
     "review*",
+    "series_composer*",
+    "series_match*",
+    "series_recap*",
     "shots*",
     "storymap*",
     "tts*",
@@ -84,6 +112,37 @@ exclude = [
 ]
 namespaces = false
 
+[tool.setuptools.package-data]
+recap_ui = [
+    "static/*",
+    "static/assets/*",
+]
+"tts.capcut" = [
+    "voices.json",
+]
+shots = [
+    "models/*.onnx",
+    "models/README.md",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = ["-p", "no:tach"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [
+    "build",
+    "data",
+    "dist",
+    "out",
+    "runs",
+    "work",
+]
+
+[tool.ruff.lint]
+# Wave 1 keeps the gate check-only and focused on syntax/undefined-name class
+# errors. Broader cleanup rules can be enabled after a dedicated lint pass.
+select = ["E9", "F63", "F7", "F82"]

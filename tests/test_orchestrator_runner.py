@@ -11,18 +11,24 @@ import pytest
 
 from common.integrity import file_hash
 from common.schema import VideoProfile
+from episode_planner.__main__ import build_parser as build_episode_planner_parser
+from episode_planner.integrity import EPISODE_PLANNER_CACHE_VERSION, episode_planner_config_hash, episode_planner_input_hashes
 from ingest.__main__ import build_parser as build_ingest_parser
 from ingest.integrity import INGEST_CACHE_VERSION, ingest_config_hash
 from orchestrator.config import load_config
 from orchestrator.graph import build_paths
 from orchestrator.runner import OrchestratorError, build_command, outputs_valid, preflight, validate_runtime_requirements
+from shots.features import available_face_detector_version
+from shots.overlays import OVERLAY_DETECTOR_VERSION
 from preflight.__main__ import build_parser as build_preflight_parser
 from preflight.integrity import PREFLIGHT_CACHE_VERSION, preflight_identity
 from review.__main__ import build_parser as build_review_parser
 from review.integrity import REVIEW_CACHE_VERSION, build_review_identity
 from review.style import DEFAULT_STYLE_SAMPLE
 from run import run_pipeline, should_fallback_timecode, sync_review_fallback_reporting
-from storymap.cache import stable_hash as storymap_stable_hash
+from shots.__main__ import build_parser as build_shots_parser
+from shots.profile import video_profile_hash
+from storymap.cache import STORYMAP_CACHE_VERSION, stable_hash as storymap_stable_hash
 from visual_index.integrity import PREPROCESSING_VERSION, media_identity_hash, sha256_file, visual_index_config_hash
 
 NOW = "2026-07-02T00:00:00Z"
@@ -76,7 +82,16 @@ def write_stage_outputs(command: list[str]) -> None:
     if stage == "preflight":
         output = flag(command, "--output")
         args = stage_args(command, build_preflight_parser())
-        input_hash, config_hash = preflight_identity(args.input, classifier=args.classifier, max_intro_s=args.max_intro_s, sample_every_s=args.sample_every_s, confidence_threshold=args.confidence_threshold, uncertain_threshold=args.uncertain_threshold)
+        input_hash, config_hash = preflight_identity(
+            args.input,
+            classifier=args.classifier,
+            max_intro_s=args.max_intro_s,
+            sample_every_s=args.sample_every_s,
+            confidence_threshold=args.confidence_threshold,
+            uncertain_threshold=args.uncertain_threshold,
+            manual_ranges_hash=file_hash(args.manual_ranges) if getattr(args, "manual_ranges", None) else None,
+            anime_context_hash=file_hash(args.anime_context) if getattr(args, "anime_context", None) else None,
+        )
         output.write_text(json.dumps({"input_path":str(args.input),"duration_s":2,"intro":{"detected":False,"confidence":0,"reasons":[]},"non_story_ranges":[],"classifier":args.classifier,"created_at":NOW,"warnings":[],"cache_hits":[],"input_hash":input_hash,"config_hash":config_hash,"cache_version":PREFLIGHT_CACHE_VERSION}), encoding="utf-8")
     elif stage == "ingest":
         output = flag(command, "--output")
@@ -91,34 +106,143 @@ def write_stage_outputs(command: list[str]) -> None:
         profile_payload = VideoProfile.model_validate_json(profile_path.read_text(encoding="utf-8")).model_dump(mode="json") if profile_path else None
         content_type = command[command.index("--content-type") + 1]
         target_sections = int(command[command.index("--target-story-sections") + 1])
-        config_hash = storymap_stable_hash({"film_map":storymap_stable_hash(json.loads(film_map_path.read_text(encoding="utf-8"))),"video_profile":storymap_stable_hash(profile_payload),"content_type":content_type,"target_story_sections":target_sections})
-        output.with_name("story_map.meta.json").write_text(json.dumps({"film_map_path":str(film_map_path),"video_profile_path":str(profile_path) if profile_path else None,"content_type":content_type,"duration_s":2,"n_sections":1,"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[],"film_map_hash":file_hash(film_map_path),"video_profile_hash":file_hash(profile_path),"config_hash":config_hash,"cache_version":"storymap-v1"}), encoding="utf-8")
+        config_hash = storymap_stable_hash({"cache_version":STORYMAP_CACHE_VERSION,"film_map":storymap_stable_hash(json.loads(film_map_path.read_text(encoding="utf-8"))),"video_profile":storymap_stable_hash(profile_payload),"content_type":content_type,"target_story_sections":target_sections})
+        output.with_name("story_map.meta.json").write_text(json.dumps({"film_map_path":str(film_map_path),"video_profile_path":str(profile_path) if profile_path else None,"content_type":content_type,"duration_s":2,"n_sections":1,"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[],"film_map_hash":file_hash(film_map_path),"video_profile_hash":file_hash(profile_path),"config_hash":config_hash,"cache_version":STORYMAP_CACHE_VERSION}), encoding="utf-8")
         flag(command, "--output-qa").write_text(json.dumps({"n_sections":1,"n_non_story":0,"warnings":[],"section_warnings":[]}), encoding="utf-8")
+    elif stage == "episode_planner":
+        args = stage_args(command, build_episode_planner_parser())
+        output_meta = flag(command, "--output-meta")
+        output_memory = flag(command, "--output-memory")
+        mode = args.recap_mode if args.recap_mode in {"full", "quick", "merge", "skip"} else "full"
+        episode_key = args.episode_key or "e01"
+        episode_number = args.episode_number or 1
+        memory_index = (args.series_memory_dir or (output_meta.parent / "series_memory")) / "series_memory_index.jsonl"
+        current = {
+            "series_id": "series",
+            "episode_key": episode_key,
+            "episode_number": episode_number,
+            "title": "Episode",
+            "source_path": str(args.source_path),
+            "arc": "arc",
+            "recap_mode": mode,
+            "importance_score": 0.8,
+            "summary": "setup",
+            "entity_hooks": [],
+            "arc_hooks": ["arc"],
+            "important_timecodes": [{"start_s":0,"end_s":2,"label":"setup","summary":"setup"}],
+            "created_at": NOW,
+        }
+        output_memory.write_text(
+            json.dumps(
+                {
+                    "kind": "episode_memory",
+                    "anime_context": None,
+                    "current": current,
+                    "previous": [],
+                    "spoiler_limit_episode": episode_number,
+                    "review_guidance": ["Quick recap mode" if mode == "quick" else "Full recap mode"],
+                    "warnings": [],
+                    "created_at": NOW,
+                }
+            ),
+            encoding="utf-8",
+        )
+        hashes = episode_planner_input_hashes(
+            film=args.source_path,
+            film_map_path=args.film_map,
+            story_map_path=args.story_map,
+            video_profile_path=args.video_profile,
+            anime_context_path=args.anime_context,
+            series_manifest_path=args.series_manifest,
+        )
+        output_meta.write_text(
+            json.dumps(
+                {
+                    "series_id": "series",
+                    "episode_key": episode_key,
+                    "episode_number": episode_number,
+                    "title": "Episode",
+                    "source_path": str(args.source_path),
+                    "arc": "arc",
+                    "spoiler_limit_episode": episode_number,
+                    "requested_recap_mode": args.recap_mode,
+                    "recap_mode": mode,
+                    "importance_score": 0.8,
+                    "score_signals": {"reveal":0.8,"state_change":0.6,"fight_action":0.2,"new_entity":0.1,"continuity_dependency":0.5,"story_density":1.0,"non_story_ratio":0.0,"non_story_penalty":0.0},
+                    "score_reasons": ["fixture"],
+                    "short_circuit": mode in {"merge", "skip"},
+                    "target_ratio_override": args.quick_target_ratio if mode == "quick" else None,
+                    "quick_target_ratio": args.quick_target_ratio,
+                    "thresholds": {"full":args.recap_full_threshold,"quick":args.recap_quick_threshold,"merge":args.recap_merge_threshold,"quick_min_coverage":args.quick_min_coverage},
+                    "previous_memory_count": 0,
+                    "memory_index_path": str(memory_index),
+                    "warnings": [],
+                    "created_at": NOW,
+                    **hashes,
+                    "config_hash": episode_planner_config_hash(args),
+                    "cache_version": EPISODE_PLANNER_CACHE_VERSION,
+                }
+            ),
+            encoding="utf-8",
+        )
+        memory_index.parent.mkdir(parents=True, exist_ok=True)
+        with memory_index.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(current) + "\n")
     elif stage == "review":
         output = flag(command, "--output")
         args = stage_args(command, build_review_parser())
         output.write_text(json.dumps([{"beat_id":0,"narration":"Má»Ÿ Ä‘áº§u","from_seg_id":0,"to_seg_id":0,"src_tc_start":0,"src_tc_end":2,"is_hook":True}]), encoding="utf-8")
         style_path = Path(args.style_sample).expanduser().resolve() if args.style_sample else DEFAULT_STYLE_SAMPLE
-        identity = build_review_identity(film_map_path=args.film_map,settings=args,style_sample_path=style_path,story_map_path=args.story_map,video_profile_path=args.video_profile)
-        output.with_name("review_script.meta.json").write_text(json.dumps({"glossary":[],"target_video_s":2,"char_budget":30,"est_total_chars":6,"coverage_pct":1,"qa_report":[],"n_qa_iterations":0,"model_versions":{},"created_at":NOW,"warnings":[],"cache_hits":[],"film_map_hash":identity.film_map_hash,"film_map_meta_hash":identity.film_map_meta_hash,"story_map_hash":identity.story_map_hash,"video_profile_hash":identity.video_profile_hash,"config_hash":identity.config_hash,"cache_version":REVIEW_CACHE_VERSION}), encoding="utf-8")
+        identity = build_review_identity(
+            film_map_path=args.film_map,
+            settings=args,
+            style_sample_path=style_path,
+            story_map_path=args.story_map,
+            video_profile_path=args.video_profile,
+            context_file_path=args.context_file,
+        )
+        output.with_name("review_script.meta.json").write_text(json.dumps({"glossary":[],"target_video_s":2,"char_budget":30,"est_total_chars":6,"coverage_pct":1,"qa_report":[],"n_qa_iterations":0,"model_versions":{},"created_at":NOW,"warnings":[],"cache_hits":[],"film_map_hash":identity.film_map_hash,"film_map_meta_hash":identity.film_map_meta_hash,"story_map_hash":identity.story_map_hash,"video_profile_hash":identity.video_profile_hash,"context_file_path":str(args.context_file) if args.context_file else None,"context_file_hash":identity.context_file_hash,"config_hash":identity.config_hash,"cache_version":REVIEW_CACHE_VERSION}), encoding="utf-8")
         if "--review-intent-output" in command:
             flag(command, "--review-intent-output").write_text(json.dumps([{"beat_id":0,"story_section_id":0,"story_section_type":"setup","visual_intent":"character_intro","chronology_mode":"ordered","warnings":[]}]), encoding="utf-8")
     elif stage == "tts":
         audio = flag(command, "--output-audio")
         timing = flag(command, "--output-timing")
+        review_script_hash = file_hash(flag(command, "--review-script"))
         audio.write_bytes(b"voice")
         timing.write_text(json.dumps([{"beat_id":0,"audio_path":"audio/0.mp3","tl_start":0,"tl_end":2,"duration":2}]), encoding="utf-8")
         timing.with_name("tts_script.json").write_text(json.dumps([{"beat_id":0,"original_text":"M? ??u","tts_text":"M? ??u","changed":False,"rules_applied":[],"warnings":[]}]), encoding="utf-8")
         timing.with_name("tts_normalization_report.json").write_text(json.dumps({"mode":"vi","pronunciation_lexicon_path":None,"n_items":1,"n_changed":0,"warnings":[]}), encoding="utf-8")
-        timing.with_name("tts_meta.json").write_text(json.dumps({"voice_id":"voice","provider_mode":"ai33","model":"eleven_multilingual_v2","speed":1,"inter_beat_pause_s":0.15,"total_duration_s":2,"film_duration_s":2,"real_ratio":1,"total_chars":6,"est_cost":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
+        timing.with_name("tts_meta.json").write_text(json.dumps({"voice_id":"voice","provider_mode":"ai33","model":"eleven_multilingual_v2","speed":1,"inter_beat_pause_s":0.15,"total_duration_s":2,"film_duration_s":2,"real_ratio":1,"total_chars":6,"est_cost":0,"created_at":NOW,"cache_hits":[],"warnings":[],"review_script_hash":review_script_hash}), encoding="utf-8")
     elif stage == "shots":
+        args = stage_args(command, build_shots_parser())
         output = flag(command, "--output")
-        output.write_text(json.dumps([{"src":"film.mp4","index":0,"tc_start":0,"tc_end":2,"duration":2,"thumb":"shots/film-000.jpg","motion_score":0.5,"face_count":0,"face_area":0,"brightness":0.5,"is_usable":True}]), encoding="utf-8")
-        feature_config = {"end_credit_guard": "--end-credit-guard" in command}
-        if feature_config["end_credit_guard"]:
-            feature_config["end_credit_tail_s"] = float(command[command.index("--end-credit-tail-s") + 1])
-            feature_config["end_credit_threshold"] = float(command[command.index("--end-credit-threshold") + 1])
-        output.with_name("shots.meta.json").write_text(json.dumps({"src":"film.mp4","duration_s":2,"n_shots":1,"n_usable":1,"detector":"adaptive","feature_config":feature_config,"model_versions":{},"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
+        output.write_text(json.dumps([{"src":str(args.input.resolve()),"index":0,"tc_start":0,"tc_end":2,"duration":2,"thumb":"shots/film-000.jpg","motion_score":0.5,"face_count":0,"face_area":0,"brightness":0.5,"is_usable":True}]), encoding="utf-8")
+        feature_config = {
+            "sample_frames": args.sample_frames,
+            "frame_sampling": args.frame_sampling,
+            "face_detection": args.face_detection,
+            "min_brightness": args.min_brightness,
+            "min_shot_len": args.min_shot_len,
+            "end_credit_guard": args.end_credit_guard,
+            "end_credit_tail_s": args.end_credit_tail_s,
+            "end_credit_threshold": args.end_credit_threshold,
+            "overlay_guard": args.overlay_guard,
+            "skip_intro": args.skip_intro,
+            "skip_outro": args.skip_outro,
+            "downscale": args.downscale,
+            "scene_threshold": args.scene_threshold,
+            "scene_scale_width": args.scene_scale_width,
+            "scene_min_gap": args.scene_min_gap,
+            "max_shot_len": args.max_shot_len,
+        }
+        args.work_dir.mkdir(parents=True, exist_ok=True)
+        for cache_name in ("detection.json", "features.json"):
+            (args.work_dir / cache_name).write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
+        if args.overlay_guard:
+            (args.work_dir / "overlay_marking.json").write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
+        if args.end_credit_guard:
+            (args.work_dir / "end_credit_marking.json").write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
+        output.with_name("shots.meta.json").write_text(json.dumps({"src":str(args.input.resolve()),"duration_s":2,"n_shots":1,"n_usable":1,"detector":args.detector,"feature_config":feature_config,"model_versions":{"face_detector":available_face_detector_version(),"overlay_detector":OVERLAY_DETECTOR_VERSION if args.overlay_guard else "off"},"video_profile_path":str(args.video_profile.resolve()) if args.video_profile else None,"video_profile_hash":video_profile_hash(args.video_profile),"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
     elif stage == "match":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")
@@ -232,6 +356,57 @@ def test_preflight_change_reruns_ingest_without_force_cache_clear(tmp_path: Path
     ingest_command = next(command for command in commands if stage_name(command) == "ingest")
     assert "--video-profile" in ingest_command
     assert "--force" not in ingest_command
+
+
+def test_refreshed_video_profile_reruns_shots_profile_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    profile_path = tmp_path / "run" / "video_profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["non_story_ranges"] = [{"start_s":0.25,"end_s":0.75,"label":"opening","confidence":1.0}]
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    commands: list[list[str]] = []
+
+    run_pipeline(
+        argset(tmp_path, only="shots"),
+        executor=lambda command, log_path: (commands.append(command), write_stage_outputs(command)),
+    )
+
+    assert [stage_name(command) for command in commands] == ["shots"]
+    assert "--profile-only" in commands[0]
+    assert "--force" not in commands[0]
+    assert outputs_valid(
+        build_paths(tmp_path / "run"),
+        "shots",
+        film=args.input,
+        config=load_config(args.config),
+    )
+
+
+def test_refreshed_video_profile_without_feature_cache_runs_full_shots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    profile_path = tmp_path / "run" / "video_profile.json"
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile["warnings"] = ["manual ranges refreshed"]
+    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+    (tmp_path / "run" / "work" / "shots" / "features.json").unlink()
+    commands: list[list[str]] = []
+
+    run_pipeline(
+        argset(tmp_path, only="shots"),
+        executor=lambda command, log_path: (commands.append(command), write_stage_outputs(command)),
+    )
+
+    assert [stage_name(command) for command in commands] == ["shots"]
+    assert "--profile-only" not in commands[0]
+    assert "--force" not in commands[0]
 
 
 def test_stale_match_algorithm_reruns_match_and_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -379,6 +554,26 @@ def test_blocked_review_fallback_reports_playwright_failure_when_stage_fails(tmp
     assert fallback["review"]["playwright_attempts"] == 2
     assert fallback["review"]["error_code"] == "response_timeout"
     assert fallback["reasons"][0]["block_reason"] == "api_budget_guard=block"
+    summary = json.loads((args.run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "failed"
+    failed = summary["stages"][-1]
+    assert failed["stage"] == "review"
+    assert failed["status"] == "failed"
+    assert failed["error"] == "review failed"
+    assert failed["started_at"] and failed["finished_at"]
+
+
+def test_run_subprocess_writes_timestamped_markers(tmp_path: Path) -> None:
+    import sys
+
+    from orchestrator.runner import run_subprocess
+
+    log_path = tmp_path / "run.log"
+    run_subprocess([sys.executable, "-c", "print('hello')"], log_path)
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith("[") and "] $ " in lines[0]
+    assert lines[1] == "hello"
+    assert lines[-1].startswith("[") and "exit=0 after" in lines[-1]
 
 
 def test_sync_restores_configured_review_status_without_usage_artifact(tmp_path: Path) -> None:
@@ -522,6 +717,35 @@ def test_visual_config_runs_visual_index_and_passes_to_match(tmp_path: Path, mon
     assert calls.index("visual_index") < calls.index("match")
 
 
+def test_visual_index_overlaps_review_after_ingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    data = json.loads(args.config.read_text(encoding="utf-8"))
+    data["visual_index"] = {"enabled": True, "embedding_model": "mock", "device": "cpu"}
+    data["match"] = {"visual_mode": "rerank"}
+    args.config.write_text(json.dumps(data), encoding="utf-8")
+    visual_started = threading.Event()
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        stage = stage_name(command)
+        calls.append(stage)
+        if stage == "visual_index":
+            assert "ingest" in calls, "visual_index must wait for ingest to release the GPU"
+            visual_started.set()
+        if stage == "review":
+            # Sequential scheduling would deadlock here: visual_index only ran after tts before.
+            assert visual_started.wait(5), "visual_index did not start while review was running"
+        write_stage_outputs(command)
+
+    assert run_pipeline(args, executor=fake_executor) == 0
+    assert calls.index("visual_index") < calls.index("match")
+
+
 def test_corrupt_visual_sidecar_reruns_visual_index_and_downstream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "x")
     monkeypatch.setenv("VIVOO_API_KEY", "x")
@@ -578,6 +802,184 @@ def test_episode_config_keeps_hybrid_match_defaults(tmp_path: Path) -> None:
     assert config["match"]["w_semantic"] == 0.45
 
 
+def test_anime_series_preset_passes_japanese_and_strict_visual_options(tmp_path: Path) -> None:
+    config = load_config(Path("config.anime.series.yaml"))
+    paths = build_paths(tmp_path / "run")
+    film = tmp_path / "anime.mp4"
+
+    ingest = build_command("ingest", paths, film, config, force=False, python_exe="python")
+    storymap = build_command("storymap", paths, film, config, force=False, python_exe="python")
+    review = build_command("review", paths, film, config, force=False, python_exe="python")
+    shots = build_command("shots", paths, film, config, force=False, python_exe="python")
+    match = build_command("match", paths, film, config, force=False, python_exe="python")
+
+    assert ingest[ingest.index("--source-language") + 1] == "ja"
+    assert ingest[ingest.index("--translate-mode") + 1] == "ja-en"
+    assert ingest[ingest.index("--aligner") + 1] == "whisperx"
+    assert storymap[storymap.index("--content-type") + 1] == "anime_series"
+    assert review[review.index("--content-type") + 1] == "anime_series"
+    assert shots[shots.index("--face-detection") + 1] == "off"
+    assert "--exclude-non-story" in match
+    assert "--exclude-end-credits" in match
+    assert match[match.index("--match-strategy") + 1] == "chronological"
+    assert match[match.index("--w-face") + 1] == "0.0"
+    assert match[match.index("--w-visual") + 1] == "0.0"
+
+def test_anime_series_preset_builds_episode_planner_command(tmp_path: Path) -> None:
+    config = load_config(Path("config.anime.series.yaml"))
+    paths = build_paths(tmp_path / "run")
+    film = tmp_path / "anime.mp4"
+
+    command = build_command("episode_planner", paths, film, config, force=False, python_exe="python")
+
+    assert command[command.index("--recap-mode") + 1] == "auto"
+    assert command[command.index("--quick-target-ratio") + 1] == "0.12"
+    assert command[command.index("--quick-min-coverage") + 1] == "0.45"
+    assert command[command.index("--output-meta") + 1] == str(paths.episode_meta)
+    assert command[command.index("--output-memory") + 1] == str(paths.episode_memory)
+
+def test_quick_episode_plan_overrides_review_ratio_and_context(tmp_path: Path) -> None:
+    config = load_config(Path("config.anime.series.yaml"))
+    paths = build_paths(tmp_path / "run")
+    paths.run_dir.mkdir(parents=True)
+    paths.episode_meta.write_text(
+        json.dumps(
+            {
+                "series_id": "series",
+                "episode_key": "e02",
+                "episode_number": 2,
+                "title": "Episode 2",
+                "source_path": "anime.mp4",
+                "arc": "arc",
+                "spoiler_limit_episode": 2,
+                "requested_recap_mode": "auto",
+                "recap_mode": "quick",
+                "importance_score": 0.5,
+                "score_signals": {"reveal":0.2,"state_change":0.2,"fight_action":0.2,"new_entity":0.2,"continuity_dependency":0.2,"story_density":0.8,"non_story_ratio":0.0,"non_story_penalty":0.0},
+                "score_reasons": [],
+                "short_circuit": False,
+                "target_ratio_override": 0.12,
+                "quick_target_ratio": 0.12,
+                "thresholds": {"full":0.7,"quick":0.35,"merge":0.15,"quick_min_coverage":0.45},
+                "previous_memory_count": 1,
+                "memory_index_path": "series_memory_index.jsonl",
+                "warnings": [],
+                "created_at": NOW,
+                "film_map_hash": "film",
+                "story_map_hash": None,
+                "video_profile_hash": None,
+                "anime_context_hash": None,
+                "series_manifest_hash": None,
+                "source_hash": "source",
+                "config_hash": "config",
+                "cache_version": EPISODE_PLANNER_CACHE_VERSION,
+            }
+        ),
+        encoding="utf-8",
+    )
+    paths.episode_memory.write_text(
+        json.dumps(
+            {
+                "kind": "episode_memory",
+                "anime_context": None,
+                "current": {
+                    "series_id": "series",
+                    "episode_key": "e02",
+                    "episode_number": 2,
+                    "title": "Episode 2",
+                    "source_path": "anime.mp4",
+                    "arc": "arc",
+                    "recap_mode": "quick",
+                    "importance_score": 0.5,
+                    "summary": "setup",
+                    "entity_hooks": [],
+                    "arc_hooks": [],
+                    "important_timecodes": [],
+                    "created_at": NOW,
+                },
+                "previous": [],
+                "spoiler_limit_episode": 2,
+                "review_guidance": ["Quick recap mode"],
+                "warnings": [],
+                "created_at": NOW,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    command = build_command("review", paths, tmp_path / "anime.mp4", config, force=False, python_exe="python")
+
+    assert command[command.index("--target-ratio") + 1] == "0.12"
+    assert command[command.index("--min-coverage") + 1] == "0.45"
+    assert command[command.index("--max-qa-iterations") + 1] == "1"
+    assert command[command.index("--max-qa-rewrites-per-iteration") + 1] == "2"
+    assert command[command.index("--context-file") + 1] == str(paths.episode_memory)
+
+def test_merge_episode_plan_short_circuits_review_to_render(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    config = json.loads(args.config.read_text(encoding="utf-8"))
+    config["orchestrator"] = {"recap_mode": "merge"}
+    args.config.write_text(json.dumps(config), encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        calls.append(stage_name(command))
+        write_stage_outputs(command)
+
+    assert run_pipeline(args, executor=fake_executor) == 0
+    assert calls == ["preflight", "ingest", "storymap", "episode_planner"]
+    summary = json.loads((tmp_path / "run" / "summary.json").read_text(encoding="utf-8"))
+    statuses = {stage["stage"]: stage["status"] for stage in summary["stages"]}
+    assert statuses["review"] == "short_circuited:merge"
+    assert statuses["tts"] == "short_circuited:merge"
+    assert statuses["match"] == "short_circuited:merge"
+    assert statuses["render"] == "short_circuited:merge"
+
+def test_anime_movie_preset_uses_movie_setup_opening(tmp_path: Path) -> None:
+    config = load_config(Path("config.anime.movie.yaml"))
+    paths = build_paths(tmp_path / "run")
+    film = tmp_path / "anime.mp4"
+
+    review = build_command("review", paths, film, config, force=False, python_exe="python")
+    storymap = build_command("storymap", paths, film, config, force=False, python_exe="python")
+
+    assert review[review.index("--content-type") + 1] == "anime_movie"
+    assert review[review.index("--hook-mode") + 1] == "setup"
+    assert "--opening-coherence-qa" in review
+    assert storymap[storymap.index("--content-type") + 1] == "anime_movie"
+
+def test_orchestrator_passes_anime_manual_ranges_and_context_files(tmp_path: Path) -> None:
+    manual_ranges = tmp_path / "manual_ranges.yaml"
+    manual_ranges.write_text(
+        "non_story_ranges:\n  - start_s: 0\n    end_s: 10\n    label: studio_logo\n    confidence: 1.0\n",
+        encoding="utf-8",
+    )
+    context = tmp_path / "anime_context.yaml"
+    context.write_text("title: Example\nkind: anime_movie\n", encoding="utf-8")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "preflight": {"manual_ranges": str(manual_ranges), "anime_context": str(context)},
+                "review": {"content_type": "anime_movie", "context_file": str(context)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    paths = build_paths(tmp_path / "run")
+    film = tmp_path / "anime.mp4"
+
+    preflight_command = build_command("preflight", paths, film, config, force=False, python_exe="python")
+    review_command = build_command("review", paths, film, config, force=False, python_exe="python")
+
+    assert preflight_command[preflight_command.index("--manual-ranges") + 1] == str(manual_ranges)
+    assert preflight_command[preflight_command.index("--anime-context") + 1] == str(context)
+    assert review_command[review_command.index("--context-file") + 1] == str(context)
+
 def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(tmp_path: Path) -> None:
     config = load_config(Path("config.movie.production.yaml"))
     film = tmp_path / "film.mp4"
@@ -585,17 +987,19 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     paths = build_paths(tmp_path / "run")
 
     ingest = build_command("ingest", paths, film, config, force=False)
+    review = build_command("review", paths, film, config, force=False)
     tts = build_command("tts", paths, film, config, force=False)
     visual = build_command("visual_index", paths, film, config, force=False)
     match = build_command("match", paths, film, config, force=False)
 
     assert ingest[ingest.index("--device") + 1] == "cuda"
     assert ingest[ingest.index("--aligner") + 1] == "whisperx"
-    assert tts[tts.index("--provider-mode") + 1] == "auto"
-    assert tts[tts.index("--genmax-voice-id") + 1] == "VU16byTywsWv5JpI8rbc"
-    assert tts[tts.index("--openai-model") + 1] == "gpt-4o-mini-tts"
-    assert tts[tts.index("--openai-voice") + 1] == "coral"
-    assert tts[tts.index("--concurrency") + 1] == "1"
+    assert ingest[ingest.index("--translation-provider") + 1] == "ninerouter"
+    assert int(ingest[ingest.index("--translation-concurrency") + 1]) > 1
+    assert review[review.index("--llm-backend") + 1] == "ninerouter"
+    assert tts[tts.index("--provider-mode") + 1] == "capcut"
+    assert tts[tts.index("--voice-id") + 1] == "BV074_streaming"
+    assert tts[tts.index("--concurrency") + 1] == "4"
     assert visual[visual.index("--device") + 1] == "cuda"
     assert "--exclude-end-credits" in match
     assert match[match.index("--visual-mode") + 1] == "rerank"
@@ -620,6 +1024,32 @@ def test_tts_auto_preflight_accepts_openai_as_only_available_provider(tmp_path: 
     )
 
 
+def test_vieneu_tts_command_and_preflight_are_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    film = tmp_path / "film.mp4"
+    film.write_bytes(b"film")
+    config = load_config(None)
+    config["tts"].update({
+        "voice_id": "Ngọc Linh",
+        "provider_mode": "vieneu",
+        "vieneu_style": "doc_truyen",
+        "vieneu_backend": "onnx",
+        "vieneu_precision": "int8",
+        "vieneu_model": "local-model",
+        "vieneu_threads": 2,
+    })
+    paths = build_paths(tmp_path / "run")
+    command = build_command("tts", paths, film, config, force=False, python_exe="python")
+    assert command[command.index("--provider-mode") + 1] == "vieneu"
+    assert command[command.index("--vieneu-style") + 1] == "doc_truyen"
+    assert command[command.index("--vieneu-backend") + 1] == "onnx"
+    assert command[command.index("--vieneu-precision") + 1] == "int8"
+    assert command[command.index("--vieneu-model") + 1] == "local-model"
+    assert command[command.index("--vieneu-threads") + 1] == "2"
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("orchestrator.runner.require_vieneu_runtime", lambda: None)
+    preflight(film=film, selected={"tts"}, forced=set(), paths=paths, config=config)
+
+
 def test_production_runtime_preflight_reports_missing_module(monkeypatch: pytest.MonkeyPatch) -> None:
     config = load_config(Path("config.movie.production.yaml"))
     monkeypatch.setattr("orchestrator.runner.runtime_module_available", lambda module: module != "whisperx")
@@ -635,6 +1065,34 @@ def test_production_runtime_preflight_requires_cuda(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(OrchestratorError, match="requires CUDA"):
         validate_runtime_requirements({"ingest", "visual_index", "match"}, config)
+
+
+def test_production_runtime_preflight_rejects_out_of_range_packages(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = load_config(Path("config.movie.production.yaml"))
+    monkeypatch.setattr("orchestrator.runner.runtime_module_available", lambda _module: True)
+    monkeypatch.setattr("orchestrator.runner.runtime_cuda_available", lambda: True)
+    monkeypatch.setattr("orchestrator.runner.runtime_dependency_violations", lambda: ["transformers 5.16.1 (requires <5,>=4.53)"])
+
+    with pytest.raises(OrchestratorError, match="transformers 5.16.1"):
+        validate_runtime_requirements({"ingest", "visual_index", "match"}, config)
+
+    monkeypatch.setattr("orchestrator.runner.runtime_dependency_violations", lambda: [])
+    validate_runtime_requirements({"ingest", "visual_index", "match"}, config)
+
+
+def test_dependency_version_violations_reads_installed_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    from common import runtime
+
+    monkeypatch.setattr(runtime.metadata, "requires", lambda _name: ["transformers<5,>=4.53; extra == 'visual-index'", "absent-pkg>=1", "Pillow<12,>=10"])
+    versions = {"transformers": "5.16.1", "Pillow": "11.3.0"}
+
+    def fake_version(name: str) -> str:
+        if name not in versions:
+            raise runtime.metadata.PackageNotFoundError(name)
+        return versions[name]
+
+    monkeypatch.setattr(runtime.metadata, "version", fake_version)
+    assert runtime.dependency_version_violations() == ["transformers 5.16.1 (requires <5,>=4.53)"]
 
 
 
@@ -809,3 +1267,23 @@ def test_partial_rerun_preserves_triggered_review_fallback_reporting(tmp_path: P
     assert cost["openai_fallback_possible"] is True
     assert cost["openai_fallback_triggered"] is True
     assert cost["review_openai_fallback"]["request_count"] == 2
+
+
+def test_shots_rerun_when_a_better_face_detector_becomes_available(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    meta_path = tmp_path / "run" / "shots.meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["model_versions"]["face_detector"] = "off"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        calls.append(stage_name(command))
+        write_stage_outputs(command)
+
+    run_pipeline(args, executor=fake_executor)
+    assert "shots" in calls

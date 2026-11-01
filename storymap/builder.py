@@ -7,6 +7,7 @@ from common.schema import FilmMapSegment, NonStoryRange, StorySection, VideoProf
 
 SECTION_ORDER = ["setup", "inciting_incident", "conflict", "investigation", "reveal", "climax", "ending"]
 CHARACTER_RE = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
+MOVIE_CONTENT_TYPES = {"movie", "anime_movie"}
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,25 @@ def overlaps_non_story(start: float, end: float, ranges: list[NonStoryRange]) ->
         if start < item.end_s and end > item.start_s:
             return item
     return None
+
+
+def split_at_non_story_gaps(
+    segments: list[FilmMapSegment],
+    ranges: list[NonStoryRange],
+) -> list[list[FilmMapSegment]]:
+    if not segments:
+        return []
+    chunks: list[list[FilmMapSegment]] = [[segments[0]]]
+    for segment in segments[1:]:
+        previous = chunks[-1][-1]
+        crosses_non_story = any(
+            previous.tc_end <= item.start_s and segment.tc_start >= item.end_s
+            for item in ranges
+        )
+        if crosses_non_story:
+            chunks.append([])
+        chunks[-1].append(segment)
+    return chunks
 
 
 def summarize_segments(segments: list[FilmMapSegment], fallback: str) -> str:
@@ -53,7 +73,7 @@ def build_story_sections(
     target_story_sections: int = 7,
 ) -> tuple[list[StorySection], StoryMapReport]:
     warnings: list[str] = []
-    if content_type != "movie":
+    if content_type not in MOVIE_CONTENT_TYPES:
         warnings.append("storymap v1 is optimized for movie; episode uses coarse sections")
     non_story_ranges = video_profile.non_story_ranges if video_profile else []
     story_segments = [segment for segment in film_map if not overlaps_non_story(segment.tc_start, segment.tc_end, non_story_ranges)]
@@ -86,39 +106,38 @@ def build_story_sections(
         start_index = round(len(story_segments) * index / n_sections)
         end_index = round(len(story_segments) * (index + 1) / n_sections)
         bucket = story_segments[start_index:end_index]
-        if not bucket:
-            continue
         section_type = SECTION_ORDER[min(index, len(SECTION_ORDER) - 1)]
-        tc_start = max(0.0, min(bucket[0].tc_start, duration_s))
-        tc_end = max(0.0, min(bucket[-1].tc_end, duration_s))
-        if tc_end <= tc_start:
-            continue
-        summary = summarize_segments(bucket, f"Movie {section_type.replace('_', ' ')} section")
-        characters = extract_characters(bucket)
-        section_warnings: list[str] = []
-        if tc_end - tc_start > 900:
-            section_warnings.append("section too long")
-        if not characters and section_type in {"setup", "inciting_incident", "conflict"}:
-            section_warnings.append("no obvious character names")
-        rounded_start = round(tc_start, 3)
-        rounded_end = min(duration_s, round(tc_end, 3))
-        if rounded_end <= rounded_start:
-            continue
-        sections.append(
-            StorySection(
-                section_id=0,
-                type=section_type,  # reassigned below
-                tc_start=rounded_start,
-                tc_end=rounded_end,
-                segment_ids=[segment.id for segment in bucket],
-                summary=summary,
-                characters=characters,
-                locations=[],
-                events=[summary[:120]],
-                confidence=0.75 if section_warnings else 0.82,
-                warnings=section_warnings,
+        for story_chunk in split_at_non_story_gaps(bucket, non_story_ranges):
+            tc_start = max(0.0, min(story_chunk[0].tc_start, duration_s))
+            tc_end = max(0.0, min(story_chunk[-1].tc_end, duration_s))
+            if tc_end <= tc_start:
+                continue
+            summary = summarize_segments(story_chunk, f"Movie {section_type.replace('_', ' ')} section")
+            characters = extract_characters(story_chunk)
+            section_warnings: list[str] = []
+            if tc_end - tc_start > 900:
+                section_warnings.append("section too long")
+            if not characters and section_type in {"setup", "inciting_incident", "conflict"}:
+                section_warnings.append("no obvious character names")
+            rounded_start = round(tc_start, 3)
+            rounded_end = min(duration_s, round(tc_end, 3))
+            if rounded_end <= rounded_start:
+                continue
+            sections.append(
+                StorySection(
+                    section_id=0,
+                    type=section_type,  # reassigned below
+                    tc_start=rounded_start,
+                    tc_end=rounded_end,
+                    segment_ids=[segment.id for segment in story_chunk],
+                    summary=summary,
+                    characters=characters,
+                    locations=[],
+                    events=[summary[:120]],
+                    confidence=0.75 if section_warnings else 0.82,
+                    warnings=section_warnings,
+                )
             )
-        )
     sections.extend(non_story_sections)
     ordered = reassign_sections(sorted(sections, key=lambda item: (item.tc_start, item.tc_end, item.type == "non_story")))
     return ordered, StoryMapReport(warnings=warnings, qa=build_qa(ordered, warnings))

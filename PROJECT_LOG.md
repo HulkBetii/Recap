@@ -1,5 +1,197 @@
 # PROJECT_LOG.md
 
+## 2026-11-01 - Pipeline review R1-R8 (quality and speed)
+
+- Reviewed the whole pipeline in eight segments on the benchmark film `Quý Ông Số Đỏ` (7,406 s, 1920x804, 25 fps, burned-in subtitles); reports with before/after measurements are in `docs/pipeline-review/`.
+- Text LLM steps (GĐ1 translation and vision, GĐ2 review, `series_composer`) now run through the local 9router gateway with `ag/gemini-3.8-flash-high`; ChatGPT Playwright remains selectable with no automatic fallback. The gateway client classifies quarantine/rate-limit/upstream errors, honours reset hints, and preflight probes the chosen model before heavy stages.
+- GĐ3 production/example presets use CapCut `BV074_streaming`; `review.tts_cps=20.5` for CapCut presets after measuring 20.6-21.6 characters/second.
+- Runtime moved to an isolated `uv` virtualenv (torch 2.8.0+cu128, transformers 4.57.x, OpenCV 4.x) with a dependency-version preflight; CTranslate2 preloads torch's CUDA DLLs on Windows and GPU memory is released after ASR/WhisperX.
+- GĐ2 batches narration (~8,000 characters), rewrites beats below 75% of target once, and requires at least `ceil(char_budget/700)` outline beats: the recap reached 1,832 s for a 1,926 s target (baseline 926 s) with QA passing.
+- GĐ4 uses YuNet face detection (faces found in 1,108/1,527 shots versus 541 with Haar) and reruns when the loaded detector changes. A new overlay guard excludes shots under time-bounded burned-in overlays: the PhimMoi gambling ad at 176-201 s no longer appears in the recap (3 placements before). It also reports hardsub coverage (45% on the benchmark) and warns at 20% or more.
+- GĐ6 renders with NVENC when available (`render.encoder: auto`) at the source frame rate (`render.fps: source`; enhanced stays 30): render time fell from 686 s to 226 s with equal SSIM. GĐ6 also deletes `video_only*.mp4` and stale temp clips after a successful render. Thumbnails and keyframes are written Unicode-safely, fixing broken review-page images for Vietnamese film names.
+- Season flow: arc drafts and revisions run concurrently on 9router (`composer_concurrency`, default 2); oversized final stitches are replaced by per-seam stitches; `episode_concurrency: 2` (anime season presets except `localvision`) ingests two episodes at once while planners keep episode order (two 12-minute episodes: 399 s sequential, 272 s concurrent, 10.9 GB peak VRAM).
+- Wall clock on the benchmark: the baseline full run took about 75 minutes including ASR; the post-R4 run took 40.8 minutes with ASR cached (so the two are not directly comparable), and the render change saves a further ~7.7 minutes. Validation: 796 Python tests, Ruff and Tach clean.
+
+## 2026-07-30 - AI33 technical audio pack and real anime acceptance
+
+- Added the approved one-time AI33 music/SFX generation workflow with environment-only credentials, a 10,000-credit guard for forecastable submissions, an explicit unknown-cost first-canary exception, partial/resumable output, media validation and test-only license metadata under `work/ai33-audio-library/`.
+- Added the isolated Tensei acceptance workflow: full-season dynamic matcher/postprocess QA followed by a 90-second real-footage enhanced render using the generated test manifest without modifying production artifacts.
+- Made `series_recap` stdout/stderr UTF-8-safe on Windows so dry-run command previews containing the VieNeu voice `Ngọc Linh` do not crash under inherited `cp1252` encoding.
+- Hardened paid generation so ambiguous create-request network failures are never resubmitted, redirects cannot forward `xi-api-key` to public hosts, provider-echoed keys are redacted, lifetime credit spend survives force/spec changes, and CLI output remains under repository `work/`.
+- Full validation passed: 685 Python tests, 15 frontend tests, Ruff, Tach, compileall, frontend lint/typecheck/build, wheel build/install/import/content inspection, secret scan, diff check, CLI help and production dry-run. Synthetic enhanced FFmpeg smoke passed all 17 assertions with the source tone suppressed by about 70.5 dB.
+- The first real-footage render exposed a 20-frame black fade because a dynamic placement began exactly at a shot boundary. Dynamic matching now applies a 0.75s shot-edge inset only when the remaining candidate still meets its event profile minimum; the series cache identity was bumped to `series-match-v4-edge-inset` without changing the public `series-v3-dynamic-anime` QA profile.
+- Fresh isolated Tensei validation with local synthetic test audio passed: 971 placements over 2539.127s, clip range 0.600-3.984s, zero non-story/end-credit selections, zero adjacent/contiguous fallbacks, 23 full-plan freezes/impacts, and a 90.000s 1080p/30fps/2700-frame render with zero black or isolated flash frames. The acceptance-only freeze override selected placement 35; push-in growth was 1.132, freeze MAD was 0.070 versus 24.241 moving MAD, music minimum five-second RMS was 0.04324, impact RMS was 0.00927, final AAC packets matched the cached master, and production hashes remained unchanged.
+- Live AI33 generation completed with `status=partial`, `credits_spent=7500`, `credit_spend_complete=true`, `observed_music_credit_cost=3600`, and `minimum_pack_ready=true`.
+- Completed assets were `music-default` (`220.019979s`), `music-tension` (`9.820167s`), three 1.0s whooshes (`sfx-whoosh-soft`, `sfx-whoosh-fast`, `sfx-whoosh-deep`), and three 1.0s impacts (`sfx-impact-tight`, `sfx-impact-heavy`, `sfx-impact-bright`). Every completed file passed ffprobe and SHA-256 validation recorded in `generation_report.json`; no signed URL or credential is copied into this log.
+- The budget guard skipped `music-calm`, `music-mystery`, `music-suspense`, `music-action`, and `music-emotional`. `audio_assets.test.yaml` validates as a test-only manifest with eight assets: two music tracks, three whooshes, and three impacts.
+- Final AI33-backed Tensei acceptance passed; the report is `work/enhanced-real-media-smoke-ai33-cue-correlation/report.json`. Full matching produced 971 placements over `2539.127s`, clip range `0.600-3.984s`, zero adjacent/contiguous fallbacks, and zero non-story/end-credit selections. Full postprocess planned 971 zooms, 23 freezes, 60 music cues, 23 impacts, and zero whoosh/speed-ramp cues; missing calm/mystery/suspense/action/emotional tracks correctly emitted default-track fallback warnings.
+- The real-footage excerpt is exactly `90.000s`, 1920x1080 at 30fps/2700 frames, with zero black or isolated flash frames, one audio stream, and `original_audio_included=false`. Measured music RMS was `0.0235132` with cue correlations `0.015512` and `0.013283`; SFX RMS was `0.02958222` with correlation `0.035496`. Final AAC packets matched the cached master, production artifacts remained unchanged, and the recorded acceptance-only override selected placement 35.
+
+## 2026-07-30 - Render cache interruption hardening
+
+- Diagnosed the Tensei S01 concat truncation: two nonzero interrupted temp MP4 cache files lacked a `moov` atom, while FFmpeg concat logged the demux error but returned success after only the first 99 of 614 clips.
+- Temp clips now render to unique partial paths and atomically replace cache entries only after success; cache hits are probed for expected media properties and frame count before reuse.
+- Replaced duration-boundary trimming with time-transform-first FPS sampling, bounded clone padding and `trim=end_frame`; moved `-t` before `-i` so it limits source input instead of truncating the padded output. Real 127-frame and 149-frame placements had previously rendered deterministically one frame short.
+- GĐ6 now compares concat frame count/duration with the quantized EDL before any audio tail padding, preventing a partial concat from becoming a multi-minute freeze frame while retaining legitimate short voiceover tail padding.
+
+## 2026-07-30 - Storymap non-story boundary fix
+
+- Bumped storymap cache identity to `storymap-v2` and split coarse story buckets at hard non-story gaps so manual OP/ED/preview ranges cannot produce overlapping story sections.
+- Added the `end_card` anime non-story label across schema, episode planning, and series composition for terminal post-credit frames.
+- Stopped series episode-planner rebuilds from implicitly adding `--force` to shots; GĐ4 now uses its own source/profile cache identity and preserves detection/features for profile-only OP/ED changes.
+
+## 2026-07-30 - Tensei VieNeu duration calibration
+
+- Measured the Tensei S01 VieNeu Ngọc Linh run at 63,107 normalized narration characters over 3,674.842 seconds, or 17.17 characters/second at `speed=0.9`.
+- Calibrated only `config.anime.series.vieneu.yaml` from `series_recap.tts_cps=24.0` to `17.0` so Composer planning tracks the 35-45 minute season target more closely; `review.tts_cps=15` and generic anime presets remain unchanged.
+
+## 2026-07-29 - Playwright JA-to-EN ingest translation
+
+- Added a production ChatGPT Playwright translation provider for GĐ1 using the shared persistent-profile browser adapter, exact segment-ID validation, Japanese-echo rejection, and no paid API fallback.
+- Added atomic per-batch translation cache/resume with 80-segment defaults and provider/model/prompt/parser-aware identity; source IDs, text, and timecodes remain code-owned.
+- Switched `config.anime.series.vieneu.yaml` to browser translation with `api_budget_guard=block`; the practical OpenAI-translation preset remains unchanged.
+
+## 2026-07-29 - Anime recap review fixes
+
+- Added versioned per-stage cache identity for series Composer, TTS, chapters, match and render, with atomic manifests, output signatures, schema validation and selective invalidation that preserves beat/TTS and temp-clip caches. Composer identity tracks ordered episode content artifacts and excludes `shots.json`.
+- Reworked series matching to `series-v2`: source-ref candidate pools, fair capacity-aware quotas, strict-window then same-episode fallback, explicit impossible-event failures, preferred `min_clip` with `min_visual_clip` hard floor, and additive event/short-fallback QA diagnostics.
+- Centralized episode-number parsing in `common.episodes`, made local Qwen vision construction lazy/best-effort, and added the release-boundary `tts` dependencies for `recap_ui` and `series_recap` without coupling `series_composer` to TTS.
+- Replaced browser execution-model responses with opaque plan/job/stage/event/health DTOs and placeholder previews; absolute paths, argv/config internals, process metadata, validator payloads and raw dry-run output stay server-side. Frontend wire types and fixtures use the sanitized fields.
+- Validation: Python suite `572 passed`, frontend typecheck/lint/tests/build passed, Ruff/Tach/diff-check passed, and offline release gate passed with media smoke skipped.
+
+## 2026-07-25 - VieNeu UI/backend synchronization
+
+- Preset cards now show the configured VieNeu provider, voice (`Ngọc Linh`), style, speed and pronunciation-lexicon state without exposing model paths or secrets.
+- Preflight details are preserved through the API and UI, including first-run model-download guidance and the safe lexicon filename; invalid locked VieNeu settings or missing lexicons block enqueue before the worker starts.
+- The wizard requires a non-empty voice for VieNeu and removes auto-filled local voice/style overrides when switching back to the preset's provider, preventing stale provider fields from entering the CLI payload.
+- Updated frontend unit coverage, backend preflight coverage and production static assets; public CLI/schema/cache contracts remain unchanged.
+
+## 2026-07-24 - Optional VieNeu local TTS provider
+
+- Integrated the Apache-2.0 `vieneu==3.2.3` SDK as an explicit `provider_mode=vieneu` option in GĐ3; existing `auto` ordering (AI33 -> Genmax -> OpenAI) is unchanged.
+- VieNeu V1 is pinned to v3 Turbo ONNX on CPU (int8 default, fp32 opt-in), uses the female storytelling preset `Ngọc Linh`, keeps the SDK watermark enabled, serializes one model instance per TTS process, and converts temporary WAV output to valid MP3 before the existing normalization/cache path.
+- Added the `tts-vieneu` optional dependency with `gradio<6` and `huggingface-hub<1` constraints because Gradio 6 conflicts with the Transformers runtime already used by Recap.
+- Added CLI/orchestrator/series forwarding, cache identity fields, local cost/preflight reporting, UI provider/style overrides, and mocked concurrency/audio conversion tests. VieNeu is not auto-selected and voice cloning/GPU batching remain deferred.
+- Added `config.anime.series.vieneu.yaml` as the opt-in season preset using the approved `Ngọc Linh` female northern storytelling voice with `doc_truyen`, ONNX/int8 CPU and `speed=0.9`; the existing practical preset remains unchanged.
+- Added a Solo Leveling pronunciation lexicon for `Sung Jinwoo`/`Jinwoo` aliases and wired it into the VieNeu season preset; the normalized spoken form is `Sung Chin U`/`Chin U`, selected from VieNeu/sea-g2p phoneme output, and further character entries require their own short smoke validation.
+- Fixed exact pronunciation lexicon matching before sentence punctuation; dotted identifiers/domains remain protected, while names such as `Jin Woo.` now normalize correctly before TTS.
+
+## 2026-07-24 - Local web UI UX V1.1
+
+- Migrated the UI operational database to schema v2 with additive nullable `display_title` fields for jobs and registered runs; existing v1 rows remain intact.
+- Separated Unicode display titles from validated run-directory slugs and propagated titles through planning, jobs, registration, resume/rerun and run discovery with deterministic fallback precedence.
+- Added Vietnamese-default UI chrome with a persistent English toggle, guided source inspection, a four-step wizard, dirty-only Advanced overrides, filesystem breadcrumbs/current-folder selection and grouped season dry-run output.
+- Added opaque-token `POST /api/inspect/single`, `POST /api/inspect/series` and `GET /api/fs/listing`, plus non-secret preset/server metadata used by the guided workflow and dynamic loopback host display.
+- Split run capabilities into managed and artifact-only modes. Imported artifact-only runs remain read-only for QA/artifacts/EDL/audio/video and cannot resume or rerun without creating a new managed job.
+- Improved run operations, Delivery Summary, duration diagnostics, log filtering/follow-latest behavior, responsive controls and accessibility while preserving public CLIs, pipeline JSON contracts, cache/resume, FIFO execution and Playwright-first policy.
+- Kept duration delivery policy minimum-only: measured output below `target_total_min_s` blocks; output above preferred max or hard-cap references is accepted with a planning warning.
+
+## 2026-07-24 - Delivery duration minimum policy
+
+- Changed UI-only season Delivery QA so the measured final render blocks only when shorter than `target_total_min_s`.
+- Actual duration above `target_total_max_s` or `target_total_hard_cap_s` is accepted; those values remain Composer planning references.
+- The completed Solo Leveling S01 render at `3359.104s` therefore passes duration delivery policy because it is above the configured `2100s` minimum.
+
+## 2026-07-24 - Local web UI V1
+
+- Added a Windows-local FastAPI + React/Vite control room for single-video and season recap runs while preserving the existing CLI and JSON artifact contracts.
+- Added SQLite WAL job state, FIFO execution, run/profile locks, subprocess cancellation/recovery, REST/SSE status, safe filesystem tokens, artifact/media serving and delivery QA.
+- Added the run wizard, stage/episode dashboards, live logs, Composer/EDL/render QA, final video preview and a one-click PowerShell launcher.
+- Frontend build/test/static packaging is part of the release gate; the Python wheel includes the production UI assets.
+
+## 2026-07-24 - Solo Leveling S01 rerun completed
+
+- Completed the preserved rerun at `runs/solo-leveling-s01-rerun-20260723`; all 12 episode translation ratios are `1.0` with strict/non-approximate timecodes.
+- Playwright produced four valid arc drafts plus one targeted revision. Composer QA has 72 beats, 12 ordered episode chapters plus the hook, no blocking narration/fallback code, and an estimated duration of `2650.917s` under the `3000s` composer hard cap.
+- AI33 synthesized all 72 beats with zero fallback and zero pronunciation risks. Measured voiceover duration is `3359.154s`, showing that the nominal `tts_cps=24` estimate is faster than this voice's observed delivery rate.
+- Series match produced 1,064 placements across all 12 sources with continuous coverage, `0.6-5.0s` clip lengths, and zero non-story/unusable/end-credit shot violations.
+- Final render is H.264 `1920x1080`, declared `30/1` fps, with one AAC stereo 48 kHz voiceover stream, no source audio, and matched video/audio duration near `3359.104s`.
+- Validation: full `python -m pytest -q` -> `476 passed`; compileall and `git diff --check` passed.
+
+## 2026-07-24 - Season composer hard-cap enforcement
+
+- Fixed detailed season target planning so 12 full episodes scale to the configured 2,700-second maximum instead of treating the 3,000-second hard cap as audit-only.
+- Episode minimums are preserved during proportional scaling; impossible minimum/cap combinations now fail before any Playwright prompt is submitted.
+- Arc prompts now include proportional hard character maxima, and deterministic QA revises both hard-cap overflow and arc over-budget output.
+- Beat-level narration QA now maps `beat_ids` through source references to the owning arc, so a foreign phrase such as the one found in Solo Leveling beat 45 triggers the correct Playwright arc revision.
+- Targeted Playwright/composer regression suite passes with `38 passed`.
+
+## 2026-07-24 - Series match tail-fragment recovery
+
+- Fixed a chronological matcher edge case where a short usable shot consumed the remaining capacity and left a sub-`min_visual_clip` tail, even though the next shot could fill the beat.
+- The matcher now skips only that candidate and continues to the next story shot; no non-story or end-credit footage is relaxed.
+
+## 2026-07-24 - Playwright long-prompt safety
+
+- Removed clipboard paste from ChatGPT prompt preparation after the web UI converted 12K-character season-composer prompts into truncated `Pasted text` attachments.
+- The adapter now clears pending file tiles, verifies whitespace-canonical prompt content after direct fill or chunked `insert_text`, and fails before Send when the full prompt cannot be proven intact.
+- High-reasoning responses that expose `Answer now` without creating an assistant message are completed by one bounded click after 300 seconds; the same-response/no-resubmit contract remains unchanged.
+- Added regression coverage for ProseMirror newline expansion, missing prompt suffixes, stale attachment cleanup, and the no-submit guarantee on verification failure.
+
+## 2026-07-23 - TTS repeated content gate fix
+
+- Added deterministic narration QA shared by composer and TTS so repeated sentences, repeated templates, generic fallback paragraphs, foreign text, and unaccented Vietnamese fail before any provider call.
+- Removed the old deterministic fallback behavior that could repeat the same generic paragraph to hit target length.
+- `tts_meta.json` now records `review_script_hash`, and season recap validation rejects stale TTS artifacts when the script hash changes.
+
+## 2026-07-23 - Practical anime season pipeline preset
+
+- Added `config.anime.series.practical.yaml` for 12-episode anime season smoke/production runs that use OpenAI only for required JA->EN transcript translation and keep OpenAI vision disabled.
+- Added optional `config.anime.series.localvision.yaml` plus `anime-vision` extra for capped local Qwen2.5-VL frame descriptions; missing local model/deps degrade to empty visual gaps instead of failing ingest.
+- Hardened G1 against bad API-key environment values and placeholder-only translations: invalid `OPENAI_API_KEY` is rejected locally, and required translation must meet the configured success ratio before cache/output commit.
+- `film_map.meta.json` now records translation success counts/ratio and the active `vision_provider` for smoke audit.
+
+## 2026-07-21 - Detailed 12-episode anime season recap
+
+- Added `series_recap.format=episode_arc_chaptered` with `detail_level=detailed` for 12+ episode anime seasons.
+- `config.anime.series.yaml` now targets 12 standard 24-minute episodes at 35-45 minutes with a 50-minute hard cap, using per-episode targets of 90/180/300 seconds and `arc_size=3`.
+- `series_composer` now builds a `season_target_plan` inside `series_event_bank.json`, writes `series_arc_plan.json`, drafts each arc separately, and then runs a final stitch pass to produce one `series_review_script.json`.
+- Added `series_composer.qa.json` with deterministic QA diagnostics for missing episode chapters, episode/arc/season under-budget narration, post-hook ordering, hard-cap estimates, prompt count, and invalid revision JSON fallback.
+- Existing `compact`, `episode_chaptered`, single-episode `run.py`, and stage JSON contracts remain backward-compatible.
+
+## 2026-07-21 - Episode-chapter season recap default
+
+- Changed anime season recap default from compact season summary to `series_recap.format=episode_chaptered`.
+- `config.anime.series.yaml` now targets `full=0.22`, `quick=0.14`, `merge=0.05`, `skip=0.0` and calibrates `series_recap.tts_cps=24.0` for the current VBee voice speed plus composer underfill; a 24-minute quick episode should contribute roughly 3-4 minutes before real TTS timing variance.
+- `series_event_bank.json` now includes an episode target plan with per-episode target duration, character budget, minimum characters, and beat budget so the composer cannot silently compress all selected episodes into a short bridge.
+- `series_composer` prompt/QA now requires a shared hook followed by ordered episode chapters, checks missing chapters, per-episode under-budget narration, repeated events, and post-hook episode order.
+- Added deterministic season helper artifacts `series_chapters.json` and `youtube_chapters.txt`; the final video still uses one script, one voiceover, one multi-source EDL, and no raw MP4 concatenation.
+
+## 2026-07-21 - Multi-episode anime season recap V1
+
+- Added season-level orchestration with `python -m series_recap`: selected episodes run episode-first to `episode_planner` plus `shots`, then final `series_composer -> tts -> series_match -> render` produces one `series_recap.mp4`.
+- Added additive season artifacts: `series_event_bank.json`, `series_review_script.json`, `series_review_script.meta.json`, `series_tts_script.json`, and `edl.source_map.json`.
+- Added `series_composer` so ChatGPT Playwright selects only `event_id` values from the event bank; code derives `source_refs`, timecodes, and the TTS-compatible script.
+- Hardened `series_composer` after Grand Blue S03 smoke: prompts now budget narration per beat and deterministic QA can trigger one Playwright rewrite when a draft is too short, repeats events, misses the hook, or breaks post-hook chronology.
+- Added `series_match` to create standard EDL placements across multiple episode sources while excluding non-story, unusable, and end-credit shots.
+- Extended GĐ6 render with optional `--source-map`; legacy `--film` single-source rendering remains compatible.
+- Updated `config.anime.series.yaml`, packaging allowlists, Tach boundaries, README, and AGENTS source-of-truth for season-level output.
+- Set the anime series preset to run Faster Whisper on CUDA by default after the Grand Blue S03 smoke exposed that CPU `large-v3` ASR is too slow for practical multi-episode iteration.
+
+## 2026-07-20 - Anime series Episode V1
+
+- Added the local/offline `episode_planner` stage for anime series runs, placed after GĐ1/GĐ1.5 while keeping required per-stage JSON contracts unchanged.
+- Added `series_manifest.yaml` example input plus `episode_meta.json`, `episode_memory.json`, and append-only `series_memory_index.jsonl` runtime artifacts.
+- `orchestrator.recap_mode=auto` now classifies each episode as `full`, `quick`, `merge`, or `skip`; quick mode lowers review ratio/coverage, while merge/skip only ingest/storymap/write memory and short-circuit downstream video stages.
+- Review context loading can consume episode memory with spoiler-limit filtering so later episodes retain continuity without leaking future events.
+
+## 2026-07-20 - Anime recap core V1
+
+- Added additive anime support without changing required stage JSON contracts: `film_map.json`, `review_script.json`, `beats_timing.json`, `shots.json`, and `edl.json` remain unchanged.
+- Added Japanese ingest configuration with `source_language=ja`, `translate_mode=ja-en`, and WhisperX language pass-through.
+- Added `config.anime.series.yaml`, `config.anime.movie.yaml`, and `examples/anime/anime_context.example.yaml` for local-only anime metadata, canonical Vietnamese names, terms, pronunciation hints, continuity notes, and manual non-story ranges.
+- GĐ0 can merge manual/anime context OP/ED/preview ranges into `video_profile.non_story_ranges`; GĐ1 drops only visual gaps that overlap those ranges, while speech remains preserved.
+- GĐ2 accepts `review.context_file`, includes it in review cache identity, merges anime glossary entries, and prompts/QA against OP/ED/theme lyrics, preview/recap-only beats, unsupported spoilers, and name drift.
+- Anime presets reduce Haar-face reliance (`shots.face_detection=off`, `match.w_face=0.0`) and keep chronology/non-story exclusion strict for GĐ5.
+
+## 2026-07-20 - Quality tooling wave 1
+
+- Added `ruff` and `tach` to the development toolchain for check-only linting and blocking architecture boundary checks.
+- Configured `ruff` with critical syntax/name rules first to avoid a repo-wide formatting or lint-cleanup diff.
+- Added `tach.toml` desired boundaries for runtime packages, moved shared `shots.json` loading/hash helpers under `common`, and wired release gate to fail on Tach boundary findings.
+- Disabled Tach's pytest plugin by default so the existing test suite behavior stays unchanged.
+- Deferred `pytest-subprocess` and codebase graph tooling until a concrete subprocess-heavy or one-off architecture exploration need appears.
+
 ## 2026-07-11 - GĐ5 opening intra-beat alignment
 
 - Added opt-in `opening_intra_beat_align` for `config.movie.visual.yaml`; stable and Vietnamese presets remain disabled.
@@ -868,3 +1060,31 @@ Khi hoàn thành một mốc mới, thêm entry theo mẫu:
 - Fixed resumed ChatGPT history stabilization so stale assistant messages cannot satisfy a new request, and hardened AI33/Genmax polling so transient request exhaustion does not abandon an active provider task before its deadline.
 - Stage JSON contracts remain unchanged. ASR, vision, TTS, and media remain local/provider-first, with paid fallback limited by each stage policy.
 - Tags `v1.0.0` and `v1.0.1` are immutable; `v1.0.2` may be tagged only after the clean local media gate and GitHub Release Gate pass for the release commit.
+
+### 2026-07-30 - Anime Season Enhanced Post-Production V1
+
+- Added the opt-in `config.anime.series.vieneu.enhanced.yaml` preset. Existing presets remain legacy voiceover-only; global `run.py` is unchanged.
+- Added `series-v3-dynamic-anime` season matching with event-aware 1.5-4.0s clip ranges, round-robin shot residuals, adjacent/contiguous source avoidance, and explicit QA fallbacks.
+- Added the offline `postprocess` stage and shared schemas for deterministic reframing, grading, 2.35 masks, transition ramps, guarded freeze frames, local music/SFX planning, overrides, attribution, cache metadata and QA.
+- Enhanced render now accepts paired `--edit-plan`/`--audio-assets`, applies frame-locked effects, keeps video and audio caches separate, ducks music below delayed voiceover, loudness-normalizes the master, maps no source audio, and rejects output unless ffprobe reports exactly one audio stream.
+- Series orchestration, stage fingerprints, resume/force-final, enhanced preflight, local UI DAG/artifacts/readiness/delivery QA, packaging allowlists, Tach boundaries, CLI help/import smoke and release media gate were updated for the new stage.
+- Added local manifest/override examples and `scripts.enhanced_render_smoke`. The 4-second smoke passed at 1920x1080/30fps with 120 frames, one audio stream, source-tone suppression `-70.519 dB`, nonblack/no-flash frames, measurable zoom growth, and reduced freeze-frame motion.
+- Validation: `python -m pytest -q` -> `643 passed`; Ruff, Tach, compileall, `git diff --check`, frontend `15` tests, TypeScript, ESLint and Vite build all passed. The dirty-worktree release gate also passed secret scan, wheel content/install/import, CLI help and production dry-run with media smoke skipped; the enhanced FFmpeg smoke was run separately and passed all 17 assertions.
+
+### 2026-08-06 - Enhanced master audio locked to 48 kHz
+
+- First real enhanced season render (Tensei S01, 12 episodes) delivered `2539.08s` at 1920x1080/30fps with one audio stream, but the output AAC stream was `96000 Hz` instead of the pipeline's 48 kHz convention.
+- Root cause: single-pass `loudnorm` resamples internally, so the music-bed and master-mix filter graphs left `loudnorm` at its own rate even though `aresample=48000` ran earlier in the chain. The AAC encoder then wrote that rate. The SFX bed, which has no `loudnorm`, stayed at 48 kHz and confirmed the diagnosis.
+- Fixed by resampling back to 48 kHz immediately after `loudnorm` in both `build_music_bed` and `build_master_mix`.
+- Bumped the audio cache identities to `music-v2` and `master-v2`. Without the bump, an existing run would silently reuse its 96 kHz beds and the fix would not reach the output.
+- Regression coverage asserts `aresample=48000` appears after `loudnorm` in both the music and master filter chains.
+- Validation: `python -m pytest -q` -> `693 passed`; Ruff, Tach and compileall passed. `scripts.enhanced_render_smoke` passed all 17 assertions with output `aac,48000,2`. The Tensei season was re-rendered in `224s` because the 971 video temp clips stayed cached and only the audio beds rebuilt; the new master is `aac,48000,2`, `duration_match=true`, one audio stream, identical loudness (`mean -15.3 dB`, `max -2.5 dB`) and identical sampled frame luma.
+
+### 2026-08-06 - Chapter-opening speed ramps and whoosh cues
+
+- The first real enhanced season render produced `n_speed_ramp=0` and `whoosh_count=0`: the ramp fired only for bridge/transition events or beats spanning more than one episode, and `episode_arc_chaptered` scripts produce neither. All three whoosh assets were dead weight because whoosh cues are emitted only where a ramp exists.
+- Measured on the 84-beat Tensei season: 0 multi-episode beats, 11 chapter boundaries. The beat before each boundary is `climax`/`reveal` at importance `1.0`, which doctrine excludes from auto ramp and which already carries push-in plus freeze plus impact. The beat that opens each chapter is `setup` at importance `0.53-0.65` with no freeze.
+- Speed ramp is now also eligible for the beat opening each episode chapter, matching the existing semantics that the ramp sits on the beat's last placement and accelerates into what follows. `_beat_role` is unchanged, so grade and mood stay the same.
+- Added a `freeze_conflict` skip so a placement that already carries a freeze never receives a ramp on the same frames.
+- Bumped `ALGORITHM_VERSION` to `anime-postprocess-v2` and the series stage identity to `series-postprocess-v2`. The series fingerprint does not include the planner algorithm version, so without that second bump the orchestrator would skip the stage and the change would never execute.
+- Validation: `python -m pytest -q` -> `694 passed`; Ruff and Tach passed.

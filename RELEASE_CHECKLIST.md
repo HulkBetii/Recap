@@ -13,13 +13,14 @@ GitHub Actions runs the Windows/Python 3.11 offline gate on every push to `main`
 The CI gate requires no repository secrets, browser install, paid API, GPU, or real movie file. It checks:
 
 - tracked files and full Git history for credential material;
-- `git diff --check`, full pytest, and compileall;
+- `git diff --check`, `ruff check`, Tach boundary check, full pytest, and compileall;
 - editable-install metadata and wheel contents;
 - wheel install/import from outside the checkout;
 - `ingest`, `match`, and `visual_index` CLI help;
 - `config.movie.production.yaml` orchestrator dry-run.
 
-CI uploads `report.json`, secret/package reports, and the built wheel from `work/release-gate/`.
+CI uploads `report.json`, `tach-report.txt`, secret/package reports, and the built wheel from `work/release-gate/`.
+Tach boundary findings fail the release gate.
 
 ## Local Media Gate
 
