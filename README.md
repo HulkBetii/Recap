@@ -26,7 +26,7 @@ Yêu cầu:
 - `ffmpeg` và `ffprobe` có trong `PATH`
 - GĐ1 dịch/vision, GĐ2 review và Composer (mọi preset hiện tại): 9router chạy local ở `http://localhost:20128/v1` (đổi bằng `NINEROUTER_URL`) và biến môi trường `NINEROUTER_API_KEY`. Đặt key một lần bằng `setx NINEROUTER_API_KEY "<key>"`; không ghi key vào config hay git. Orchestrator kiểm key, `/models` và probe thật model trước khi chạy stage nặng. Số request song song tự điều chỉnh theo phản hồi của gateway (các cờ `*_concurrency` là trần); khi model chính bị quarantine/429 liên tiếp, client chuyển sang `*_fallback_model` (preset: `ag/claude-sonnet-4-6`) ngay trong 9router.
 - ChatGPT Playwright profile `D:\VibeCoding\auto_YT\data\chrome_user_data\PROFILE_GPT_1` chỉ cần khi chọn backend `chatgpt_playwright`
-- GĐ3 TTS: preset production/example dùng CapCut (`provider_mode: capcut`, giọng `BV074_streaming`, không cần key); `provider_mode: auto` dùng `VIVOO_API_KEY` (AI33), `GENMAX_API_KEY` hoặc `OPENAI_API_KEY`; VieNeu chạy local không cần key
+- GĐ3 TTS: preset production dùng VieNeu clone giọng từ clip `data/voices/ngochuyen_ref.mp3` (thư mục `data/` không vào git; thay file để đổi giọng; cần GPU NVIDIA); preset example dùng CapCut (`provider_mode: capcut`, giọng `BV074_streaming`, không cần key); `provider_mode: auto` dùng `VIVOO_API_KEY` (AI33), `GENMAX_API_KEY` hoặc `OPENAI_API_KEY`; VieNeu chạy local không cần key
 - `OPENAI_API_KEY` chỉ bắt buộc khi preset dùng OpenAI cho dịch, vision, ASR hoặc fallback đã cấu hình
 
 Chạy trong `.venv` riêng, dựng bằng `uv`. Python toàn cục dùng chung với project khác dễ lệch phiên bản (`transformers` 5, OpenCV 5…); preflight sẽ báo lỗi khi gói đã cài lệch yêu cầu của `recap`.

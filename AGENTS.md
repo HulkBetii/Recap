@@ -96,7 +96,7 @@ Các stage giao tiếp QUA FILE JSON, không truyền object in-memory. Mỗi st
 - Transcript: **Hàn gốc = chuẩn timecode** + **bản dịch Anh** (dịch per-segment, giữ nguyên timecode). KHÔNG chạy Whisper 2 lượt.
 - Hiểu phim: thoại là chính; **vision chỉ chèn vào khe im lặng** > ngưỡng.
 - Viết review: **LLM qua 9router gateway** (preset dùng `ag/gemini-3.8-flash-high`; ChatGPT Playwright là backend chọn được), ~**1/3** độ dài phim, giọng **kịch tính kiểu recap VN**, có **cold-open hook**, gắn **timecode nguồn** mỗi beat, có **vòng tự duyệt** đối chiếu transcript. Xem mục 52.
-- TTS: preset production/example dùng **CapCut `BV074_streaming`** (`provider_mode=capcut`); `provider_mode=auto` vẫn là AI33/VBee → Genmax → OpenAI `gpt-4o-mini-tts` theo key khả dụng; tốc độ chuẩn.
+- TTS: preset production dùng **VieNeu v3 Turbo clone giọng Ngọc Huyền** (`provider_mode=vieneu`, `voice_id=data/voices/ngochuyen_ref.mp3`, clip gitignored); preset example dùng **CapCut `BV074_streaming`** (`provider_mode=capcut`); `provider_mode=auto` vẫn là AI33/VBee → Genmax → OpenAI `gpt-4o-mini-tts` theo key khả dụng; tốc độ chuẩn.
 - Footage: chọn **shot động/có mặt người**; cắt vụn **3–5s**.
 - Render mặc định/legacy: **16:9 1080p**, full-screen, **tắt tiếng gốc**, **không caption**, **không nhạc nền**, fps theo nguồn (`render.fps: source`; preset enhanced giữ 30). Chỉ preset anime season enhanced ở mục 50 được phép thêm music/SFX local theo manifest.
 - Tự động hóa: **một phát ra video** (QA nằm ở vòng tự duyệt GĐ2).
@@ -502,7 +502,7 @@ repo/
 
 - `config.movie.production.yaml` là preset production cho phim Hàn trên máy CUDA: Faster Whisper + WhisperX, 9router (`ag/gemini-3.8-flash-high`) cho dịch/vision/review, CapCut TTS, ffmpeg-scene batch shots, End-Credit Guard, BGE-M3 matching và GĐ6 1080p; Visual Index tắt từ đợt review 2026-11 (R5-5: đóng góp trung vị 2% điểm chọn shot cho ~4 phút GPU), `config.movie.visual.yaml` vẫn bật để thử nghiệm.
 - Production preset bật `orchestrator.runtime_preflight=true`; thiếu optional module trong `movie-visual` hoặc CUDA phải fail-fast trước khi chạy stage nặng.
-- TTS production dùng CapCut `BV074_streaming` (`provider_mode=capcut`, concurrency `4`, đo được 20,6–21,7 ký tự/giây; `review.tts_cps=20.0` để recap đạt 95–100% mục tiêu sau khi trừ beat ngắn). Cấu hình AI33/Genmax/OpenAI vẫn giữ trong preset cho `provider_mode=auto`. `TtsMeta` có diagnostics optional/backward-compatible cho provider usage và fallback count.
+- TTS production dùng VieNeu 3.8 CUDA clone từ `data/voices/ngochuyen_ref.mp3` (đo được 17,9 ký tự/giây ở speed 1.0, `review.tts_cps=17.0`); chuyển về CapCut bằng `provider_mode: capcut` + `voice_id: BV074_streaming`. Cấu hình CapCut cũ: concurrency `4`, đo được 20,6–21,7 ký tự/giây; `review.tts_cps=20.0` để recap đạt 95–100% mục tiêu sau khi trừ beat ngắn). Cấu hình AI33/Genmax/OpenAI vẫn giữ trong preset cho `provider_mode=auto`. `TtsMeta` có diagnostics optional/backward-compatible cho provider usage và fallback count.
 - Stable/visual presets cũ vẫn tương thích và không bị tự động chuyển sang production behavior.
 
 ## 37. GĐ0 → GĐ1 / REVIEW CACHE INTEGRITY

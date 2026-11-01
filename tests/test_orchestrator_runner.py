@@ -996,8 +996,9 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     assert ingest[ingest.index("--translation-provider") + 1] == "ninerouter"
     assert int(ingest[ingest.index("--translation-concurrency") + 1]) > 1
     assert review[review.index("--llm-backend") + 1] == "ninerouter"
-    assert tts[tts.index("--provider-mode") + 1] == "capcut"
-    assert tts[tts.index("--voice-id") + 1] == "BV074_streaming"
+    assert tts[tts.index("--provider-mode") + 1] == "vieneu"
+    assert tts[tts.index("--voice-id") + 1] == "data/voices/ngochuyen_ref.mp3"
+    assert tts[tts.index("--vieneu-backend") + 1] == "pytorch"
     assert tts[tts.index("--concurrency") + 1] == "4"
     assert config["visual_index"]["enabled"] is False
     assert "--exclude-end-credits" in match

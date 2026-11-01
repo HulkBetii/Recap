@@ -203,3 +203,18 @@ def test_clone_enrollment_failure_is_a_provider_error(tmp_path, monkeypatch) -> 
             output_path=tmp_path / "out.mp3",
         )
     assert not (tmp_path / "out.mp3").exists()
+
+def test_missing_reference_clip_is_reported_as_missing_not_unknown_preset(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    synthesizer = VieneuSynthesizer(engine_factory=lambda **_kwargs: FakeEngine())
+    with pytest.raises(VieneuProviderError, match="reference clip not found"):
+        synthesizer.synthesize(
+            text="beat",
+            voice_id="data/voices/missing.mp3",
+            style="doc_truyen",
+            backend="onnx",
+            precision="int8",
+            model="model-id",
+            threads=0,
+            speed=1.0,
+            output_path=tmp_path / "out.mp3",
+        )

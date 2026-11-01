@@ -69,9 +69,9 @@ review:
   content_type: movie
   hook_mode: setup
   target_ratio: auto
-  # CapCut BV074 measured 21.7 chars/s on a full film (1,767 s for 38,389 chars); 20.0 leaves ~8% for short beats
-  # so the recap lands at 95-100% of target. Other voices: BV421 20.31, BV562 19.72, vi_female_huong 15.85.
-  tts_cps: 20.0
+  # VieNeu clone of Ngoc Huyen reads ~17.9 chars/s at speed 1.0 (387-char sample, 21.6 s); 17.0 leaves ~5% margin.
+  # CapCut BV074 would be 21.7 (use 20.0), BV421 20.31, BV562 19.72, vi_female_huong 15.85.
+  tts_cps: 17.0
   min_coverage: 0.85
   max_qa_iterations: 3
   max_qa_rewrites_per_iteration: 6
@@ -98,8 +98,16 @@ review:
   log_level: INFO
 
 tts:
-  voice_id: BV074_streaming
-  provider_mode: capcut
+  # Local zero-shot clone (VieNeu v3 Turbo, CUDA) of the Ngoc Huyen reference clip. The clip lives in the
+  # gitignored data/voices/ folder; replace the file to change the voice. Measured 17.9 chars/s at speed 1.0.
+  # To go back to CapCut: provider_mode: capcut, voice_id: BV074_streaming.
+  voice_id: data/voices/ngochuyen_ref.mp3
+  provider_mode: vieneu
+  vieneu_backend: pytorch
+  vieneu_model: pnnbao-ump/VieNeu-TTS-v3-Turbo
+  vieneu_style: doc_truyen
+  vieneu_precision: int8
+  vieneu_threads: 0
   genmax_voice_id: VU16byTywsWv5JpI8rbc
   model: eleven_multilingual_v2
   openai_model: gpt-4o-mini-tts

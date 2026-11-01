@@ -132,6 +132,10 @@ class VieneuSynthesizer:
         """Preset name as-is, or a clone of the reference clip enrolled once per process."""
         reference = voice_reference_path(voice_id)
         if reference is None:
+            if Path(voice_id.strip()).suffix.lower() in REFERENCE_SUFFIXES:
+                raise VieneuProviderError(
+                    f"VieNeu reference clip not found: {voice_id} (relative paths resolve from the working directory)"
+                )
             available = {voice for _description, voice in engine.list_preset_voices()}
             if voice_id not in available:
                 raise VieneuProviderError(f"Unknown VieNeu preset voice: {voice_id}")
