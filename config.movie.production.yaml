@@ -69,9 +69,10 @@ review:
   content_type: movie
   hook_mode: setup
   target_ratio: auto
-  # VieNeu clone of Ngoc Huyen reads ~17.9 chars/s at speed 1.0 (387-char sample, 21.6 s); 17.0 leaves ~5% margin.
-  # CapCut BV074 would be 21.7 (use 20.0), BV421 20.31, BV562 19.72, vi_female_huong 15.85.
-  tts_cps: 17.0
+  # VieNeu clone of Ngoc Huyen read 18.15 chars/s over a full film (1,710 s for 31,039 chars; the 387-char sample read
+  # 17.9). 17.0 left the recap at 88.8% of target because the model also fills only ~95% of the budget; 18.5 aims at
+  # 95-100%. CapCut BV074 would be 21.7 (use 20.0), BV421 20.31, BV562 19.72, vi_female_huong 15.85.
+  tts_cps: 18.5
   min_coverage: 0.85
   max_qa_iterations: 3
   max_qa_rewrites_per_iteration: 6
