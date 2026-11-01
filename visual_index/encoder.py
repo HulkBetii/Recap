@@ -131,8 +131,19 @@ class TransformerVisualEncoder:
                 vectors.extend(_tensor_rows(features))
         return [normalize_vector(vector) for vector in vectors]
 
+def _feature_tensor(features):  # type: ignore[no-untyped-def]
+    """transformers 5 returns a pooled ModelOutput from get_*_features; v4 returned the tensor itself."""
+    if hasattr(features, "detach"):
+        return features
+    for name in ("pooler_output", "image_embeds", "text_embeds"):
+        tensor = getattr(features, name, None)
+        if tensor is not None and hasattr(tensor, "detach"):
+            return tensor
+    raise VisualEncoderError(f"model returned {type(features).__name__} without a pooled feature tensor")
+
+
 def _tensor_rows(tensor) -> list[list[float]]:  # type: ignore[no-untyped-def]
-    rows = tensor.detach().cpu().float().tolist()
+    rows = _feature_tensor(tensor).detach().cpu().float().tolist()
     if rows and isinstance(rows[0], float):
         return [[float(value) for value in rows]]
     return [[float(value) for value in row] for row in rows]

@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 
+from common.llm_gateway import DEFAULT_GATEWAY_MODEL, GATEWAY_BACKEND, GatewayChatClient, GatewayChatError
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from common.schema import (
     SeasonTargetPlan,
@@ -65,7 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Override target contribution ratio as recap_mode=float, e.g. full=0.12",
     )
-    parser.add_argument("--llm-backend", choices=["chatgpt_playwright", "deterministic"], default="chatgpt_playwright")
+    parser.add_argument("--llm-backend", choices=["chatgpt_playwright", GATEWAY_BACKEND, "deterministic"], default="chatgpt_playwright")
+    parser.add_argument("--llm-model", default=None, help=f"Gateway model id for llm_backend={GATEWAY_BACKEND}")
+    parser.add_argument("--llm-base-url", default=None, help="Gateway base URL; defaults to NINEROUTER_URL or the local 9router")
     parser.add_argument("--chatgpt-profile-dir", type=Path, default=CHATGPT_PLAYWRIGHT_PROFILE_DIR)
     parser.add_argument("--reply-timeout-s", default=600, type=int)
     parser.add_argument("--playwright-max-attempts", default=2, type=int)
@@ -148,7 +151,7 @@ def outputs_valid(args: argparse.Namespace) -> bool:
 
 
 def composer_settings(args: argparse.Namespace, mode_target_ratios: dict[str, float]) -> dict[str, object]:
-    return {
+    settings: dict[str, object] = {
         "format": args.format,
         "detail_level": args.detail_level,
         "tts_cps": args.tts_cps,
@@ -168,6 +171,10 @@ def composer_settings(args: argparse.Namespace, mode_target_ratios: dict[str, fl
         "qa_max_revisions": args.qa_max_revisions,
         "headless": args.headless,
     }
+    if args.llm_backend == GATEWAY_BACKEND:
+        # Only gateway runs key on the model so existing Playwright caches keep their identity.
+        settings["llm_model"] = getattr(args, "llm_model", None) or DEFAULT_GATEWAY_MODEL
+    return settings
 
 
 async def run_composer_async(args: argparse.Namespace) -> int:
@@ -222,23 +229,31 @@ async def run_composer_async(args: argparse.Namespace) -> int:
         beats, meta = compose_deterministic_fallback(bank, reason="llm backend deterministic")
     else:
         try:
-            async with PlaywrightChatClient(
-                profile_dir(args.chatgpt_profile_dir),
-                headless=args.headless,
-                timeout_s=args.reply_timeout_s,
-                max_attempts=args.playwright_max_attempts,
-                recovery_timeout_s=args.playwright_recovery_timeout_s,
-            ) as client:
-                beats, meta = await compose_with_client(client, bank, qa_max_revisions=args.qa_max_revisions)
-        except (PlaywrightChatError, ValueError, json.JSONDecodeError) as exc:
+            if args.llm_backend == GATEWAY_BACKEND:
+                async with GatewayChatClient(
+                    model=getattr(args, "llm_model", None) or DEFAULT_GATEWAY_MODEL,
+                    base_url=getattr(args, "llm_base_url", None),
+                    timeout_s=args.reply_timeout_s,
+                ) as client:
+                    beats, meta = await compose_with_client(client, bank, qa_max_revisions=args.qa_max_revisions)
+            else:
+                async with PlaywrightChatClient(
+                    profile_dir(args.chatgpt_profile_dir),
+                    headless=args.headless,
+                    timeout_s=args.reply_timeout_s,
+                    max_attempts=args.playwright_max_attempts,
+                    recovery_timeout_s=args.playwright_recovery_timeout_s,
+                ) as client:
+                    beats, meta = await compose_with_client(client, bank, qa_max_revisions=args.qa_max_revisions)
+        except (PlaywrightChatError, GatewayChatError, ValueError, json.JSONDecodeError) as exc:
             if args.format == "episode_arc_chaptered" and args.detail_level == "detailed":
                 raise SeriesComposerError(
-                    "ChatGPT series composer failed; deterministic fallback is disabled for detailed episode-arc production"
+                    f"{args.llm_backend} series composer failed; deterministic fallback is disabled for detailed episode-arc production"
                 ) from exc
             if args.format != "episode_arc_chaptered":
                 raise
-            logging.warning("ChatGPT series composer failed; using deterministic fallback: %s", exc)
-            beats, meta = compose_deterministic_fallback(bank, reason=f"chatgpt_playwright failed: {exc}")
+            logging.warning("%s series composer failed; using deterministic fallback: %s", args.llm_backend, exc)
+            beats, meta = compose_deterministic_fallback(bank, reason=f"{args.llm_backend} failed: {exc}")
     write_json(args.output_event_bank, bank)
     write_json(args.output, beats)
     write_json(args.output_tts_script, to_tts_review_script(beats))
@@ -262,7 +277,7 @@ def main() -> int:
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
     try:
         return asyncio.run(run_composer_async(args))
-    except (SeriesComposerError, PlaywrightChatError, ValueError, json.JSONDecodeError) as exc:
+    except (SeriesComposerError, PlaywrightChatError, GatewayChatError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(2, f"series_composer: error: {exc}\n")
 
 

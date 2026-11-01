@@ -1,6 +1,6 @@
 orchestrator:
   quality_mode: balanced
-  text_llm_backend: chatgpt_playwright
+  text_llm_backend: ninerouter
   api_budget_guard: warn
   auto_fallback: false
   fallback_on_timecode_warn: true
@@ -36,8 +36,9 @@ ingest:
   gap_threshold: 4.0
   max_vision_frames: 200
   max_visual_gap_s: 20
-  translate_model: gpt-4.1-mini
-  translation_provider: openai_api
+  translate_model: ag/gemini-3.8-flash-high
+  translation_provider: ninerouter
+  translation_concurrency: 2
   translation_batch_size: 80
   translation_batch_max_attempts: 2
   translation_chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
@@ -99,7 +100,8 @@ review:
   chat_session_meta: null
   chat_title: null
   reply_timeout_s: 600
-  llm_backend: chatgpt_playwright
+  llm_backend: ninerouter
+  llm_model: heavy
   playwright_max_attempts: 2
   playwright_recovery_timeout_s: 60
   openai_fallback_model: null
@@ -115,8 +117,8 @@ review:
   log_level: INFO
 
 tts:
-  voice_id: null
-  provider_mode: auto
+  voice_id: BV074_streaming
+  provider_mode: capcut
   genmax_voice_id: null
   model: eleven_multilingual_v2
   openai_model: gpt-4o-mini-tts
@@ -128,7 +130,7 @@ tts:
   vieneu_threads: 0
   speed: 1.0
   inter_beat_pause: 0.15
-  concurrency: 3
+  concurrency: 4
   normalize: true
   cost_per_1k_chars: 0.0
   text_normalization: vi
@@ -249,6 +251,8 @@ postprocess:
   log_level: INFO
 
 series_recap:
+  llm_backend: ninerouter
+  llm_model: heavy
   scope: end_to_end
   format: compact
   detail_level: standard

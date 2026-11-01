@@ -24,7 +24,7 @@ GENERATED_FILES = (
     "micro_beats.json",
     "non_story_beats.json",
 )
-GENERATED_DIRS = ("revisions", "style_revisions")
+GENERATED_DIRS = ("revisions", "style_revisions", "narration_batches")
 
 
 class ReviewCache:

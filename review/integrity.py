@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from common.integrity import file_hash, stable_hash
+from common.llm_gateway import DEFAULT_GATEWAY_MODEL, GATEWAY_BACKEND
 
 REVIEW_CACHE_VERSION = "review-v1"
-REVIEW_PROMPT_VERSION = "review-prompts-v2"
+REVIEW_PROMPT_VERSION = "review-prompts-v3"
 
 REVIEW_CONFIG_FIELDS = (
     "target_ratio",
@@ -77,6 +78,9 @@ def build_review_identity(
     video_profile_digest = file_hash(video_profile_path) if video_profile_path else None
     context_file_digest = file_hash(context_file_path) if context_file_path else None
     config_payload = {name: _value(settings, name) for name in REVIEW_CONFIG_FIELDS}
+    if config_payload.get("llm_backend") == GATEWAY_BACKEND:
+        # Only gateway runs key on the model so existing Playwright caches keep their identity.
+        config_payload["llm_model"] = _value(settings, "llm_model") or DEFAULT_GATEWAY_MODEL
     config_payload["target_ratio"] = str(config_payload.get("target_ratio"))
     for name in ("tts_cps", "min_coverage", "target_beat_audio_s", "max_beat_audio_s", "non_story_tail_s"):
         if config_payload.get(name) is not None:

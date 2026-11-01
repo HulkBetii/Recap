@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from typing import Protocol
 
 from common.schema import AnimeContext, EpisodeMemory, ReviewBeat
 from review.budget import estimate_total_chars
 from review.json_utils import extract_json
 from review.models import NarrationBeat, OutlineBeat, OutlineResult, QaResult
+
+NARRATION_FIELDS = ("beat_id", "narration")
+# 9router rejects very large responses (502 response_too_large); ~8k Vietnamese chars per request stays well below it.
+NARRATION_BATCH_CHARS = 8000
 
 MOVIE_CONTENT_TYPES = {"movie", "anime_movie"}
 
@@ -81,13 +87,13 @@ def build_outline_prompt(
     memory_block = f"\n{build_episode_memory_block(episode_memory, content_type=content_type)}\n" if episode_memory else ""
     content_label = "anime recap script" if content_type in {"anime_series", "anime_movie"} else "movie recap script"
     if content_type in MOVIE_CONTENT_TYPES and hook_mode == "setup":
-        hook_rule = f"- hook: use the first story/setup beat at or after story_start_s={story_start_s:.1f}s; do NOT use excluded intro/opening footage or jump to a later twist/ending."
+        hook_rule = f"- hook: JSON array of integer segment ids from the first story/setup beat at or after story_start_s={story_start_s:.1f}s; do NOT use excluded intro/opening footage or jump to a later twist/ending. Never put narration text in hook."
         pacing_rule = "- Movie mode: prioritize clear premise, characters, cause/effect, and story comprehension over viral shock."
     elif hook_mode == "off":
-        hook_rule = "- hook: use the first chronological story beat as a minimal setup hook to satisfy schema; do NOT create cold-open hype."
+        hook_rule = "- hook: JSON array of integer segment ids from the first chronological story beat, as a minimal setup hook to satisfy schema; do NOT create cold-open hype. Never put narration text in hook."
         pacing_rule = "- Keep the opening chronological and clear."
     else:
-        hook_rule = "- hook: list of exciting segment ids for a cold-open, usually from later in the story, without spoiling the ending."
+        hook_rule = "- hook: JSON array of integer segment ids for an exciting cold-open, usually from later in the story, without spoiling the ending. Never put narration text in hook."
         pacing_rule = "- Episode mode: fast recap pacing is allowed, but keep plot logic clear."
     return f"""
 You are planning a Vietnamese {content_label}.
@@ -122,6 +128,8 @@ def build_narration_prompt(
     story_start_s: float = 0.0,
     anime_context: AnimeContext | None = None,
     episode_memory: EpisodeMemory | None = None,
+    beat_ids: list[int] | None = None,
+    previous_narration: str | None = None,
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
     anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
@@ -142,10 +150,22 @@ def build_narration_prompt(
             "char_target": char_targets[index],
         }
         for index, beat in enumerate(outline)
+        if beat_ids is None or index in beat_ids
     ]
+    # A batched request (long films) only adds context blocks; the single-request prompt stays byte-identical.
+    batch_block = ""
+    if beat_ids is not None:
+        outline_context = [{"beat_id": index, "summary": beat.summary} for index, beat in enumerate(outline)]
+        batch_block = (
+            "\nThis is one part of a longer script. Write narration ONLY for the beats listed in BEATS; "
+            "use FULL_OUTLINE for continuity and do not narrate other beats.\n"
+            f"FULL_OUTLINE:\n{json.dumps(outline_context, ensure_ascii=False)}\n"
+        )
+        if previous_narration:
+            batch_block += f"PREVIOUS_BEAT_NARRATION (continue naturally from it; do not rewrite it):\n{previous_narration}\n"
     return f"""
 Write Vietnamese narration for each recap beat.
-Return ONLY a JSON array of objects: {{"beat_id": number, "narration": string}}.
+Return ONLY a JSON array of objects: {{"beat_id": number, "narration": string}}.{batch_block}
 
 Rules:
 - Dramatic fast-paced Vietnamese recap style.
@@ -239,7 +259,7 @@ Rules:
 {anime_block}
 {memory_block}
 CURRENT_BEAT:
-{json.dumps(beat.model_dump(), ensure_ascii=False)}
+{json.dumps({"beat_id": beat.beat_id, "narration": beat.narration}, ensure_ascii=False)}
 
 GLOSSARY:
 {json.dumps(glossary, ensure_ascii=False)}
@@ -286,21 +306,76 @@ async def request_narration(
     hook_mode: str = "cold_open",
     anime_context: AnimeContext | None = None,
     episode_memory: EpisodeMemory | None = None,
+    max_batch_chars: int = NARRATION_BATCH_CHARS,
+    load_batch: Callable[[list[int]], list[NarrationBeat] | None] | None = None,
+    save_batch: Callable[[list[int], list[NarrationBeat]], None] | None = None,
 ) -> list[NarrationBeat]:
-    response = await client.ask(
-        build_narration_prompt(
-            outline=outline,
-            glossary=glossary,
-            char_targets=char_targets,
-            style_sample=style_sample,
-            content_type=content_type,
-            hook_mode=hook_mode,
-            anime_context=anime_context,
-            episode_memory=episode_memory,
+    batches = plan_narration_batches(char_targets, max_batch_chars)
+    if len(batches) <= 1:
+        response = await client.ask(
+            build_narration_prompt(
+                outline=outline,
+                glossary=glossary,
+                char_targets=char_targets,
+                style_sample=style_sample,
+                content_type=content_type,
+                hook_mode=hook_mode,
+                anime_context=anime_context,
+                episode_memory=episode_memory,
+            )
         )
-    )
-    data = extract_json(response)
-    return [NarrationBeat.model_validate(item) for item in data]
+        data = extract_json(response)
+        return [NarrationBeat.model_validate(narration_fields(item)) for item in data]
+    logger = logging.getLogger("review")
+    narration: list[NarrationBeat] = []
+    previous: str | None = None
+    for number, batch in enumerate(batches, start=1):
+        cached = load_batch(batch) if load_batch else None
+        if cached is not None:
+            logger.info("[2/4] Using cached narration batch %d/%d (beats %d-%d)", number, len(batches), batch[0], batch[-1])
+            beats = cached
+        else:
+            logger.info("[2/4] Requesting narration batch %d/%d (beats %d-%d)", number, len(batches), batch[0], batch[-1])
+            response = await client.ask(
+                build_narration_prompt(
+                    outline=outline,
+                    glossary=glossary,
+                    char_targets=char_targets,
+                    style_sample=style_sample,
+                    content_type=content_type,
+                    hook_mode=hook_mode,
+                    anime_context=anime_context,
+                    episode_memory=episode_memory,
+                    beat_ids=batch,
+                    previous_narration=previous,
+                )
+            )
+            by_id = {item.beat_id: item for item in (NarrationBeat.model_validate(narration_fields(raw)) for raw in extract_json(response))}
+            missing = [beat_id for beat_id in batch if beat_id not in by_id]
+            if missing:
+                raise ValueError(f"narration batch {number}/{len(batches)} is missing beat_ids {missing}")
+            beats = [by_id[beat_id] for beat_id in batch]
+            if save_batch:
+                save_batch(batch, beats)
+        narration.extend(beats)
+        previous = beats[-1].narration
+    return narration
+
+
+def plan_narration_batches(char_targets: list[int], max_batch_chars: int) -> list[list[int]]:
+    """Group consecutive beats so each JSON response stays under gateway response-size limits."""
+    batches: list[list[int]] = []
+    current: list[int] = []
+    total = 0
+    for beat_id, target in enumerate(char_targets):
+        if current and total + target > max_batch_chars:
+            batches.append(current)
+            current, total = [], 0
+        current.append(beat_id)
+        total += target
+    if current:
+        batches.append(current)
+    return batches
 
 async def request_qa(
     client: ChatClient,
@@ -366,7 +441,17 @@ async def regenerate_beat(
             content_type=content_type,
         )
     )
-    return NarrationBeat.model_validate(extract_json(response))
+    revised = NarrationBeat.model_validate(narration_fields(extract_json(response)))
+    if revised.beat_id != beat.beat_id:
+        logging.getLogger("review").warning("regenerated beat returned beat_id=%d; keeping requested beat_id=%d", revised.beat_id, beat.beat_id)
+        revised = revised.model_copy(update={"beat_id": beat.beat_id})
+    return revised
+
+def narration_fields(item: object) -> object:
+    """Keep only beat_id/narration: models sometimes echo spans or timecodes, which code derives itself."""
+    if isinstance(item, dict):
+        return {key: item[key] for key in NARRATION_FIELDS if key in item}
+    return item
 
 def normalize_outline_payload(data: object) -> object:
     if not isinstance(data, dict):
@@ -384,6 +469,10 @@ def normalize_outline_payload(data: object) -> object:
                 hook_ids.append(value)
         data = {**data, "hook": sorted(set(hook_ids))}
     elif hook is None:
+        data = {**data, "hook": []}
+    elif isinstance(hook, str):
+        # Some models put hook narration text here; normalize_outline then promotes the first beat.
+        logging.getLogger("review").warning("outline hook was text instead of segment ids; using the first outline beat as hook")
         data = {**data, "hook": []}
     return data
 

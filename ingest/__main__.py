@@ -9,6 +9,7 @@ from typing import Callable
 
 from common.media import MediaError, extract_audio, probe_duration, require_ffmpeg
 from common.integrity import file_hash, media_identity_hash, stable_hash
+from common.llm_gateway import GATEWAY_BACKEND, GatewayChatClient
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from common.schema import (
     FilmMapMeta,
@@ -54,7 +55,7 @@ SOURCE_LANGUAGE_TRANSLATE_MODES = {
     "ja": {"ja-en", "none"},
 }
 VISION_PROVIDERS = {"openai", "off", "local_qwen2_5_vl"}
-TRANSLATION_PROVIDERS = {"openai_api", "chatgpt_playwright"}
+TRANSLATION_PROVIDERS = {"openai_api", "chatgpt_playwright", GATEWAY_BACKEND}
 
 
 class IngestError(RuntimeError):
@@ -108,6 +109,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--translation-provider", default="openai_api", choices=sorted(TRANSLATION_PROVIDERS))
     parser.add_argument("--translation-batch-size", default=80, type=int)
     parser.add_argument("--translation-batch-max-attempts", default=2, type=int)
+    parser.add_argument("--translation-concurrency", default=1, type=int, help=f"Parallel translation batches; only {GATEWAY_BACKEND} allows more than 1")
+    parser.add_argument("--translation-base-url", default=None, help=f"Gateway base URL for translation_provider={GATEWAY_BACKEND}")
     parser.add_argument("--translation-chatgpt-profile-dir", default=CHATGPT_PLAYWRIGHT_PROFILE_DIR, type=Path)
     parser.add_argument("--translation-chatgpt-session-file", default=None, type=Path)
     parser.add_argument("--translation-reply-timeout-s", default=600, type=int)
@@ -445,6 +448,8 @@ def run_ingest(args: argparse.Namespace) -> int:
         "translation_provider": "openai_api",
         "translation_batch_size": 80,
         "translation_batch_max_attempts": 2,
+        "translation_concurrency": 1,
+        "translation_base_url": None,
         "translation_chatgpt_profile_dir": CHATGPT_PLAYWRIGHT_PROFILE_DIR,
         "translation_chatgpt_session_file": None,
         "translation_reply_timeout_s": 600,
@@ -474,6 +479,10 @@ def run_ingest(args: argparse.Namespace) -> int:
         raise IngestError("--translation-batch-size must be > 0")
     if args.translation_batch_max_attempts <= 0:
         raise IngestError("--translation-batch-max-attempts must be > 0")
+    if args.translation_concurrency <= 0:
+        raise IngestError("--translation-concurrency must be > 0")
+    if args.translation_concurrency > 1 and args.translation_provider != GATEWAY_BACKEND:
+        raise IngestError(f"--translation-concurrency > 1 requires --translation-provider {GATEWAY_BACKEND}")
     if args.translation_reply_timeout_s <= 0:
         raise IngestError("--translation-reply-timeout-s must be > 0")
     if args.translation_playwright_max_attempts <= 0:
@@ -515,6 +524,7 @@ def run_ingest(args: argparse.Namespace) -> int:
     needs_playwright_translate = (
         args.translate_mode != "none" and args.translation_provider == "chatgpt_playwright"
     )
+    needs_gateway_translate = args.translate_mode != "none" and args.translation_provider == GATEWAY_BACKEND
     needs_openai_vision = args.max_vision_frames > 0 and args.vision_provider == "openai"
     needs_openai_correction = args.transcript_correction == "openai"
     if needs_openai_asr or needs_openai_translate or needs_openai_vision or needs_openai_correction:
@@ -544,6 +554,23 @@ def run_ingest(args: argparse.Namespace) -> int:
             headless=args.translation_headless,
             session_file=args.translation_chatgpt_session_file,
             force=args.force,
+        )
+    elif needs_gateway_translate:
+        translation_client = None
+        translation_client_factory = lambda: PlaywrightTranslationClient(
+            profile_dir=args.translation_chatgpt_profile_dir,
+            cache_dir=cache.path("translation_batches"),
+            model=translation_model_identity(args),
+            batch_size=args.translation_batch_size,
+            batch_max_attempts=args.translation_batch_max_attempts,
+            force=args.force,
+            provider=GATEWAY_BACKEND,
+            concurrency=args.translation_concurrency,
+            chat_client_factory=lambda: GatewayChatClient(
+                model=translation_model_identity(args),
+                base_url=args.translation_base_url,
+                timeout_s=args.translation_reply_timeout_s,
+            ),
         )
     logger.info("[0/6] Probing input video")
     duration = probe_duration(input_path)

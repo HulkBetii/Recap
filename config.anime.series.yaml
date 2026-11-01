@@ -1,6 +1,6 @@
 orchestrator:
   quality_mode: balanced
-  text_llm_backend: chatgpt_playwright
+  text_llm_backend: ninerouter
   api_budget_guard: warn
   auto_fallback: false
   fallback_on_timecode_warn: true
@@ -85,7 +85,8 @@ review:
   chat_session_meta: null
   chat_title: null
   reply_timeout_s: 600
-  llm_backend: chatgpt_playwright
+  llm_backend: ninerouter
+  llm_model: heavy
   playwright_max_attempts: 2
   playwright_recovery_timeout_s: 60
   openai_fallback_model: null
@@ -221,6 +222,8 @@ render:
   log_level: INFO
 
 series_recap:
+  llm_backend: ninerouter
+  llm_model: heavy
   scope: end_to_end
   format: episode_arc_chaptered
   detail_level: detailed

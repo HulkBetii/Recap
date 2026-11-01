@@ -1,6 +1,6 @@
 orchestrator:
   quality_mode: balanced
-  text_llm_backend: chatgpt_playwright
+  text_llm_backend: ninerouter
   api_budget_guard: warn
   auto_fallback: false
   fallback_on_timecode_warn: true
@@ -49,6 +49,8 @@ storymap:
   target_story_sections: 7
   log_level: INFO
 review:
+  llm_backend: ninerouter
+  llm_model: heavy
   content_type: movie
   hook_mode: setup
   target_ratio: auto

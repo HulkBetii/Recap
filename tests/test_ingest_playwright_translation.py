@@ -348,13 +348,14 @@ def test_orchestrator_propagates_playwright_translation_settings(tmp_path: Path)
     assert "--translation-headless" in command
 
 
-def test_vieneu_preset_uses_browser_translation_without_openai_fallback() -> None:
+def test_vieneu_preset_uses_gateway_translation_without_openai_fallback() -> None:
     config = load_config(Path("config.anime.series.vieneu.yaml"))
     _resolved, policy = resolve_cost_policy(config)
 
     assert config["orchestrator"]["api_budget_guard"] == "block"
-    assert config["ingest"]["translation_provider"] == "chatgpt_playwright"
-    assert policy.stages["ingest"]["translation_provider"] == "chatgpt_playwright"
+    assert config["ingest"]["translation_provider"] == "ninerouter"
+    assert policy.stages["ingest"]["translation_provider"] == "ninerouter"
+    assert policy.stages["ingest"]["cost"] == "gateway"
     assert policy.stages["ingest"]["openai_uses"] == []
     assert disallowed_openai_stages(policy, {"ingest"}) == []
 
@@ -364,7 +365,7 @@ def test_vieneu_enhanced_preset_keeps_local_text_tts_and_opt_in_postprocess() ->
     _resolved, policy = resolve_cost_policy(config)
 
     assert config["orchestrator"]["api_budget_guard"] == "block"
-    assert config["ingest"]["translation_provider"] == "chatgpt_playwright"
+    assert config["ingest"]["translation_provider"] == "ninerouter"
     assert policy.stages["ingest"]["openai_uses"] == []
     assert config["tts"]["provider_mode"] == "vieneu"
     assert config["tts"]["voice_id"] == "Ngọc Linh"

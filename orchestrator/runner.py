@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from common.integrity import file_hash, media_identity_hash, stable_hash
+from common.llm_gateway import (
+    DEFAULT_GATEWAY_MODEL,
+    GATEWAY_BACKEND,
+    GATEWAY_KEY_ENV,
+    check_gateway_health,
+    probe_gateway_model,
+    resolve_gateway_api_key,
+)
 from common.media import require_ffmpeg
 from common.schema import (
     BeatTiming,
@@ -422,7 +430,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--classifier", "heuristic"]
     elif stage == "ingest":
         command += ["--input", str(film), "--output", str(paths.film_map)]
-        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "translation_provider", "translation_batch_size", "translation_batch_max_attempts", "translation_chatgpt_profile_dir", "translation_chatgpt_session_file", "translation_reply_timeout_s", "translation_playwright_max_attempts", "translation_playwright_recovery_timeout_s", "translation_min_success_ratio", "source_language", "translate_mode", "vision_provider", "vision_model", "vision_resize_long_edge", "vision_batch_size", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
+        for key in ("whisper_model", "gap_threshold", "max_vision_frames", "max_visual_gap_s", "translate_model", "translation_provider", "translation_batch_size", "translation_batch_max_attempts", "translation_concurrency", "translation_base_url", "translation_chatgpt_profile_dir", "translation_chatgpt_session_file", "translation_reply_timeout_s", "translation_playwright_max_attempts", "translation_playwright_recovery_timeout_s", "translation_min_success_ratio", "source_language", "translate_mode", "vision_provider", "vision_model", "vision_resize_long_edge", "vision_batch_size", "device", "asr_provider", "aligner", "transcript_input", "timecode_quality", "max_segment_s", "merge_gap_s", "openai_transcribe_model", "openai_chunk_s", "alignment_device", "transcript_correction", "glossary", "correction_model", "drop_non_korean_intro_s", "drop_visual_before_s", "log_level"):
             add_option(command, key, section.get(key))
         if section.get("translation_headless", False):
             command.append("--translation-headless")
@@ -484,7 +492,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
-        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "context_file", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "playwright_max_attempts", "playwright_recovery_timeout_s", "openai_fallback_model", "log_level"):
+        for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "context_file", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "llm_model", "llm_base_url", "playwright_max_attempts", "playwright_recovery_timeout_s", "openai_fallback_model", "log_level"):
             add_option(command, key, section.get(key))
         if config.get("orchestrator", {}).get("api_budget_guard") == "block":
             command.append("--block-openai-fallback")
@@ -615,21 +623,31 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
     if "ingest" in will_run and ingest_needs_openai and not os.getenv("OPENAI_API_KEY") and not dry_run:
         raise OrchestratorError("OPENAI_API_KEY is required to run ingest")
     ingest_config = config.get("ingest", {})
-    if (
-        "ingest" in will_run
-        and not dry_run
-        and ingest_config.get("translate_mode") not in {"none", "off", None}
-        and ingest_config.get("translation_provider") == "chatgpt_playwright"
-    ):
+    ingest_translates = "ingest" in will_run and not dry_run and ingest_config.get("translate_mode") not in {"none", "off", None}
+    if ingest_translates and ingest_config.get("translation_provider") == "chatgpt_playwright":
         profile = Path(str(ingest_config.get("translation_chatgpt_profile_dir"))).expanduser()
         if not profile.exists():
             raise OrchestratorError(f"ChatGPT profile dir does not exist for ingest translation: {profile}")
+    if ingest_translates and ingest_config.get("translation_provider") == GATEWAY_BACKEND:
+        require_gateway_ready(
+            purpose="ingest translation",
+            model=ingest_config.get("translate_model"),
+            base_url=ingest_config.get("translation_base_url"),
+        )
     recap_mode = str(config.get("orchestrator", {}).get("recap_mode", "off"))
     defer_episode_downstream = "episode_planner" in selected and recap_mode in {"auto", "merge", "skip"}
     if "review" in will_run and not dry_run and not defer_episode_downstream:
-        profile = Path(str(config["review"].get("chatgpt_profile_dir"))).expanduser()
-        if not profile.exists():
-            raise OrchestratorError(f"ChatGPT profile dir does not exist for review: {profile}")
+        review_config = config["review"]
+        if review_config.get("llm_backend") == GATEWAY_BACKEND:
+            require_gateway_ready(
+                purpose="review",
+                model=review_config.get("llm_model") or DEFAULT_GATEWAY_MODEL,
+                base_url=review_config.get("llm_base_url"),
+            )
+        else:
+            profile = Path(str(review_config.get("chatgpt_profile_dir"))).expanduser()
+            if not profile.exists():
+                raise OrchestratorError(f"ChatGPT profile dir does not exist for review: {profile}")
     if "tts" in will_run and not dry_run and not defer_episode_downstream:
         tts_config = config["tts"]
         if not tts_config.get("voice_id"):
@@ -653,6 +671,16 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
                 require_vieneu_runtime()
             except VieneuProviderError as exc:
                 raise OrchestratorError(str(exc)) from exc
+
+
+def require_gateway_ready(*, purpose: str, model: str | None, base_url: str | None) -> None:
+    if resolve_gateway_api_key() is None:
+        raise OrchestratorError(f"{GATEWAY_KEY_ENV} must be set to run {purpose} through {GATEWAY_BACKEND}")
+    health = check_gateway_health(model=model, base_url=base_url)
+    if health.model_available:
+        health = probe_gateway_model(model=model or DEFAULT_GATEWAY_MODEL, base_url=base_url)
+    if not health.model_available:
+        raise OrchestratorError(f"{GATEWAY_BACKEND} is not ready for {purpose}: {health.reason}")
 
 
 def runtime_module_available(module: str) -> bool:

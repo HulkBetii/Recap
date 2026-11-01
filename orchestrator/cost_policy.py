@@ -8,6 +8,8 @@ from tts.providers import TtsProviderError, resolve_provider_order
 
 QualityMode = Literal["low_cost", "balanced", "max_quality"]
 ApiBudgetGuard = Literal["off", "warn", "block"]
+TEXT_LLM_BACKENDS = ("chatgpt_playwright", "ninerouter")
+TEXT_LLM_COST = {"chatgpt_playwright": "playwright_session", "ninerouter": "gateway"}
 
 @dataclass(frozen=True)
 class CostPolicy:
@@ -33,8 +35,8 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
     if quality_mode not in {"low_cost", "balanced", "max_quality"}:
         raise ValueError("orchestrator.quality_mode must be low_cost|balanced|max_quality")
     text_llm_backend = orchestrator.get("text_llm_backend", "chatgpt_playwright")
-    if text_llm_backend != "chatgpt_playwright":
-        raise ValueError("orchestrator.text_llm_backend must be chatgpt_playwright")
+    if text_llm_backend not in TEXT_LLM_BACKENDS:
+        raise ValueError("orchestrator.text_llm_backend must be " + "|".join(TEXT_LLM_BACKENDS))
     api_budget_guard = orchestrator.get("api_budget_guard", "warn")
     if api_budget_guard not in {"off", "warn", "block"}:
         raise ValueError("orchestrator.api_budget_guard must be off|warn|block")
@@ -57,8 +59,8 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
     ingest = resolved.setdefault("ingest", {})
     tts = resolved.setdefault("tts", {})
     review = resolved.setdefault("review", {})
-    if review.get("llm_backend", "chatgpt_playwright") != "chatgpt_playwright":
-        raise ValueError("review.llm_backend must be chatgpt_playwright")
+    if review.get("llm_backend", "chatgpt_playwright") not in TEXT_LLM_BACKENDS:
+        raise ValueError("review.llm_backend must be " + "|".join(TEXT_LLM_BACKENDS))
 
     asr_policy = ingest.get("asr_policy", "preset")
     if asr_policy not in {"preset", "local_first", "openai_hybrid", "manual"}:
@@ -87,14 +89,16 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
             tts["pronunciation_suggest_backend"] = "chatgpt_playwright"
 
     review["llm_backend"] = text_llm_backend
-    review_fallback_configured = bool(review.get("openai_fallback_model"))
+    # OpenAI fallback wraps only the Playwright client; gateway runs never trigger it.
+    review_fallback_configured = bool(review.get("openai_fallback_model")) and text_llm_backend == "chatgpt_playwright"
     review_fallback_blocked = review_fallback_configured and api_budget_guard == "block"
 
     stages = {
         "ingest": describe_ingest(ingest),
         "review": {
             "backend": text_llm_backend,
-            "cost": "playwright_session" if text_llm_backend == "chatgpt_playwright" else text_llm_backend,
+            "cost": TEXT_LLM_COST[text_llm_backend],
+            "llm_model": review.get("llm_model") if text_llm_backend == "ninerouter" else None,
             "openai_fallback_model": review.get("openai_fallback_model"),
             "openai_fallback_configured": review_fallback_configured,
             "openai_fallback_allowed": review_fallback_configured and not review_fallback_blocked,
@@ -142,8 +146,8 @@ def describe_ingest(ingest: dict[str, Any]) -> dict[str, Any]:
         "backend": (
             "openai_api"
             if openai_uses
-            else "chatgpt_playwright"
-            if translate_mode not in {"none", "off", None} and translation_provider == "chatgpt_playwright"
+            else translation_provider
+            if translate_mode not in {"none", "off", None} and translation_provider in TEXT_LLM_BACKENDS
             else "local"
         ),
         "openai_uses": openai_uses,
@@ -152,6 +156,8 @@ def describe_ingest(ingest: dict[str, Any]) -> dict[str, Any]:
             if openai_uses
             else "subscription_browser"
             if translate_mode not in {"none", "off", None} and translation_provider == "chatgpt_playwright"
+            else "gateway"
+            if translate_mode not in {"none", "off", None} and translation_provider == "ninerouter"
             else "local"
         ),
     }

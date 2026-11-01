@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from orchestrator.config import load_config
@@ -132,12 +133,18 @@ def test_direct_review_backend_is_rejected(backend: str) -> None:
         "config.anime.series.localvision.yaml",
     ],
 )
-def test_shipped_presets_keep_playwright_as_review_primary(preset: str) -> None:
+def test_shipped_presets_use_gateway_as_review_primary(preset: str) -> None:
+    raw = yaml.safe_load(Path(preset).read_text(encoding="utf-8"))
     resolved, policy = resolve_cost_policy(load_config(Path(preset)))
 
-    assert policy.text_llm_backend == "chatgpt_playwright"
-    assert resolved["review"]["llm_backend"] == "chatgpt_playwright"
+    assert policy.text_llm_backend == "ninerouter"
+    assert resolved["review"]["llm_backend"] == "ninerouter"
+    assert resolved["review"]["llm_model"]
+    assert policy.stages["review"]["openai_fallback_configured"] is False
+    # Playwright stays selectable by config, so the locked profile path is still shipped.
     assert Path(resolved["review"]["chatgpt_profile_dir"]) == CHATGPT_PLAYWRIGHT_PROFILE_DIR
+    if "series_recap" in raw:
+        assert resolved["series_recap"]["llm_backend"] == "ninerouter"
 
 
 def test_invalid_quality_mode_fails() -> None:

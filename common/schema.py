@@ -7,14 +7,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SegmentType = Literal["speech", "visual"]
-ProviderMode = Literal["auto", "ai33", "genmax", "openai", "vieneu"]
+ProviderMode = Literal["auto", "ai33", "genmax", "openai", "vieneu", "capcut"]
 AsrProvider = Literal["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"]
 AlignerProvider = Literal["none", "whisperx", "qwen3"]
 TimecodeQuality = Literal["strict", "approximate"]
 TranscriptCorrectionMode = Literal["off", "glossary", "openai"]
 SourceLanguage = Literal["ko", "vi", "ja"]
 TranslateMode = Literal["ko-en", "ja-en", "none"]
-TranslationProvider = Literal["openai_api", "chatgpt_playwright", "none"]
+TranslationProvider = Literal["openai_api", "chatgpt_playwright", "ninerouter", "none"]
 AnimeContentType = Literal["anime_series", "anime_movie"]
 ContentType = Literal["episode", "movie", "anime_series", "anime_movie"]
 RequestedRecapMode = Literal["off", "auto", "full", "quick", "merge", "skip"]

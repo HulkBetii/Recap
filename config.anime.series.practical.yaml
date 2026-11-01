@@ -1,6 +1,6 @@
 orchestrator:
   quality_mode: balanced
-  text_llm_backend: chatgpt_playwright
+  text_llm_backend: ninerouter
   api_budget_guard: warn
   auto_fallback: false
   fallback_on_timecode_warn: true
@@ -80,7 +80,8 @@ review:
   chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
   chat_session_policy: auto
   reply_timeout_s: 600
-  llm_backend: chatgpt_playwright
+  llm_backend: ninerouter
+  llm_model: heavy
   playwright_max_attempts: 2
   playwright_recovery_timeout_s: 60
   openai_fallback_model: null
@@ -189,7 +190,8 @@ series_recap:
   scope: end_to_end
   format: episode_arc_chaptered
   detail_level: detailed
-  llm_backend: chatgpt_playwright
+  llm_backend: ninerouter
+  llm_model: heavy
   tts_cps: 24.0
   target_total_min_s: 2100
   target_total_max_s: 2700

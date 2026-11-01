@@ -933,17 +933,19 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     paths = build_paths(tmp_path / "run")
 
     ingest = build_command("ingest", paths, film, config, force=False)
+    review = build_command("review", paths, film, config, force=False)
     tts = build_command("tts", paths, film, config, force=False)
     visual = build_command("visual_index", paths, film, config, force=False)
     match = build_command("match", paths, film, config, force=False)
 
     assert ingest[ingest.index("--device") + 1] == "cuda"
     assert ingest[ingest.index("--aligner") + 1] == "whisperx"
-    assert tts[tts.index("--provider-mode") + 1] == "auto"
-    assert tts[tts.index("--genmax-voice-id") + 1] == "VU16byTywsWv5JpI8rbc"
-    assert tts[tts.index("--openai-model") + 1] == "gpt-4o-mini-tts"
-    assert tts[tts.index("--openai-voice") + 1] == "coral"
-    assert tts[tts.index("--concurrency") + 1] == "1"
+    assert ingest[ingest.index("--translation-provider") + 1] == "ninerouter"
+    assert int(ingest[ingest.index("--translation-concurrency") + 1]) > 1
+    assert review[review.index("--llm-backend") + 1] == "ninerouter"
+    assert tts[tts.index("--provider-mode") + 1] == "capcut"
+    assert tts[tts.index("--voice-id") + 1] == "BV074_streaming"
+    assert tts[tts.index("--concurrency") + 1] == "4"
     assert visual[visual.index("--device") + 1] == "cuda"
     assert "--exclude-end-credits" in match
     assert match[match.index("--visual-mode") + 1] == "rerank"

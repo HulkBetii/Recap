@@ -5,9 +5,10 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from common.integrity import atomic_write_json, stable_hash
+from common.llm_gateway import GATEWAY_BACKEND, GatewayChatError
 from common.playwright_chat import PlaywrightChatClient, PlaywrightChatError
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from common.schema import TranslatedSegment, TranscriptSegment
@@ -129,10 +130,11 @@ def batch_cache_key(
     *,
     source_language: str,
     model: str,
+    provider: str = TRANSLATION_PROVIDER,
 ) -> str:
     return stable_hash(
         {
-            "provider": TRANSLATION_PROVIDER,
+            "provider": provider,
             "model": model,
             "prompt_version": TRANSLATION_PROMPT_VERSION,
             "parser_version": TRANSLATION_PARSER_VERSION,
@@ -157,12 +159,22 @@ class PlaywrightTranslationClient:
         headless: bool = False,
         session_file: Path | None = None,
         force: bool = False,
-        chat_client_factory: Callable[[], PlaywrightChatClient] | None = None,
+        chat_client_factory: Callable[[], Any] | None = None,
+        provider: str = TRANSLATION_PROVIDER,
+        concurrency: int = 1,
     ) -> None:
         if batch_size < 1:
             raise ValueError("translation batch_size must be at least 1")
         if batch_max_attempts < 1:
             raise ValueError("translation batch_max_attempts must be at least 1")
+        if concurrency < 1:
+            raise ValueError("translation concurrency must be at least 1")
+        if provider == TRANSLATION_PROVIDER and concurrency != 1:
+            raise ValueError("ChatGPT Playwright translation drives one browser page and requires concurrency=1")
+        if provider == GATEWAY_BACKEND and chat_client_factory is None:
+            raise ValueError("gateway translation requires a chat_client_factory")
+        self.provider = provider
+        self.concurrency = concurrency
         self.profile_dir = resolve_profile_dir(
             profile_dir,
             require_exists=chat_client_factory is None,
@@ -205,9 +217,9 @@ class PlaywrightTranslationClient:
                     logger=active_logger,
                 )
             )
-        except PlaywrightChatError as exc:
+        except (PlaywrightChatError, GatewayChatError) as exc:
             raise PlaywrightTranslationError(
-                f"ChatGPT Playwright translation failed ({exc.code}, attempts={exc.attempts}): {exc}"
+                f"{self.provider} translation failed ({exc.code}, attempts={exc.attempts}): {exc}"
             ) from exc
         translated = [
             TranslatedSegment(
@@ -233,7 +245,7 @@ class PlaywrightTranslationClient:
         mappings: dict[str, str] = {}
         pending: list[tuple[list[TranscriptSegment], str, Path]] = []
         for batch in batches:
-            key = batch_cache_key(batch, source_language=source_language, model=self.model)
+            key = batch_cache_key(batch, source_language=source_language, model=self.model, provider=self.provider)
             cache_path = self.cache_dir / f"{key}.json"
             cached = None if self.force else self._read_cached_batch(
                 cache_path,
@@ -243,7 +255,7 @@ class PlaywrightTranslationClient:
             )
             if cached is not None:
                 mappings.update(cached)
-                logger.info("Using cached ChatGPT translation batch %s", key[:12])
+                logger.info("Using cached %s translation batch %s", self.provider, key[:12])
             else:
                 pending.append((batch, key, cache_path))
         if not pending:
@@ -251,55 +263,94 @@ class PlaywrightTranslationClient:
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         async with self._chat_client_factory() as chat_client:
-            for index, (batch, key, cache_path) in enumerate(pending, start=1):
-                logger.info(
-                    "Translating ChatGPT batch %d/%d (%d segments)",
-                    index,
-                    len(pending),
-                    len(batch),
-                )
-                last_error: PlaywrightTranslationError | None = None
-                for attempt in range(1, self.batch_max_attempts + 1):
-                    response = await chat_client.ask(
-                        build_translation_prompt(batch, source_language=source_language)
-                    )
-                    try:
-                        translated = validate_translation_response(
-                            response,
-                            batch,
-                            source_language=source_language,
+            if self.concurrency == 1:
+                for index, (batch, key, cache_path) in enumerate(pending, start=1):
+                    mappings.update(
+                        await self._translate_pending_batch(
+                            chat_client, batch, key, cache_path, index=index, total=len(pending), source_language=source_language, logger=logger
                         )
-                    except PlaywrightTranslationError as exc:
-                        last_error = exc
-                        if attempt >= self.batch_max_attempts:
-                            raise PlaywrightTranslationError(
-                                f"ChatGPT translation batch {key[:12]} failed validation after {attempt} attempts: {exc}"
-                            ) from exc
-                        logger.warning(
-                            "ChatGPT translation batch %s returned invalid coverage/JSON; retrying only this batch (%d/%d): %s",
-                            key[:12],
-                            attempt,
-                            self.batch_max_attempts,
-                            exc,
-                        )
-                        continue
-                    atomic_write_json(
-                        cache_path,
-                        {
-                            "cache_key": key,
-                            "provider": TRANSLATION_PROVIDER,
-                            "model": self.model,
-                            "prompt_version": TRANSLATION_PROMPT_VERSION,
-                            "parser_version": TRANSLATION_PARSER_VERSION,
-                            "translations": translated,
-                        },
                     )
-                    mappings.update(translated)
-                    break
-                else:  # pragma: no cover - guarded by raises/break above
-                    assert last_error is not None
-                    raise last_error
+                return mappings
+            semaphore = asyncio.Semaphore(self.concurrency)
+
+            async def run_limited(index: int, batch: list[TranscriptSegment], key: str, cache_path: Path) -> dict[str, str]:
+                async with semaphore:
+                    return await self._translate_pending_batch(
+                        chat_client, batch, key, cache_path, index=index, total=len(pending), source_language=source_language, logger=logger
+                    )
+
+            tasks = [
+                asyncio.create_task(run_limited(index, batch, key, cache_path))
+                for index, (batch, key, cache_path) in enumerate(pending, start=1)
+            ]
+            try:
+                results = await asyncio.gather(*tasks)
+            except BaseException:
+                # Stop sibling batches before the shared client closes; finished batches stay cached.
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+            for translated in results:
+                mappings.update(translated)
         return mappings
+
+    async def _translate_pending_batch(
+        self,
+        chat_client: Any,
+        batch: list[TranscriptSegment],
+        key: str,
+        cache_path: Path,
+        *,
+        index: int,
+        total: int,
+        source_language: str,
+        logger: logging.Logger,
+    ) -> dict[str, str]:
+        logger.info(
+            "Translating %s batch %d/%d (%d segments)",
+            self.provider,
+            index,
+            total,
+            len(batch),
+        )
+        for attempt in range(1, self.batch_max_attempts + 1):
+            response = await chat_client.ask(
+                build_translation_prompt(batch, source_language=source_language)
+            )
+            try:
+                translated = validate_translation_response(
+                    response,
+                    batch,
+                    source_language=source_language,
+                )
+            except PlaywrightTranslationError as exc:
+                if attempt >= self.batch_max_attempts:
+                    raise PlaywrightTranslationError(
+                        f"{self.provider} translation batch {key[:12]} failed validation after {attempt} attempts: {exc}"
+                    ) from exc
+                logger.warning(
+                    "%s translation batch %s returned invalid coverage/JSON; retrying only this batch (%d/%d): %s",
+                    self.provider,
+                    key[:12],
+                    attempt,
+                    self.batch_max_attempts,
+                    exc,
+                )
+                continue
+            atomic_write_json(
+                cache_path,
+                {
+                    "cache_key": key,
+                    "provider": self.provider,
+                    "model": self.model,
+                    "prompt_version": TRANSLATION_PROMPT_VERSION,
+                    "parser_version": TRANSLATION_PARSER_VERSION,
+                    "translations": translated,
+                },
+            )
+            return translated
+        raise AssertionError("unreachable: batch attempts always return or raise")  # pragma: no cover
 
     @staticmethod
     def _read_cached_batch(

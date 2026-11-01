@@ -28,6 +28,7 @@ from review.movie_mode import (
     resolve_target_ratio,
     story_start_from_profile,
 )
+from common.llm_gateway import DEFAULT_GATEWAY_MODEL, GATEWAY_BACKEND, GatewayChatClient, GatewayChatError
 from review.models import NarrationBeat, OutlineResult, QaResult
 from review.openai_chat import FallbackChatClient, OpenAIChatClient, OpenAIChatError
 from review.playwright_chat import PlaywrightChatClient, PlaywrightChatError
@@ -53,6 +54,7 @@ DEFAULT_TTS_CPS = 15.0
 DEFAULT_MIN_COVERAGE = 0.85
 DEFAULT_MAX_QA_ITERATIONS = 3
 DEFAULT_PROFILE_DIR = CHATGPT_PLAYWRIGHT_PROFILE_DIR
+LLM_BACKENDS = ("chatgpt_playwright", GATEWAY_BACKEND)
 
 
 class ReviewError(RuntimeError):
@@ -164,7 +166,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reply-timeout-s", default=None, type=int, help="Max seconds to wait for one ChatGPT response")
     parser.add_argument("--playwright-max-attempts", default=2, type=int, help="Maximum Playwright submit/recovery attempts per prompt")
     parser.add_argument("--playwright-recovery-timeout-s", default=60, type=int, help="Seconds to recover the same submitted response before fallback")
-    parser.add_argument("--llm-backend", default="chatgpt_playwright", choices=["chatgpt_playwright"])
+    parser.add_argument("--llm-backend", default="chatgpt_playwright", choices=list(LLM_BACKENDS))
+    parser.add_argument("--llm-model", default=None, help=f"Gateway model id for llm_backend={GATEWAY_BACKEND}")
+    parser.add_argument("--llm-base-url", default=None, help="Gateway base URL; defaults to NINEROUTER_URL or the local 9router")
     parser.add_argument("--openai-fallback-model", default=None, help="Optional OpenAI model used only after eligible Playwright retries are exhausted")
     parser.add_argument("--block-openai-fallback", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--force", action="store_true")
@@ -197,8 +201,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         args.context_file = None
     if not hasattr(args, "llm_backend"):
         args.llm_backend = "chatgpt_playwright"
-    if args.llm_backend != "chatgpt_playwright":
-        raise ReviewError("GĐ2 only supports llm_backend=chatgpt_playwright; use openai_fallback_model for last-resort API fallback")
+    if args.llm_backend not in LLM_BACKENDS:
+        raise ReviewError(f"GĐ2 llm_backend must be one of {', '.join(LLM_BACKENDS)}")
     if not hasattr(args, "micro_beats") or args.micro_beats is None:
         args.micro_beats = False
     if not hasattr(args, "target_beat_audio_s"):
@@ -308,6 +312,16 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         narration = [NarrationBeat.model_validate(item) for item in cache.read_json("narration.json")]
     else:
         logger.info("[2/4] Requesting narration")
+
+        def batch_name(batch: list[int]) -> str:
+            return f"narration_batches/{batch[0]:03d}-{batch[-1]:03d}.json"
+
+        def load_narration_batch(batch: list[int]) -> list[NarrationBeat] | None:
+            if not cache.has(batch_name(batch)):
+                return None
+            beats = [NarrationBeat.model_validate(item) for item in cache.read_json(batch_name(batch))]
+            return beats if [beat.beat_id for beat in beats] == batch else None
+
         narration = await request_narration(
             client,
             outline=outline_result.outline,
@@ -318,6 +332,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             hook_mode=args.hook_mode,
             anime_context=anime_context,
             episode_memory=episode_memory,
+            load_batch=load_narration_batch,
+            save_batch=lambda batch, beats: cache.write_json(batch_name(batch), beats),
         )
         cache.write_json("narration.json", narration)
 
@@ -396,7 +412,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                     episode_memory=episode_memory,
                     content_type=args.content_type,
                 )
-            except (PlaywrightChatError, OpenAIChatError) as exc:
+            except (PlaywrightChatError, OpenAIChatError, GatewayChatError) as exc:
                 warning = f"qa rewrite skipped for beat {issue.beat_id} after LLM transport failure: {exc}"
                 logger.warning(warning)
                 warnings.append(warning)
@@ -427,7 +443,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                     episode_memory=episode_memory,
                     content_type=args.content_type,
                 )
-            except (PlaywrightChatError, OpenAIChatError) as exc:
+            except (PlaywrightChatError, OpenAIChatError, GatewayChatError) as exc:
                 warning = f"opening coherence rewrite skipped after LLM transport failure: {exc}"
                 logger.warning(warning)
                 warnings.append(warning)
@@ -514,7 +530,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         coverage_pct=coverage_pct,
         qa_report=qa_report,
         n_qa_iterations=n_qa_iterations,
-        model_versions={"llm": args.llm_backend},
+        model_versions={"llm": args.llm_backend if args.llm_backend != GATEWAY_BACKEND else f"{GATEWAY_BACKEND}:{getattr(args, 'llm_model', None) or DEFAULT_GATEWAY_MODEL}"},
         llm_backend=args.llm_backend,
         created_at=datetime.now(timezone.utc),
         warnings=warnings,
@@ -642,7 +658,7 @@ async def ensure_style_readability(
                     episode_memory=episode_memory,
                     content_type=content_type,
                 )
-            except (PlaywrightChatError, OpenAIChatError) as exc:
+            except (PlaywrightChatError, OpenAIChatError, GatewayChatError) as exc:
                 warning = f"style readability rewrite skipped for beat {issue.beat_id} after LLM transport failure: {exc}"
                 logger.warning(warning)
                 consistency_warnings.append(warning)
@@ -674,9 +690,15 @@ def ensure_narration_consistency(
 
 
 async def run_review(args: argparse.Namespace) -> int:
-    if args.llm_backend != "chatgpt_playwright":
-        raise ReviewError("GĐ2 only supports llm_backend=chatgpt_playwright; direct OpenAI review is disabled")
-    profile_dir = resolve_chatgpt_profile_dir(args.chatgpt_profile_dir)
+    if args.llm_backend not in LLM_BACKENDS:
+        raise ReviewError(f"GĐ2 llm_backend must be one of {', '.join(LLM_BACKENDS)}")
+    use_gateway = args.llm_backend == GATEWAY_BACKEND
+    if use_gateway:
+        # Resolve the model before hashing so the cache identity records the model actually used.
+        args.llm_model = args.llm_model or DEFAULT_GATEWAY_MODEL
+        if args.openai_fallback_model:
+            logging.getLogger("review").warning("openai_fallback_model is ignored for llm_backend=%s", GATEWAY_BACKEND)
+    profile_dir = None if use_gateway else resolve_chatgpt_profile_dir(args.chatgpt_profile_dir)
     work_dir = args.work_dir.expanduser().resolve()
     usage_path = work_dir / "openai_usage.json"
     try:
@@ -702,6 +724,19 @@ async def run_review(args: argparse.Namespace) -> int:
         context_file_path=context_file_path,
     )
     setattr(args, "_review_identity", identity)
+    if use_gateway:
+        gateway_usage_path = work_dir / "gateway_usage.json"
+        async with GatewayChatClient(
+            model=args.llm_model,
+            base_url=args.llm_base_url,
+            timeout_s=args.reply_timeout_s or 600,
+        ) as gateway_client:
+            try:
+                await build_review_with_client(args, gateway_client)
+            finally:
+                write_json(gateway_usage_path, gateway_client.usage_summary())
+        return 0
+    assert profile_dir is not None
     session_meta_path = (args.chat_session_meta or (work_dir / "chat_session_meta.json")).expanduser().resolve()
     initial_url, previous_session, session_warnings = resolve_initial_chat_url(
         session_meta_path,
@@ -762,7 +797,7 @@ def main() -> int:
     logging.basicConfig(level=getattr(logging, args.log_level), format="%(levelname)s: %(message)s")
     try:
         return asyncio.run(run_review(args))
-    except (ReviewError, ReviewInputError, PlaywrightChatError, OpenAIChatError, OSError, ValueError) as exc:
+    except (ReviewError, ReviewInputError, PlaywrightChatError, OpenAIChatError, GatewayChatError, OSError, ValueError) as exc:
         parser.exit(2, f"review: error: {exc}\n")
 
 

@@ -17,11 +17,13 @@ from tts.cache import TtsCache, build_cache_key, stable_hash
 from tts.concat import concat_voiceover
 from tts.cost import estimate_cost, real_ratio
 from tts.providers import (
+    CAPCUT_MODEL,
     DEFAULT_OPENAI_MODEL,
     DEFAULT_OPENAI_VOICE,
     ProviderMode,
     TtsProviderClient,
     TtsProviderError,
+    resolve_capcut_voice,
     resolve_provider_order,
 )
 from tts.pronunciation_qa import analyze_pronunciation_risks
@@ -56,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--voice-id", required=True)
     parser.add_argument(
         "--provider-mode",
-        choices=["auto", "ai33", "genmax", "openai", "vieneu"],
+        choices=["auto", "ai33", "genmax", "openai", "vieneu", "capcut"],
         default=DEFAULT_PROVIDER_MODE,
     )
     parser.add_argument("--genmax-voice-id", default=None)
@@ -269,6 +271,16 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
             "apply_watermark": True,
             "speed_method": "ffmpeg_atempo",
         }
+    capcut_voice_type: str | None = None
+    if args.provider_mode == "capcut":
+        capcut_voice = resolve_capcut_voice(args.voice_id)
+        capcut_voice_type = capcut_voice.voice_type
+        provider_config["capcut"] = {
+            "voice_type": capcut_voice.voice_type,
+            "resource_id": capcut_voice.resource_id,
+            "model": CAPCUT_MODEL,
+            "speed_method": "ssml_prosody_rate",
+        }
 
     require_ffmpeg()
     beats = load_review_script(review_script)
@@ -398,6 +410,9 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
     elif primary_provider == "vieneu":
         primary_voice_id = args.voice_id
         primary_model = vieneu_model
+    elif primary_provider == "capcut":
+        primary_voice_id = capcut_voice_type or args.voice_id
+        primary_model = CAPCUT_MODEL
     else:
         primary_voice_id = args.voice_id
         primary_model = args.model

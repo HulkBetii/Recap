@@ -15,6 +15,7 @@ from typing import Any, Callable
 from common.episodes import numeric_episode
 from common.integrity import file_hash, media_identity_hash, stable_hash
 from common.inputs import load_series_manifest
+from common.llm_gateway import DEFAULT_GATEWAY_MODEL, GATEWAY_BACKEND
 from common.media import MediaError, require_ffmpeg
 from common.schema import (
     BeatTiming,
@@ -42,6 +43,7 @@ from common.schema import (
 from common.series_identity import composer_input_fingerprint
 from orchestrator.config import ConfigError, add_option, load_config
 from orchestrator.graph import build_paths as build_episode_paths
+from orchestrator.runner import OrchestratorError, require_gateway_ready
 from orchestrator.runner import outputs_valid as episode_outputs_valid
 from postprocess.assets import AudioAssetError, load_audio_manifest, resolve_asset_path, validate_audio_assets
 from series_recap.cache import SeriesStageCache
@@ -499,6 +501,8 @@ def composer_command(
     for key in (
         "detail_level",
         "llm_backend",
+        "llm_model",
+        "llm_base_url",
         "tts_cps",
         "target_total_min_s",
         "target_total_max_s",
@@ -729,6 +733,9 @@ def composer_stage_fingerprint(
             "headless",
         ),
     )
+    if settings.get("llm_backend") == GATEWAY_BACKEND:
+        # Mirrors series_composer.composer_settings so both cache layers agree.
+        settings["llm_model"] = section.get("llm_model") or DEFAULT_GATEWAY_MODEL
     return composer_input_fingerprint(
         manifest_path=manifest_path,
         episode_run_dirs=episode_run_dirs,
@@ -1212,6 +1219,16 @@ def run_series_recap(
                 require_vieneu_runtime()
         except (TtsProviderError, VieneuProviderError) as exc:
             raise SeriesRecapError(str(exc)) from exc
+        composer_section = config.get("series_recap", {})
+        if composer_section.get("llm_backend") == GATEWAY_BACKEND:
+            try:
+                require_gateway_ready(
+                    purpose="series composer",
+                    model=composer_section.get("llm_model") or DEFAULT_GATEWAY_MODEL,
+                    base_url=composer_section.get("llm_base_url"),
+                )
+            except OrchestratorError as exc:
+                raise SeriesRecapError(str(exc)) from exc
 
     episode_run_dirs: dict[str, Path] = {}
     summaries: list[StepSummary] = []

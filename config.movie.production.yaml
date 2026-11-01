@@ -1,6 +1,6 @@
 orchestrator:
   quality_mode: balanced
-  text_llm_backend: chatgpt_playwright
+  text_llm_backend: ninerouter
   api_budget_guard: warn
   auto_fallback: false
   fallback_on_timecode_warn: true
@@ -24,7 +24,9 @@ ingest:
   gap_threshold: 4.0
   max_vision_frames: 200
   max_visual_gap_s: 20
-  translate_model: gpt-4.1-mini
+  translate_model: ag/gemini-3.8-flash-high
+  translation_provider: ninerouter
+  translation_concurrency: 2
   source_language: ko
   translate_mode: ko-en
   vision_model: gpt-4.1-mini
@@ -54,6 +56,8 @@ storymap:
   log_level: INFO
 
 review:
+  llm_backend: ninerouter
+  llm_model: heavy
   content_type: movie
   hook_mode: setup
   target_ratio: auto
@@ -84,15 +88,15 @@ review:
   log_level: INFO
 
 tts:
-  voice_id: vbee_hn_female_ngochuyen_full_24k-st
-  provider_mode: auto
+  voice_id: BV074_streaming
+  provider_mode: capcut
   genmax_voice_id: VU16byTywsWv5JpI8rbc
   model: eleven_multilingual_v2
   openai_model: gpt-4o-mini-tts
   openai_voice: coral
   speed: 1.0
   inter_beat_pause: 0.15
-  concurrency: 1
+  concurrency: 4
   normalize: true
   cost_per_1k_chars: 0.0
   text_normalization: vi

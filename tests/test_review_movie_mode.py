@@ -74,6 +74,51 @@ def test_outline_payload_accepts_object_hook() -> None:
     assert data["hook"] == [1, 2]
 
 
+def test_regenerate_beat_ignores_echoed_span_and_keeps_requested_id() -> None:
+    import asyncio
+    import json
+
+    from common.schema import ReviewBeat
+    from review.llm_flow import regenerate_beat
+
+    class EchoClient:
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        async def ask(self, prompt: str) -> str:
+            self.prompt = prompt
+            return json.dumps(
+                {"beat_id": 9, "narration": "Minh lần theo dấu vết.", "from_seg_id": 37, "to_seg_id": 54, "src_tc_start": 273.2, "src_tc_end": 378.0, "is_hook": False},
+                ensure_ascii=False,
+            )
+
+    beat = ReviewBeat(beat_id=2, narration="Minh nghi ngờ.", from_seg_id=3, to_seg_id=5, src_tc_start=10.0, src_tc_end=20.0, is_hook=False)
+    client = EchoClient()
+    revised = asyncio.run(regenerate_beat(client, beat=beat, issue="accuracy: rõ hơn", glossary=[], char_target=200))
+
+    assert revised.beat_id == 2
+    assert revised.narration == "Minh lần theo dấu vết."
+    assert "src_tc_start" not in client.prompt.split("CURRENT_BEAT:", 1)[1].split("GLOSSARY:", 1)[0]
+
+
+def test_outline_payload_text_hook_falls_back_to_first_beat() -> None:
+    from review.llm_flow import normalize_outline
+    from review.models import OutlineResult
+
+    payload = {
+        "glossary": [],
+        "outline": [
+            {"from_seg_id": 0, "to_seg_id": 1, "summary": "mở đầu"},
+            {"from_seg_id": 2, "to_seg_id": 3, "summary": "cao trào"},
+        ],
+        "hook": "Một đêm lạnh buốt, một vụ mất tích bí ẩn.",
+    }
+    result = normalize_outline(OutlineResult.model_validate(normalize_outline_payload(payload)))
+    assert result.hook == []
+    assert result.outline[0].is_hook is True
+    assert result.outline[0].from_seg_id == 0
+
+
 def test_movie_setup_hook_respects_story_start() -> None:
     film_map = [seg(0, 40, 60), seg(1, 190, 210), seg(2, 230, 250)]
     outline = OutlineResult(
