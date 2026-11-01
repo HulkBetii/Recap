@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterator, Protocol
 
@@ -48,11 +49,49 @@ class FaceDetector(Protocol):
 
 
 class NoFaceDetector:
+    version = "off"
+
     def detect(self, frame: np.ndarray) -> tuple[int, float]:
         return 0, 0.0
 
 
+YUNET_MODEL_PATH = Path(__file__).with_name("models") / "face_detection_yunet_2023mar.onnx"
+# 0.7 kept every visually confirmed face on the review sample without false positives.
+YUNET_SCORE_THRESHOLD = 0.7
+YUNET_NMS_THRESHOLD = 0.3
+YUNET_TOP_K = 50
+
+
+class YuNetFaceDetector:
+    """OpenCV DNN face detector; unlike Haar it also finds three-quarter and partly lit faces."""
+
+    version = "opencv-yunet-2023mar"
+
+    def __init__(self, model_path: Path = YUNET_MODEL_PATH) -> None:
+        import cv2
+
+        if not hasattr(cv2, "FaceDetectorYN"):
+            raise RuntimeError("cv2.FaceDetectorYN is unavailable (requires OpenCV >= 4.5.4)")
+        if not model_path.is_file():
+            raise RuntimeError(f"YuNet model not found: {model_path}")
+        self.detector = cv2.FaceDetectorYN.create(
+            str(model_path), "", (320, 320), YUNET_SCORE_THRESHOLD, YUNET_NMS_THRESHOLD, YUNET_TOP_K
+        )
+
+    def detect(self, frame: np.ndarray) -> tuple[int, float]:
+        height, width = frame.shape[:2]
+        self.detector.setInputSize((width, height))
+        _status, faces = self.detector.detect(frame)
+        if faces is None:
+            return 0, 0.0
+        frame_area = float(width * height)
+        max_area = max(float(face[2]) * float(face[3]) for face in faces) / frame_area
+        return int(len(faces)), min(1.0, max_area)
+
+
 class HaarFaceDetector:
+    version = "opencv-haar-frontalface-default"
+
     def __init__(self) -> None:
         import cv2
 
@@ -79,10 +118,20 @@ def create_face_detector(mode: str) -> tuple[FaceDetector, list[str]]:
         return NoFaceDetector(), []
     if mode != "on":
         raise ValueError("--face-detection must be on or off")
-    try:
-        return HaarFaceDetector(), []
-    except Exception as exc:  # noqa: BLE001
-        return NoFaceDetector(), [f"Face detection disabled: {exc}"]
+    warnings: list[str] = []
+    for factory in (YuNetFaceDetector, HaarFaceDetector):
+        try:
+            return factory(), warnings
+        except Exception as exc:  # noqa: BLE001 - try the next detector, report why this one was skipped
+            warnings.append(f"{factory.__name__} unavailable: {exc}")
+    return NoFaceDetector(), [*warnings, "Face detection disabled: no detector could be loaded"]
+
+
+@lru_cache(maxsize=1)
+def available_face_detector_version() -> str:
+    """Version of the detector `create_face_detector("on")` would load in this runtime."""
+    detector, _warnings = create_face_detector("on")
+    return str(getattr(detector, "version", "off"))
 
 
 def shot_sample_times(shot: ShotSpan, sample_count: int) -> list[float]:

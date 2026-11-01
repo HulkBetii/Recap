@@ -117,13 +117,15 @@ def legacy_detection_cache_key(input_path: Path, args: argparse.Namespace) -> st
         "video_profile": str(args.video_profile) if args.video_profile else None,
     })
 
-def feature_cache_key(spans: list[ShotSpan], args: argparse.Namespace) -> str:
+def feature_cache_key(spans: list[ShotSpan], args: argparse.Namespace, *, face_detector: str) -> str:
     return stable_hash({
         "feature_schema_version": 2,
         "spans": [span.__dict__ for span in spans],
         "sample_frames": args.sample_frames,
         "frame_sampling": args.frame_sampling,
         "face_detection": args.face_detection,
+        # The detector actually loaded, so features computed while it was missing do not outlive the fix.
+        "face_detector": face_detector,
         "min_brightness": args.min_brightness,
         "min_shot_len": args.min_shot_len,
     })
@@ -325,14 +327,14 @@ def run_shots(args: argparse.Namespace) -> int:
     warnings: list[str] = []
     face_detector, face_warnings = create_face_detector(args.face_detection)
     warnings.extend(face_warnings)
-    face_detector_version = "off" if args.face_detection == "off" or face_warnings else "opencv-haar-frontalface-default"
+    face_detector_version = str(getattr(face_detector, "version", "off"))
     config = FeatureConfig(
         sample_frames=args.sample_frames,
         face_detection=args.face_detection,
         min_brightness=args.min_brightness,
         min_shot_len=args.min_shot_len,
     )
-    feature_key = feature_cache_key(spans, args)
+    feature_key = feature_cache_key(spans, args, face_detector=face_detector_version)
     cached_features = cache.read_cached("features.json", feature_key)
     features_by_index: dict[int, dict]
     if cached_features is not None:

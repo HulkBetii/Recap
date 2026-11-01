@@ -120,6 +120,10 @@ recap_ui = [
 "tts.capcut" = [
     "voices.json",
 ]
+shots = [
+    "models/*.onnx",
+    "models/README.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

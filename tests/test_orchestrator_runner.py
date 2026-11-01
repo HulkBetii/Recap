@@ -18,6 +18,7 @@ from ingest.integrity import INGEST_CACHE_VERSION, ingest_config_hash
 from orchestrator.config import load_config
 from orchestrator.graph import build_paths
 from orchestrator.runner import OrchestratorError, build_command, outputs_valid, preflight, validate_runtime_requirements
+from shots.features import available_face_detector_version
 from preflight.__main__ import build_parser as build_preflight_parser
 from preflight.integrity import PREFLIGHT_CACHE_VERSION, preflight_identity
 from review.__main__ import build_parser as build_review_parser
@@ -237,7 +238,7 @@ def write_stage_outputs(command: list[str]) -> None:
             (args.work_dir / cache_name).write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
         if args.end_credit_guard:
             (args.work_dir / "end_credit_marking.json").write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
-        output.with_name("shots.meta.json").write_text(json.dumps({"src":str(args.input.resolve()),"duration_s":2,"n_shots":1,"n_usable":1,"detector":args.detector,"feature_config":feature_config,"model_versions":{},"video_profile_path":str(args.video_profile.resolve()) if args.video_profile else None,"video_profile_hash":video_profile_hash(args.video_profile),"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
+        output.with_name("shots.meta.json").write_text(json.dumps({"src":str(args.input.resolve()),"duration_s":2,"n_shots":1,"n_usable":1,"detector":args.detector,"feature_config":feature_config,"model_versions":{"face_detector":available_face_detector_version()},"video_profile_path":str(args.video_profile.resolve()) if args.video_profile else None,"video_profile_hash":video_profile_hash(args.video_profile),"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
     elif stage == "match":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")
@@ -1262,3 +1263,23 @@ def test_partial_rerun_preserves_triggered_review_fallback_reporting(tmp_path: P
     assert cost["openai_fallback_possible"] is True
     assert cost["openai_fallback_triggered"] is True
     assert cost["review_openai_fallback"]["request_count"] == 2
+
+
+def test_shots_rerun_when_a_better_face_detector_becomes_available(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("VIVOO_API_KEY", "x")
+    monkeypatch.setattr("orchestrator.runner.require_ffmpeg", lambda: None)
+    args = argset(tmp_path)
+    run_pipeline(args, executor=lambda command, log_path: write_stage_outputs(command))
+    meta_path = tmp_path / "run" / "shots.meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["model_versions"]["face_detector"] = "off"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_executor(command: list[str], log_path: Path) -> None:
+        calls.append(stage_name(command))
+        write_stage_outputs(command)
+
+    run_pipeline(args, executor=fake_executor)
+    assert "shots" in calls

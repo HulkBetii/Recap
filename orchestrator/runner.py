@@ -56,6 +56,7 @@ from orchestrator.config import add_option
 from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
+from shots.features import available_face_detector_version
 from episode_planner.integrity import EPISODE_PLANNER_CACHE_VERSION, episode_planner_config_hash, episode_planner_input_hashes
 from tts.providers import TtsProviderError, resolve_provider_order
 from tts.vieneu_provider import VieneuProviderError, require_vieneu_runtime, validate_vieneu_settings
@@ -195,6 +196,10 @@ def shots_non_profile_identity_current(
         "max_shot_len": float(section.get("max_shot_len", 0.0)),
     }
     if any(meta.feature_config.get(key) != expected[key] for key in SHOTS_FEATURE_CONFIG_KEYS):
+        return False
+    # Shots computed while a detector was missing (e.g. OpenCV 5 dropped Haar) must rerun once a
+    # better detector loads, otherwise face_count=0 survives the environment fix.
+    if expected["face_detection"] == "on" and meta.model_versions.get("face_detector") != available_face_detector_version():
         return False
     if not require_cache:
         return True

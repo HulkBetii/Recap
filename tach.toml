@@ -82,4 +82,4 @@ depends_on = ["common", "orchestrator", "postprocess", "tts"]
 
 [[modules]]
 path = "orchestrator"
-depends_on = ["common", "episode_planner", "ingest", "match", "preflight", "review", "storymap", "tts", "visual_index"]
+depends_on = ["common", "episode_planner", "ingest", "match", "preflight", "review", "shots", "storymap", "tts", "visual_index"]
