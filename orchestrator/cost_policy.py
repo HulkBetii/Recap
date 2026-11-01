@@ -99,6 +99,7 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
             "backend": text_llm_backend,
             "cost": TEXT_LLM_COST[text_llm_backend],
             "llm_model": review.get("llm_model") if text_llm_backend == "ninerouter" else None,
+            "llm_fallback_model": review.get("llm_fallback_model") if text_llm_backend == "ninerouter" else None,
             "openai_fallback_model": review.get("openai_fallback_model"),
             "openai_fallback_configured": review_fallback_configured,
             "openai_fallback_allowed": review_fallback_configured and not review_fallback_blocked,

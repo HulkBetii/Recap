@@ -26,8 +26,10 @@ from series_composer.__main__ import composer_settings
 class FakeGatewayReviewClient:
     instances: list["FakeGatewayReviewClient"] = []
 
-    def __init__(self, *, model: str, base_url: str | None = None, timeout_s: int = 600) -> None:
+    def __init__(self, *, model: str, base_url: str | None = None, timeout_s: int = 600, max_concurrency: int = 1, fallback_models=None) -> None:
         self.model = model
+        self.max_concurrency = max_concurrency
+        self.fallback_models = list(fallback_models or [])
         self.base_url = base_url
         self.timeout_s = timeout_s
         self.prompts: list[str] = []

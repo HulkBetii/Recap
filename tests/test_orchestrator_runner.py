@@ -989,7 +989,6 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     ingest = build_command("ingest", paths, film, config, force=False)
     review = build_command("review", paths, film, config, force=False)
     tts = build_command("tts", paths, film, config, force=False)
-    visual = build_command("visual_index", paths, film, config, force=False)
     match = build_command("match", paths, film, config, force=False)
 
     assert ingest[ingest.index("--device") + 1] == "cuda"
@@ -1000,9 +999,12 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     assert tts[tts.index("--provider-mode") + 1] == "capcut"
     assert tts[tts.index("--voice-id") + 1] == "BV074_streaming"
     assert tts[tts.index("--concurrency") + 1] == "4"
-    assert visual[visual.index("--device") + 1] == "cuda"
+    assert config["visual_index"]["enabled"] is False
     assert "--exclude-end-credits" in match
-    assert match[match.index("--visual-mode") + 1] == "rerank"
+    assert match[match.index("--visual-mode") + 1] == "off"
+    assert "--visual-index" not in match
+    assert review[review.index("--llm-fallback-model") + 1] == "ag/claude-sonnet-4-6"
+    assert review[review.index("--llm-concurrency") + 1] == "3"
 
 
 def test_tts_auto_preflight_accepts_openai_as_only_available_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

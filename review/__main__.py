@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from typing import Any
 import logging
 import os
 from datetime import datetime, timezone
@@ -55,6 +56,7 @@ DEFAULT_MIN_COVERAGE = 0.85
 DEFAULT_MAX_QA_ITERATIONS = 3
 DEFAULT_PROFILE_DIR = CHATGPT_PLAYWRIGHT_PROFILE_DIR
 LENGTH_EXPAND_RATIO = 0.75
+DEFAULT_LLM_CONCURRENCY = 3
 LLM_BACKENDS = ("chatgpt_playwright", GATEWAY_BACKEND)
 
 
@@ -170,6 +172,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-backend", default="chatgpt_playwright", choices=list(LLM_BACKENDS))
     parser.add_argument("--llm-model", default=None, help=f"Gateway model id for llm_backend={GATEWAY_BACKEND}")
     parser.add_argument("--llm-base-url", default=None, help="Gateway base URL; defaults to NINEROUTER_URL or the local 9router")
+    parser.add_argument(
+        "--llm-fallback-model",
+        default=None,
+        help=f"Gateway model tried after repeated pool errors on --llm-model; only for llm_backend={GATEWAY_BACKEND}",
+    )
+    parser.add_argument(
+        "--llm-concurrency",
+        default=DEFAULT_LLM_CONCURRENCY,
+        type=int,
+        help=f"Upper bound on parallel beat rewrites for llm_backend={GATEWAY_BACKEND}; Playwright always uses 1",
+    )
     parser.add_argument("--openai-fallback-model", default=None, help="Optional OpenAI model used only after eligible Playwright retries are exhausted")
     parser.add_argument("--block-openai-fallback", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--force", action="store_true")
@@ -355,6 +368,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         anime_context=anime_context,
         episode_memory=episode_memory,
         content_type=args.content_type,
+        concurrency=rewrite_concurrency(args),
     )
     warnings.extend(length_warnings)
     style_qa_report: list[dict] = []
@@ -377,6 +391,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             anime_context=anime_context,
             episode_memory=episode_memory,
             content_type=args.content_type,
+            concurrency=rewrite_concurrency(args),
         )
         warnings.extend(readability_warnings)
     qa_report: list[dict] = []
@@ -414,12 +429,11 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         limited_issues = qa.issues[: qa_rewrite_cap(args.max_qa_rewrites_per_iteration, len(beats))]
         if len(qa.issues) > len(limited_issues):
             warnings.append(f"qa rewrite limited to {len(limited_issues)} of {len(qa.issues)} issue(s) in iteration {iteration}")
-        for issue in limited_issues:
-            if issue.beat_id >= len(beats):
-                continue
-            try:
-                revised = await regenerate_beat(
-                    client,
+        rewrite_issues = [issue for issue in limited_issues if issue.beat_id < len(beats)]
+        results = await regenerate_beats(
+            client,
+            [
+                dict(
                     beat=beats[issue.beat_id],
                     issue=f"{issue.type}: {issue.suggestion}",
                     glossary=outline_result.glossary,
@@ -429,8 +443,13 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                     episode_memory=episode_memory,
                     content_type=args.content_type,
                 )
-            except (PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError) as exc:
-                warning = f"qa rewrite skipped for beat {issue.beat_id} after LLM failure: {exc}"
+                for issue in rewrite_issues
+            ],
+            concurrency=rewrite_concurrency(args),
+        )
+        for issue, revised in zip(rewrite_issues, results):
+            if isinstance(revised, Exception):
+                warning = f"qa rewrite skipped for beat {issue.beat_id} after LLM failure: {revised}"
                 logger.warning(warning)
                 warnings.append(warning)
                 continue
@@ -631,6 +650,7 @@ async def ensure_style_readability(
     anime_context: AnimeContext | None,
     episode_memory: EpisodeMemory | None,
     content_type: str,
+    concurrency: int = 1,
 ) -> tuple[list[NarrationBeat], list[ReviewBeat], list[dict], int, list[str]]:
     if cache.has("narration_style_checked.json") and cache.has("style_qa.json"):
         logger.info("[2/4] Using cached narration_style_checked.json")
@@ -659,13 +679,17 @@ async def ensure_style_readability(
             return narration, beats, reports, len(rewritten), warnings + consistency_warnings
         logger.info("[2/4] Style readability QA iteration %d flagged %d issue(s)", iteration, len(qa.issues))
         narration_by_id = {item.beat_id: item for item in narration}
-        rewritten_this_round: set[int] = set()
+        round_issues: list = []
+        seen_beats: set[int] = set()
         for issue in qa.issues:
-            if issue.beat_id in rewritten_this_round or issue.beat_id >= len(beats):
+            if issue.beat_id in seen_beats or issue.beat_id >= len(beats):
                 continue
-            try:
-                revised = await regenerate_beat(
-                    client,
+            seen_beats.add(issue.beat_id)
+            round_issues.append(issue)
+        results = await regenerate_beats(
+            client,
+            [
+                dict(
                     beat=beats[issue.beat_id],
                     issue=issue_to_prompt(issue),
                     glossary=glossary,
@@ -675,14 +699,18 @@ async def ensure_style_readability(
                     episode_memory=episode_memory,
                     content_type=content_type,
                 )
-            except (PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError) as exc:
-                warning = f"style readability rewrite skipped for beat {issue.beat_id} after LLM failure: {exc}"
+                for issue in round_issues
+            ],
+            concurrency=concurrency,
+        )
+        for issue, revised in zip(round_issues, results):
+            if isinstance(revised, Exception):
+                warning = f"style readability rewrite skipped for beat {issue.beat_id} after LLM failure: {revised}"
                 logger.warning(warning)
                 consistency_warnings.append(warning)
                 continue
             narration_by_id[revised.beat_id] = revised
             rewritten.add(revised.beat_id)
-            rewritten_this_round.add(revised.beat_id)
             cache.write_json(f"style_revisions/{revised.beat_id}.json", revised)
         narration = [narration_by_id[index] for index in sorted(narration_by_id)]
         narration, round_consistency_warnings = apply_narration_consistency(narration, glossary)
@@ -705,6 +733,7 @@ async def ensure_narration_length(
     anime_context: AnimeContext | None,
     episode_memory: EpisodeMemory | None,
     content_type: str,
+    concurrency: int = 1,
 ) -> tuple[list[NarrationBeat], list[ReviewBeat], int, list[str]]:
     """Expand beats written well below their character target once.
 
@@ -725,26 +754,30 @@ async def ensure_narration_length(
     narration_by_id = {item.beat_id: item for item in narration}
     warnings: list[str] = []
     expanded = 0
-    for item in short:
-        target = char_targets[item.beat_id]
-        try:
-            revised = await regenerate_beat(
-                client,
+    results = await regenerate_beats(
+        client,
+        [
+            dict(
                 beat=beats[item.beat_id],
                 issue=(
-                    f"length: the narration has {len(item.narration)} characters but should be about {target}. "
+                    f"length: the narration has {len(item.narration)} characters but should be about {char_targets[item.beat_id]}. "
                     "Expand it with concrete events, character names and cause/effect from this beat's span; "
                     "no filler, no repeated sentences, no quoted dialogue."
                 ),
                 glossary=glossary,
-                char_target=target,
+                char_target=char_targets[item.beat_id],
                 style_sample=style_guide,
                 anime_context=anime_context,
                 episode_memory=episode_memory,
                 content_type=content_type,
             )
-        except (PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError) as exc:
-            warning = f"length expansion skipped for beat {item.beat_id}: {exc}"
+            for item in short
+        ],
+        concurrency=concurrency,
+    )
+    for item, revised in zip(short, results):
+        if isinstance(revised, Exception):
+            warning = f"length expansion skipped for beat {item.beat_id}: {revised}"
             logger.warning(warning)
             warnings.append(warning)
             continue
@@ -757,6 +790,38 @@ async def ensure_narration_length(
     cache.write_json("narration_length_checked.json", narration)
     cache.write_json("length_qa.json", {"n_short": len(short), "n_expanded": expanded, "warnings": warnings})
     return narration, derive_review_beats(outline=outline, narration=narration, film_map=film_map), expanded, warnings
+
+
+def rewrite_concurrency(args: argparse.Namespace) -> int:
+    """Parallel rewrites are only safe on the stateless gateway; one browser page serializes."""
+    if getattr(args, "llm_backend", "chatgpt_playwright") != GATEWAY_BACKEND:
+        return 1
+    return max(1, int(getattr(args, "llm_concurrency", DEFAULT_LLM_CONCURRENCY) or 1))
+
+
+async def regenerate_beats(
+    client,
+    jobs: list[dict[str, Any]],
+    *,
+    concurrency: int,
+) -> list[NarrationBeat | Exception]:
+    """Run regenerate_beat for each job, bounded by concurrency; results keep the jobs' order.
+
+    Each job is the keyword arguments of regenerate_beat. LLM/validation failures come back as the
+    exception for that slot so callers can skip one beat without losing the others.
+    """
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def run(job: dict[str, Any]) -> NarrationBeat | Exception:
+        async with semaphore:
+            try:
+                return await regenerate_beat(client, **job)
+            except (PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError) as exc:
+                return exc
+
+    if concurrency <= 1:
+        return [await run(job) for job in jobs]
+    return list(await asyncio.gather(*(run(job) for job in jobs)))
 
 
 def qa_rewrite_cap(configured: int, n_beats: int) -> int:
@@ -821,6 +886,8 @@ async def run_review(args: argparse.Namespace) -> int:
             model=args.llm_model,
             base_url=args.llm_base_url,
             timeout_s=args.reply_timeout_s or 600,
+            max_concurrency=max(1, int(getattr(args, "llm_concurrency", DEFAULT_LLM_CONCURRENCY) or 1)),
+            fallback_models=[args.llm_fallback_model] if getattr(args, "llm_fallback_model", None) else None,
         ) as gateway_client:
             try:
                 await build_review_with_client(args, gateway_client)

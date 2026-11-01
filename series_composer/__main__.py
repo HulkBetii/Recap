@@ -69,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-backend", choices=["chatgpt_playwright", GATEWAY_BACKEND, "deterministic"], default="chatgpt_playwright")
     parser.add_argument("--llm-model", default=None, help=f"Gateway model id for llm_backend={GATEWAY_BACKEND}")
     parser.add_argument("--llm-base-url", default=None, help="Gateway base URL; defaults to NINEROUTER_URL or the local 9router")
+    parser.add_argument("--llm-fallback-model", default=None, help=f"Gateway model tried after repeated pool errors; only for llm_backend={GATEWAY_BACKEND}")
     parser.add_argument("--chatgpt-profile-dir", type=Path, default=CHATGPT_PLAYWRIGHT_PROFILE_DIR)
     parser.add_argument("--reply-timeout-s", default=600, type=int)
     parser.add_argument("--playwright-max-attempts", default=2, type=int)
@@ -242,6 +243,8 @@ async def run_composer_async(args: argparse.Namespace) -> int:
                     model=getattr(args, "llm_model", None) or DEFAULT_GATEWAY_MODEL,
                     base_url=getattr(args, "llm_base_url", None),
                     timeout_s=args.reply_timeout_s,
+                    max_concurrency=getattr(args, "concurrency", 1),
+                    fallback_models=[args.llm_fallback_model] if getattr(args, "llm_fallback_model", None) else None,
                 ) as client:
                     beats, meta = await compose_with_client(
                         client,

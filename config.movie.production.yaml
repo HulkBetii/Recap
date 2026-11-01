@@ -25,13 +25,16 @@ ingest:
   max_vision_frames: 200
   max_visual_gap_s: 20
   translate_model: ag/gemini-3.8-flash-high
+  translate_fallback_model: ag/claude-sonnet-4-6
   translation_provider: ninerouter
-  translation_concurrency: 2
+  # Upper bound; the gateway client starts at 2 and ramps up while requests succeed, halving on 429/quarantine.
+  translation_concurrency: 4
   source_language: ko
   translate_mode: ko-en
   vision_model: ag/gemini-3.8-flash-high
+  vision_fallback_model: ag/claude-sonnet-4-6
   vision_provider: ninerouter
-  vision_concurrency: 3
+  vision_concurrency: 6  # cap; adaptive, see translation_concurrency
   device: cuda
   asr_policy: preset
   asr_provider: faster-whisper
@@ -60,11 +63,15 @@ storymap:
 review:
   llm_backend: ninerouter
   llm_model: ag/gemini-3.8-flash-high
+  # Tried after two pool errors (429/quarantine/upstream) on the primary model; probed OK on 2026-11-01.
+  llm_fallback_model: ag/claude-sonnet-4-6
+  llm_concurrency: 3  # parallel beat rewrites through the gateway (cap)
   content_type: movie
   hook_mode: setup
   target_ratio: auto
-  # Measured speed of the CapCut voice below (BV074 20.56, BV421 20.31, BV562 19.72, vi_female_huong 15.85).
-  tts_cps: 20.5
+  # CapCut BV074 measured 21.7 chars/s on a full film (1,767 s for 38,389 chars); 20.0 leaves ~8% for short beats
+  # so the recap lands at 95-100% of target. Other voices: BV421 20.31, BV562 19.72, vi_female_huong 15.85.
+  tts_cps: 20.0
   min_coverage: 0.85
   max_qa_iterations: 3
   max_qa_rewrites_per_iteration: 6
@@ -132,7 +139,9 @@ shots:
   log_level: INFO
 
 visual_index:
-  enabled: true
+  # Off since the 2026-11 review: SigLIP rerank moved the final shot score by a median 2% (R5-5)
+  # for ~4 GPU minutes per film. config.movie.visual.yaml keeps it on for experiments.
+  enabled: false
   embedding_mode: siglip2
   embedding_model: google/siglip2-base-patch16-384
   device: cuda
@@ -169,7 +178,7 @@ match:
   w_bright: 0.12
   w_reuse: 0.35
   w_semantic: 0.15
-  w_visual: 0.15
+  w_visual: 0.0
   min_semantic_score: 0.22
   match_strategy: chronological
   chronology_weight: 0.70
@@ -179,8 +188,8 @@ match:
   semantic_device: cuda
   semantic_batch_size: 16
   semantic_cache_dir: null
-  visual_mode: rerank
-  visual_index: auto
+  visual_mode: "off"
+  visual_index: null  # no shot_visual_index.json is produced when visual_index.enabled is false
   visual_cache_dir: null
   visual_device: cuda
   visual_batch_size: 32

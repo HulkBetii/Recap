@@ -32,6 +32,7 @@ class GatewayVisionClient:
         concurrency: int = 3,
         timeout_s: int = 180,
         chat_client_factory: Callable[[], Any] | None = None,
+        fallback_models: list[str] | None = None,
     ) -> None:
         if concurrency < 1:
             raise ValueError("vision concurrency must be at least 1")
@@ -45,6 +46,8 @@ class GatewayVisionClient:
                 timeout_s=timeout_s,
                 max_attempts=VISION_MAX_ATTEMPTS,
                 system_prompt=VISION_SYSTEM_PROMPT,
+                max_concurrency=concurrency,
+                fallback_models=fallback_models,
             )
         )
 

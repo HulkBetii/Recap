@@ -82,6 +82,9 @@ review:
   reply_timeout_s: 600
   llm_backend: ninerouter
   llm_model: ag/gemini-3.8-flash-high
+  # Tried after two pool errors (429/quarantine/upstream) on the primary model; probed OK on 2026-11-01.
+  llm_fallback_model: ag/claude-sonnet-4-6
+  llm_concurrency: 3  # parallel beat rewrites through the gateway (cap)
   playwright_max_attempts: 2
   playwright_recovery_timeout_s: 60
   openai_fallback_model: null
@@ -189,6 +192,7 @@ render:
 series_recap:
   llm_backend: ninerouter
   llm_model: ag/gemini-3.8-flash-high
+  llm_fallback_model: ag/claude-sonnet-4-6
   scope: end_to_end
   format: episode_arc_chaptered
   detail_level: detailed

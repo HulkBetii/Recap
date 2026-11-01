@@ -37,3 +37,19 @@ Phim benchmark: `Quý Ông Số Đỏ` (7.406 s, 1920x804, 25 fps, phụ đề c
 - Recap đạt 92% mục tiêu (lần có cache đạt 95%); CapCut đọc nhanh hơn `tts_cps=20.5` một chút.
 - R8-1/R8-2 (season) mới kiểm bằng test giả.
 - Phụ đề cứng chiếm 45% khung hình của nguồn này; là lỗi nguồn, không phải pipeline.
+
+## Đợt bổ sung 2026-11-01: concurrency thích ứng, fallback model, cắt visual index
+
+Chạy lại từ đầu, không cache (`runs/bench-qods-final2`), cùng máy và preset production đã sửa.
+
+| Chỉ số | Sau R1–R8 | Sau đợt bổ sung |
+|---|---|---|
+| Tổng thời gian | 54,0 phút | **48,8 phút** |
+| ingest | 30,1 phút (ASR 14, dịch 8, vision 8) | 25,5 phút (ASR 14, dịch 7, vision 5) |
+| review | 15,1 phút | 14,1 phút (QA pass ngay vòng 1, không có rewrite để chạy song song) |
+| visual_index | 4,2 phút GPU (ngoài đường găng) | tắt |
+| Độ dài recap / mục tiêu | 92% | **96,4%** |
+| Throttle / đổi model | — | 0 / 0 (trần chưa chạm giới hạn của pool) |
+| VRAM đỉnh | 9,5 GB | 8,3 GB |
+
+Mục tiêu ≤ 45 phút chưa đạt. Phần còn lại trên đường găng là ASR + WhisperX (14 phút, local) và chuỗi outline → narration batch tuần tự trong review (~10 phút); muốn nhanh hơn nữa phải đụng tới hai chỗ này, với đánh đổi về độ chính xác timestamp (ASR batch) hoặc mạch kể (narration song song).

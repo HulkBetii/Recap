@@ -518,6 +518,7 @@ def composer_command(
         "llm_backend",
         "llm_model",
         "llm_base_url",
+        "llm_fallback_model",
         "tts_cps",
         "target_total_min_s",
         "target_total_max_s",
@@ -1302,6 +1303,7 @@ def run_series_recap(
                     purpose="series composer",
                     model=composer_section.get("llm_model") or DEFAULT_GATEWAY_MODEL,
                     base_url=composer_section.get("llm_base_url"),
+                    fallback_model=composer_section.get("llm_fallback_model"),
                 )
             except OrchestratorError as exc:
                 raise SeriesRecapError(str(exc)) from exc

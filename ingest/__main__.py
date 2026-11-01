@@ -113,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--translation-batch-max-attempts", default=2, type=int)
     parser.add_argument("--translation-concurrency", default=1, type=int, help=f"Parallel translation batches; only {GATEWAY_BACKEND} allows more than 1")
     parser.add_argument("--translation-base-url", default=None, help=f"Gateway base URL for translation_provider={GATEWAY_BACKEND}")
+    parser.add_argument("--translate-fallback-model", default=None, help=f"Gateway model tried after repeated pool errors; only for translation_provider={GATEWAY_BACKEND}")
     parser.add_argument("--translation-chatgpt-profile-dir", default=CHATGPT_PLAYWRIGHT_PROFILE_DIR, type=Path)
     parser.add_argument("--translation-chatgpt-session-file", default=None, type=Path)
     parser.add_argument("--translation-reply-timeout-s", default=600, type=int)
@@ -135,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--vision-concurrency", default=3, type=int, help=f"Parallel frames for vision_provider={GATEWAY_BACKEND}")
     parser.add_argument("--vision-base-url", default=None, help=f"Gateway base URL for vision_provider={GATEWAY_BACKEND}")
+    parser.add_argument("--vision-fallback-model", default=None, help=f"Gateway model tried after repeated pool errors; only for vision_provider={GATEWAY_BACKEND}")
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda", "auto"])
     parser.add_argument("--asr-provider", default="faster-whisper", choices=["faster-whisper", "openai-gpt4o", "openai-gpt4o-hybrid", "manual"])
     parser.add_argument("--aligner", default="none", choices=["none", "whisperx", "qwen3"])
@@ -372,7 +374,12 @@ def build_vision_client(
             logger.warning("local vision unavailable; continuing without visual gap descriptions: %s", exc)
             return None
     if args.vision_provider == GATEWAY_BACKEND:
-        return GatewayVisionClient(model=args.vision_model, base_url=args.vision_base_url, concurrency=args.vision_concurrency)
+        return GatewayVisionClient(
+            model=args.vision_model,
+            base_url=args.vision_base_url,
+            concurrency=args.vision_concurrency,
+            fallback_models=[args.vision_fallback_model] if getattr(args, "vision_fallback_model", None) else None,
+        )
     expected = ", ".join(sorted(VISION_PROVIDERS))
     raise IngestError(f"--vision-provider must be one of: {expected}")
 
@@ -467,6 +474,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         "translation_batch_size": 80,
         "translation_batch_max_attempts": 2,
         "translation_concurrency": 1,
+        "translate_fallback_model": None,
         "translation_base_url": None,
         "translation_chatgpt_profile_dir": CHATGPT_PLAYWRIGHT_PROFILE_DIR,
         "translation_chatgpt_session_file": None,
@@ -480,6 +488,7 @@ def run_ingest(args: argparse.Namespace) -> int:
         "vision_resize_long_edge": 768,
         "vision_batch_size": 1,
         "vision_concurrency": 3,
+        "vision_fallback_model": None,
         "vision_base_url": None,
         "asr_batch_size": 0,
     }.items():
@@ -595,6 +604,8 @@ def run_ingest(args: argparse.Namespace) -> int:
                 model=translation_model_identity(args),
                 base_url=args.translation_base_url,
                 timeout_s=args.translation_reply_timeout_s,
+                max_concurrency=args.translation_concurrency,
+                fallback_models=[args.translate_fallback_model] if getattr(args, "translate_fallback_model", None) else None,
             ),
         )
     logger.info("[0/6] Probing input video")

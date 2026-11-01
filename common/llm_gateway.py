@@ -43,6 +43,73 @@ RESET_AFTER = re.compile(r"reset after (\d+(?:\.\d+)?)s", re.IGNORECASE)
 PROBE_PROMPT = 'Return {"ok": true} exactly.'
 PROBE_ATTEMPTS = 3
 PROBE_MAX_WAIT_S = 20.0
+# Errors that mean the gateway's account pool is saturated right now, so parallel requests only
+# make it worse: the adaptive limiter halves its window on them.
+THROTTLE_CODES = frozenset({"rate_limited", "quarantined", "upstream_rejected"})
+# Errors after which a configured fallback model is worth trying instead of waiting on the primary.
+FALLBACK_CODES = THROTTLE_CODES | {"upstream_error"}
+FALLBACK_AFTER_FAILURES = 2
+LIMITER_START = 2
+LIMITER_RAMP_SUCCESSES = 8
+LIMITER_HOLD_S = 60.0
+
+
+class AdaptiveLimiter:
+    """Bound in-flight gateway requests: ramp up while responses succeed, halve on throttling.
+
+    The window starts at ``min(LIMITER_START, max_concurrency)``, grows by one after every
+    ``LIMITER_RAMP_SUCCESSES`` consecutive successes up to ``max_concurrency``, and halves (never
+    below 1) on a throttle error, holding that level for ``LIMITER_HOLD_S`` before it may grow again.
+    """
+
+    def __init__(self, max_concurrency: int, *, clock: Callable[[], float] = time.monotonic) -> None:
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be at least 1")
+        self.max_concurrency = max_concurrency
+        self.limit = min(LIMITER_START, max_concurrency)
+        self.in_flight = 0
+        self.peak_concurrency = 0
+        self.throttle_events = 0
+        self._successes = 0
+        self._held_until = 0.0
+        self._clock = clock
+        self._condition: asyncio.Condition | None = None
+
+    def _cond(self) -> asyncio.Condition:
+        if self._condition is None:
+            self._condition = asyncio.Condition()
+        return self._condition
+
+    async def acquire(self) -> None:
+        async with self._cond():
+            await self._cond().wait_for(lambda: self.in_flight < self.limit)
+            self.in_flight += 1
+            self.peak_concurrency = max(self.peak_concurrency, self.in_flight)
+
+    async def release(self) -> None:
+        async with self._cond():
+            self.in_flight = max(0, self.in_flight - 1)
+            self._cond().notify_all()
+
+    def record_success(self) -> None:
+        self._successes += 1
+        if self._successes >= LIMITER_RAMP_SUCCESSES and self.limit < self.max_concurrency and self._clock() >= self._held_until:
+            self.limit += 1
+            self._successes = 0
+
+    def record_throttle(self) -> None:
+        self.throttle_events += 1
+        self._successes = 0
+        self.limit = max(1, self.limit // 2)
+        self._held_until = self._clock() + LIMITER_HOLD_S
+
+    def summary(self) -> dict[str, int]:
+        return {
+            "max_concurrency": self.max_concurrency,
+            "current_concurrency": self.limit,
+            "peak_concurrency": self.peak_concurrency,
+            "throttle_events": self.throttle_events,
+        }
 
 
 class GatewayChatError(RuntimeError):
@@ -227,6 +294,9 @@ class GatewayChatClient:
         system_prompt: str = JSON_ONLY_SYSTEM_PROMPT,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        max_concurrency: int = 1,
+        fallback_models: list[str] | tuple[str, ...] | None = None,
+        limiter: AdaptiveLimiter | None = None,
     ) -> None:
         if not model.strip():
             raise GatewayChatError("LLM gateway model must not be empty", code="config_error", retryable=False)
@@ -234,7 +304,12 @@ class GatewayChatClient:
             raise GatewayChatError("LLM gateway max_attempts must be at least 1", code="config_error", retryable=False)
         if timeout_s <= 0:
             raise GatewayChatError("LLM gateway timeout_s must be positive", code="config_error", retryable=False)
+        if max_concurrency < 1:
+            raise GatewayChatError("LLM gateway max_concurrency must be at least 1", code="config_error", retryable=False)
         self.model = model.strip()
+        self.fallback_models = [item.strip() for item in (fallback_models or []) if item and item.strip() and item.strip() != self.model]
+        self.limiter = limiter or AdaptiveLimiter(max_concurrency)
+        self.fallback_switches = 0
         self.base_url = resolve_gateway_base_url(base_url)
         self.api_key = api_key if api_key is not None else resolve_gateway_api_key()
         self.timeout_s = timeout_s
@@ -281,6 +356,17 @@ class GatewayChatClient:
         url = chat_completions_url(self.base_url)
         self.last_attempt_count = 0
         self.last_error_code = None
+        await self.limiter.acquire()
+        try:
+            return await self._ask_with_retries(url, payload)
+        finally:
+            await self.limiter.release()
+
+    async def _ask_with_retries(self, url: str, payload: dict[str, Any]) -> str:
+        assert self._client is not None
+        models = [self.model, *self.fallback_models]
+        model_index = 0
+        failures_on_model = 0
         for attempt in range(1, self.max_attempts + 1):
             self.last_attempt_count = attempt
             retry_after_s: float | None = None
@@ -303,12 +389,13 @@ class GatewayChatClient:
                             self.request_count += 1
                             self.input_tokens += completion.input_tokens
                             self.output_tokens += completion.output_tokens
-                            served = completion.served_model or self.model
+                            served = completion.served_model or models[model_index]
                             self.served_models[served] = self.served_models.get(served, 0) + 1
+                            self.limiter.record_success()
                             self.logger.info(
                                 "LLM gateway request %d completed with model=%s served_by=%s input_tokens=%d output_tokens=%d",
                                 self.request_count,
-                                self.model,
+                                models[model_index],
                                 served,
                                 completion.input_tokens,
                                 completion.output_tokens,
@@ -319,9 +406,23 @@ class GatewayChatClient:
                     error = classify_http_error(response.status_code, response.text)
                     retry_after_s = retry_after_seconds(response.headers.get("retry-after"), response.text)
             self.last_error_code = error.code
+            if error.code in THROTTLE_CODES:
+                self.limiter.record_throttle()
             if not error.retryable or attempt >= self.max_attempts:
                 raise GatewayChatError(str(error), code=error.code, retryable=error.retryable, attempts=attempt) from error
             delay = _retry_delay(error, attempt, retry_after_s)
+            if error.code in FALLBACK_CODES:
+                failures_on_model += 1
+                if failures_on_model >= FALLBACK_AFTER_FAILURES and model_index + 1 < len(models):
+                    # The primary keeps failing on pool capacity; a different model usually maps to
+                    # other accounts, so switch instead of sleeping out the primary's reset window.
+                    previous = models[model_index]
+                    model_index += 1
+                    failures_on_model = 0
+                    payload["model"] = models[model_index]
+                    self.fallback_switches += 1
+                    delay = min(delay, BACKOFF_BASE_S)
+                    self.logger.warning("LLM gateway switched model %s -> %s after repeated %s", previous, models[model_index], error.code)
             self.logger.warning(
                 "LLM gateway attempt %d/%d failed (%s); retrying in %.0fs: %s",
                 attempt,
@@ -342,6 +443,9 @@ class GatewayChatClient:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "served_models": dict(self.served_models),
+            "fallback_models": list(self.fallback_models),
+            "fallback_switches": self.fallback_switches,
+            **self.limiter.summary(),
         }
 
 

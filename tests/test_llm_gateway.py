@@ -8,7 +8,9 @@ import httpx
 import pytest
 
 from common.llm_gateway import (
+    LIMITER_RAMP_SUCCESSES,
     QUARANTINE_WAIT_S,
+    AdaptiveLimiter,
     GatewayChatClient,
     GatewayChatError,
     check_gateway_health,
@@ -83,6 +85,12 @@ def test_ask_posts_openai_payload_and_tracks_usage() -> None:
         "input_tokens": 10,
         "output_tokens": 5,
         "served_models": {"ag/test-model": 1},
+        "fallback_models": [],
+        "fallback_switches": 0,
+        "max_concurrency": 1,
+        "current_concurrency": 1,
+        "peak_concurrency": 1,
+        "throttle_events": 0,
     }
 
 
@@ -254,3 +262,97 @@ def test_health_reports_unreachable_gateway() -> None:
     health = check_gateway_health(model="ag/a", base_url="http://gateway.test/v1", transport=httpx.MockTransport(refuse))
     assert health.reachable is False
     assert "not reachable" in (health.reason or "")
+
+
+def test_fallback_model_takes_over_after_two_pool_failures() -> None:
+    result, client, recorder, sleeps = _run(
+        {"fallback_models": ["heavy"]},
+        [
+            httpx.Response(429, text="slow down"),
+            httpx.Response(503, text="account quarantined"),
+            httpx.Response(200, json=_completion("ok")),
+        ],
+    )
+    assert result == "ok"
+    assert [json.loads(r.content)["model"] for r in recorder.requests] == ["ag/test-model", "ag/test-model", "heavy"]
+    # Switching skips the primary's long quarantine wait.
+    assert sleeps == [2.0, 2.0]
+    summary = client.usage_summary()
+    assert summary["fallback_switches"] == 1
+    assert summary["served_models"] == {"heavy": 1}
+    assert summary["throttle_events"] == 2
+
+
+def test_fallback_is_not_used_for_non_pool_errors() -> None:
+    with pytest.raises(GatewayChatError) as info:
+        _run(
+            {"fallback_models": ["heavy"], "max_attempts": 3},
+            [httpx.Response(502, text="response_too_large")],
+        )
+    assert info.value.code == "response_too_large"
+    _result, client, recorder, _sleeps = _run(
+        {"fallback_models": ["heavy"], "max_attempts": 4},
+        [
+            httpx.Response(200, text="not json"),
+            httpx.Response(200, text="still not json"),
+            httpx.Response(200, text="nope"),
+            httpx.Response(200, json=_completion("ok")),
+        ],
+    )
+    assert {json.loads(r.content)["model"] for r in recorder.requests} == {"ag/test-model"}
+    assert client.fallback_switches == 0
+
+
+def test_adaptive_limiter_ramps_up_and_halves_on_throttle() -> None:
+    now = [0.0]
+    limiter = AdaptiveLimiter(6, clock=lambda: now[0])
+    assert limiter.limit == 2
+    for _ in range(LIMITER_RAMP_SUCCESSES):
+        limiter.record_success()
+    assert limiter.limit == 3
+    for _ in range(3 * LIMITER_RAMP_SUCCESSES):
+        limiter.record_success()
+    assert limiter.limit == 6
+    limiter.record_throttle()
+    assert limiter.limit == 3
+    for _ in range(LIMITER_RAMP_SUCCESSES):
+        limiter.record_success()
+    assert limiter.limit == 3, "window is held after a throttle"
+    now[0] = 61.0
+    for _ in range(LIMITER_RAMP_SUCCESSES):
+        limiter.record_success()
+    assert limiter.limit == 4
+    limiter.record_throttle()
+    limiter.record_throttle()
+    limiter.record_throttle()
+    assert limiter.limit == 1
+    assert limiter.throttle_events == 4
+
+
+def test_limiter_bounds_in_flight_requests() -> None:
+    in_flight = 0
+    peak = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return httpx.Response(200, json=_completion("ok"))
+
+    async def scenario() -> GatewayChatClient:
+        client = GatewayChatClient(
+            model="ag/test-model",
+            base_url="http://gateway.test/v1",
+            api_key="k",
+            transport=httpx.MockTransport(handler),
+            max_concurrency=2,
+        )
+        async with client:
+            await asyncio.gather(*(client.ask(f"p{i}") for i in range(6)))
+        return client
+
+    client = asyncio.run(scenario())
+    assert peak == 2
+    assert client.usage_summary()["peak_concurrency"] == 2

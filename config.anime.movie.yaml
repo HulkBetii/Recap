@@ -30,8 +30,9 @@ ingest:
   source_language: ja
   translate_mode: ja-en
   vision_model: ag/gemini-3.8-flash-high
+  vision_fallback_model: ag/claude-sonnet-4-6
   vision_provider: ninerouter
-  vision_concurrency: 3
+  vision_concurrency: 6  # cap; adaptive, see translation_concurrency
   device: cpu
   asr_policy: preset
   asr_provider: faster-whisper
@@ -79,6 +80,9 @@ review:
   reply_timeout_s: 600
   llm_backend: ninerouter
   llm_model: ag/gemini-3.8-flash-high
+  # Tried after two pool errors (429/quarantine/upstream) on the primary model; probed OK on 2026-11-01.
+  llm_fallback_model: ag/claude-sonnet-4-6
+  llm_concurrency: 3  # parallel beat rewrites through the gateway (cap)
   playwright_max_attempts: 2
   playwright_recovery_timeout_s: 60
   openai_fallback_model: null

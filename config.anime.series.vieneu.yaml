@@ -32,8 +32,10 @@ ingest:
   max_vision_frames: 0
   max_visual_gap_s: 20
   translate_model: ag/gemini-3.8-flash-high
+  translate_fallback_model: ag/claude-sonnet-4-6
   translation_provider: ninerouter
-  translation_concurrency: 2
+  # Upper bound; the gateway client starts at 2 and ramps up while requests succeed, halving on 429/quarantine.
+  translation_concurrency: 4
   translation_batch_size: 80
   translation_batch_max_attempts: 2
   translation_chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
@@ -92,6 +94,9 @@ review:
   reply_timeout_s: 600
   llm_backend: ninerouter
   llm_model: ag/gemini-3.8-flash-high
+  # Tried after two pool errors (429/quarantine/upstream) on the primary model; probed OK on 2026-11-01.
+  llm_fallback_model: ag/claude-sonnet-4-6
+  llm_concurrency: 3  # parallel beat rewrites through the gateway (cap)
   playwright_max_attempts: 2
   playwright_recovery_timeout_s: 60
   openai_fallback_model: null
@@ -208,6 +213,7 @@ series_recap:
   detail_level: detailed
   llm_backend: ninerouter
   llm_model: ag/gemini-3.8-flash-high
+  llm_fallback_model: ag/claude-sonnet-4-6
   tts_cps: 17.0
   target_total_min_s: 2100
   target_total_max_s: 2700

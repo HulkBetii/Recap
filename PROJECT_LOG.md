@@ -1,5 +1,13 @@
 # PROJECT_LOG.md
 
+## 2026-11-01 - Gateway concurrency, fallback model, production trims
+
+- Added `AdaptiveLimiter` to `GatewayChatClient`: in-flight requests start at 2, ramp by one after eight consecutive successes up to the configured cap, and halve on 429/quarantine/upstream rejection with a 60 s hold. Translation, vision, review rewrites (QA/style/length now run through `regenerate_beats` with `review.llm_concurrency`) and the series composer share this limiter; the `*_concurrency` settings are caps. Playwright stays at one request.
+- Added in-gateway fallback models (`llm_fallback_model`, `translate_fallback_model`, `vision_fallback_model`): after two pool errors on the primary the client switches model for the remaining attempts; non-retryable errors never switch. Presets use `ag/claude-sonnet-4-6` (probed). Preflight probes the fallback and warns instead of blocking. No automatic fallback to Playwright or OpenAI was added.
+- Production preset: translation cap 2 -> 4, vision cap 3 -> 6, `review.tts_cps` 20.5 -> 20.0, Visual Index off (`visual_index.enabled=false`, `match.visual_mode=off`, `w_visual=0`); `config.movie.visual.yaml` keeps it for experiments. The runner treats `match.visual_index: off/false/null` as "no index".
+- From-scratch benchmark (`runs/bench-qods-final2`): 48.8 minutes versus 54.0 before this change and ~75 at baseline. Ingest 25.5 min (translation 7, vision 5), review 14.1, TTS 3.1, match 1.2, render 4.0. Recap 1,856.5 s = 96.4% of target (92% before), QA passed on the first pass, zero throttle events and zero model switches, 0 placements in the ad window, sync QA clean. The <= 45 minute goal was not reached: ASR (14 min) and the sequential outline/narration prompts are now the bulk of the critical path.
+- Deleted the superseded benchmark runs `bench-qods-baseline`, `bench-qods-900s` and `bench-qods-900s-r2` (~3.2 GB). Validation: 800 Python tests, Ruff, Tach, secret scan.
+
 ## 2026-11-01 - Pipeline review R1-R8 (quality and speed)
 
 - Reviewed the whole pipeline in eight segments on the benchmark film `Quý Ông Số Đỏ` (7,406 s, 1920x804, 25 fps, burned-in subtitles); reports with before/after measurements are in `docs/pipeline-review/`.
