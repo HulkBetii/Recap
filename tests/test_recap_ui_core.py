@@ -340,6 +340,22 @@ def test_series_delivery_qa_accepts_actual_duration_over_hard_cap(tmp_path: Path
     assert "overage is accepted" in hard_cap.message
 
 
+def test_delivery_qa_render_format_follows_render_meta_fps(tmp_path: Path) -> None:
+    run, fake_probe = _series_delivery_fixture(tmp_path, duration=2200.0)
+    final = run / "series_recap"
+    meta = json.loads((final / "render.meta.json").read_text(encoding="utf-8"))
+    _write_json(final / "render.meta.json", {**meta, "fps": 25.0})
+
+    def probe_25(path: Path) -> dict[str, float | int]:
+        return {**fake_probe(path), "fps": 25.0} if path.suffix == ".mp4" else fake_probe(path)
+
+    passed = build_delivery_qa(run, JobKind.SERIES, media_probe=probe_25)
+    blocked = build_delivery_qa(run, JobKind.SERIES, media_probe=fake_probe)
+
+    assert next(check for check in passed.checks if check.code == "render_format").status == DeliveryStatus.PASS
+    assert next(check for check in blocked.checks if check.code == "render_format").status == DeliveryStatus.BLOCK
+
+
 def test_series_delivery_qa_blocks_actual_duration_below_minimum(tmp_path: Path) -> None:
     run, fake_probe = _series_delivery_fixture(tmp_path, duration=2000.0)
 

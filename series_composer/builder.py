@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -74,6 +75,9 @@ NON_STORY_EVENT_TYPES = {
 DETERMINISTIC_FALLBACK_CHAR_SCALE = 0.86
 PLACEHOLDER_EVENT_ID_MARKERS = ("...", "…")
 MAX_FINAL_STITCH_PROMPT_CHARS = 20_000
+# When the full stitch does not fit, each arc seam is smoothed on its own: the last beat of one arc and
+# the first beat of the next are rewritten with one read-only neighbour on each side as context.
+BOUNDARY_STITCH_LENGTH_RANGE = (0.7, 1.3)
 
 @dataclass(frozen=True)
 class SeasonTargetSettings:
@@ -1578,6 +1582,130 @@ ARC_DRAFTS:
 {revision_block}
 """.strip()
 
+def arc_seam_positions(arc_drafts: list[list[SeriesReviewBeat]]) -> list[int]:
+    """Index, in the combined script, of the first beat of every arc after the first."""
+    positions: list[int] = []
+    cursor = 0
+    for arc_beats in arc_drafts[:-1]:
+        cursor += len(arc_beats)
+        positions.append(cursor)
+    return positions
+
+
+def plan_seam_rewrites(arc_drafts: list[list[SeriesReviewBeat]], total_beats: int) -> list[list[int]]:
+    """Beats to rewrite per seam; the hook and beats already claimed by an earlier seam stay fixed."""
+    claimed: set[int] = set()
+    plans: list[list[int]] = []
+    for position in arc_seam_positions(arc_drafts):
+        rewrite = [index for index in (position - 1, position) if 0 < index < total_beats and index not in claimed]
+        claimed.update(rewrite)
+        plans.append(rewrite)
+    return plans
+
+
+def build_boundary_stitch_prompt(
+    *,
+    before: SeriesReviewBeat | None,
+    rewrite: list[SeriesReviewBeat],
+    after: SeriesReviewBeat | None,
+) -> str:
+    return f"""
+You are smoothing the seam between two consecutive parts of one Vietnamese anime season recap.
+Return ONLY JSON with key "beats": [{{"narration": string}}] containing exactly {len(rewrite)} items, in order.
+
+Rules:
+- Rewrite only the narration of REWRITE_BEATS so the story flows across the seam as one continuous narration.
+- Keep the same events and facts in each beat; do not move content between beats, add events, or add spoilers.
+- Remove repetition with the read-only context, and add a short natural transition where the topic shifts.
+- Keep each beat within 30% of its current length.
+- Write pure Vietnamese with proper diacritics. No verbatim dialogue or lyrics.
+
+CONTEXT_BEFORE (read-only):
+{json.dumps(before.narration if before is not None else None, ensure_ascii=False)}
+
+REWRITE_BEATS:
+{json.dumps([beat.narration for beat in rewrite], ensure_ascii=False)}
+
+CONTEXT_AFTER (read-only):
+{json.dumps(after.narration if after is not None else None, ensure_ascii=False)}
+""".strip()
+
+
+def parse_boundary_stitch(payload: object, rewrite: list[SeriesReviewBeat]) -> list[str]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("beats"), list):
+        raise ValueError("boundary stitch response must be an object with beats[]")
+    items = payload["beats"]
+    if len(items) != len(rewrite):
+        raise ValueError(f"boundary stitch returned {len(items)} beats, expected {len(rewrite)}")
+    narrations: list[str] = []
+    for item, original in zip(items, rewrite):
+        narration = str(item.get("narration", "") if isinstance(item, dict) else "").strip()
+        ratio = len(narration) / max(1, len(original.narration))
+        if not narration or not BOUNDARY_STITCH_LENGTH_RANGE[0] <= ratio <= BOUNDARY_STITCH_LENGTH_RANGE[1]:
+            raise ValueError(f"boundary stitch narration length ratio {ratio:.2f} is outside the allowed range")
+        narrations.append(narration)
+    return narrations
+
+
+async def stitch_arc_boundaries(
+    client: ChatClient,
+    beats: list[SeriesReviewBeat],
+    arc_drafts: list[list[SeriesReviewBeat]],
+    *,
+    prompt_chars: int,
+    concurrency: int = 1,
+) -> tuple[list[SeriesReviewBeat], int, list[dict[str, object]]]:
+    """Smooth each arc seam with a small prompt when the full stitch is too large to send."""
+    plans = [plan for plan in plan_seam_rewrites(arc_drafts, len(beats)) if plan]
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def stitch(plan: list[int]) -> tuple[list[int], list[str] | None, str | None]:
+        rewrite = [beats[index] for index in plan]
+        prompt = build_boundary_stitch_prompt(
+            before=beats[plan[0] - 1] if plan[0] >= 1 else None,
+            rewrite=rewrite,
+            after=beats[plan[-1] + 1] if plan[-1] + 1 < len(beats) else None,
+        )
+        async with semaphore:
+            response = await client.ask(prompt)
+        try:
+            return plan, parse_boundary_stitch(extract_json(response), rewrite), None
+        except (ValueError, json.JSONDecodeError) as exc:
+            return plan, None, str(exc)
+
+    results = await asyncio.gather(*(stitch(plan) for plan in plans))
+    updated = list(beats)
+    report: list[dict[str, object]] = []
+    stitched = 0
+    for plan, narrations, error in results:
+        if narrations is None:
+            report.append(
+                {
+                    "level": "warning",
+                    "code": "invalid_boundary_stitch",
+                    "message": "Arc seam stitch was rejected; kept the arc drafts at this seam",
+                    "beat_ids": [beats[index].beat_id for index in plan],
+                    "error": error,
+                }
+            )
+            continue
+        stitched += 1
+        for index, narration in zip(plan, narrations):
+            updated[index] = updated[index].model_copy(update={"narration": narration})
+    report.append(
+        {
+            "level": "info",
+            "code": "boundary_stitch",
+            "message": "Full stitch prompt was too large; smoothed each arc seam separately",
+            "prompt_chars": prompt_chars,
+            "max_prompt_chars": MAX_FINAL_STITCH_PROMPT_CHARS,
+            "seams": len(plans),
+            "stitched_seams": stitched,
+        }
+    )
+    return updated, len(plans), report
+
+
 def combine_arc_drafts(arc_drafts: list[list[SeriesReviewBeat]]) -> list[SeriesReviewBeat]:
     combined: list[SeriesReviewBeat] = []
     for arc_index, arc_beats in enumerate(arc_drafts):
@@ -1692,23 +1820,23 @@ async def compose_episode_arc_chaptered_with_client(
     bank: SeriesEventBank,
     *,
     qa_max_revisions: int,
+    concurrency: int = 1,
 ) -> tuple[list[SeriesReviewBeat], SeriesReviewMeta]:
     if bank.season_target_plan is None or not bank.season_target_plan.arcs:
         raise ValueError("episode_arc_chaptered requires season_target_plan arcs")
-    arc_drafts: list[list[SeriesReviewBeat]] = []
-    prompt_count = 0
-    revision_count = 0
-    qa_report: list[dict[str, object]] = []
-    for arc_index, arc in enumerate(bank.season_target_plan.arcs):
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+
+    async def draft_arc(arc_index: int, arc: SeriesArcPlan) -> tuple[list[SeriesReviewBeat], list[dict[str, object]]]:
+        warnings: list[dict[str, object]] = []
         prompt = build_arc_composer_prompt(bank=bank, arc=arc, arc_index=arc_index)
-        prompt_count += 1
-        response = await client.ask(prompt)
+        async with semaphore:
+            response = await client.ask(prompt)
         try:
             parsed_arc = parse_composer_response(extract_json(response), bank, require_hook=arc_index == 0)
             if not parsed_arc:
                 raise ValueError("series composer returned no beats for this arc")
         except (ValueError, json.JSONDecodeError) as exc:
-            qa_report.append(
+            warnings.append(
                 {
                     "level": "warning",
                     "code": "invalid_arc_json",
@@ -1720,7 +1848,7 @@ async def compose_episode_arc_chaptered_with_client(
             try:
                 parsed_arc = fallback_arc_draft(bank, arc, arc_index=arc_index)
             except Exception as fallback_exc:  # pragma: no cover - defensive smoke fallback
-                qa_report.append(
+                warnings.append(
                     {
                         "level": "warning",
                         "code": "fallback_arc_failed",
@@ -1730,7 +1858,17 @@ async def compose_episode_arc_chaptered_with_client(
                     }
                 )
                 parsed_arc = safe_fallback_arc_draft(bank, arc, arc_index=arc_index)
-        arc_drafts.append(parsed_arc)
+        return parsed_arc, warnings
+
+    # Arc draft prompts do not depend on each other, so a stateless client drafts them concurrently;
+    # results are gathered in arc order, keeping beats and QA identical to a sequential run.
+    drafted = await asyncio.gather(
+        *(draft_arc(arc_index, arc) for arc_index, arc in enumerate(bank.season_target_plan.arcs))
+    )
+    arc_drafts: list[list[SeriesReviewBeat]] = [parsed_arc for parsed_arc, _warnings in drafted]
+    qa_report: list[dict[str, object]] = [item for _parsed, warnings in drafted for item in warnings]
+    prompt_count = len(arc_drafts)
+    revision_count = 0
 
     beats = combine_arc_drafts(arc_drafts)
     stitch_prompt = build_final_stitch_prompt(bank=bank, beats=beats)
@@ -1752,15 +1890,11 @@ async def compose_episode_arc_chaptered_with_client(
                 }
             )
     else:
-        qa_report.append(
-            {
-                "level": "warning",
-                "code": "final_stitch_skipped_prompt_too_large",
-                "message": "Final stitch prompt was too large for reliable ChatGPT browser input; kept combined arc draft",
-                "prompt_chars": len(stitch_prompt),
-                "max_prompt_chars": MAX_FINAL_STITCH_PROMPT_CHARS,
-            }
+        beats, boundary_prompts, boundary_report = await stitch_arc_boundaries(
+            client, beats, arc_drafts, prompt_chars=len(stitch_prompt), concurrency=concurrency
         )
+        prompt_count += boundary_prompts
+        qa_report.extend(boundary_report)
     qa_report = [*qa_report, *composer_qa_report(beats, bank)]
 
     for _attempt in range(qa_max_revisions):
@@ -1769,18 +1903,21 @@ async def compose_episode_arc_chaptered_with_client(
         revision_count += 1
         arc_indexes = arc_indexes_for_revision(qa_report, bank, beats)
         if arc_indexes:
-            for arc_index in sorted(arc_indexes):
+            revision_qa = qa_report
+
+            async def revise_arc(arc_index: int) -> tuple[list[SeriesReviewBeat], list[dict[str, object]]]:
                 arc = bank.season_target_plan.arcs[arc_index]
+                warnings: list[dict[str, object]] = []
                 prompt = build_arc_composer_prompt(
                     bank=bank,
                     arc=arc,
                     arc_index=arc_index,
-                    qa_report=qa_report,
+                    qa_report=revision_qa,
                     previous_arc_beats=arc_drafts[arc_index],
                     revision_number=revision_count,
                 )
-                prompt_count += 1
-                response = await client.ask(prompt)
+                async with semaphore:
+                    response = await client.ask(prompt)
                 try:
                     parsed_arc = parse_composer_response(
                         extract_json(response),
@@ -1790,29 +1927,34 @@ async def compose_episode_arc_chaptered_with_client(
                     if not parsed_arc:
                         raise ValueError("series composer returned no beats for this arc")
                 except (ValueError, json.JSONDecodeError) as exc:
-                    qa_report = [
-                        *qa_report,
+                    warnings.append(
                         {
                             "level": "warning",
                             "code": "invalid_revision_json",
                             "message": "Composer revision returned invalid/empty JSON; used deterministic fallback for that arc",
                             "error": str(exc),
-                        },
-                    ]
+                        }
+                    )
                     try:
                         parsed_arc = fallback_arc_draft(bank, arc, arc_index=arc_index)
                     except Exception as fallback_exc:  # pragma: no cover - defensive smoke fallback
-                        qa_report = [
-                            *qa_report,
+                        warnings.append(
                             {
                                 "level": "warning",
                                 "code": "fallback_arc_failed",
                                 "message": f"Revision fallback failed; used bare deterministic draft for arc {arc.arc_id}",
                                 "error": str(fallback_exc),
                                 "arc_id": arc.arc_id,
-                            },
-                        ]
+                            }
+                        )
                         parsed_arc = safe_fallback_arc_draft(bank, arc, arc_index=arc_index)
+                return parsed_arc, warnings
+
+            ordered_indexes = sorted(arc_indexes)
+            revised = await asyncio.gather(*(revise_arc(arc_index) for arc_index in ordered_indexes))
+            prompt_count += len(ordered_indexes)
+            for arc_index, (parsed_arc, warnings) in zip(ordered_indexes, revised):
+                qa_report = [*qa_report, *warnings]
                 arc_drafts[arc_index] = parsed_arc
             beats = combine_arc_drafts(arc_drafts)
         retained_warning = [
@@ -1853,16 +1995,11 @@ async def compose_episode_arc_chaptered_with_client(
                 ]
                 break
         else:
-            qa_report = [
-                *retained_warning,
-                {
-                    "level": "warning",
-                    "code": "final_stitch_skipped_prompt_too_large",
-                    "message": "Revision final stitch prompt was too large for reliable ChatGPT browser input; kept combined arc draft",
-                    "prompt_chars": len(stitch_prompt),
-                    "max_prompt_chars": MAX_FINAL_STITCH_PROMPT_CHARS,
-                },
-            ]
+            beats, boundary_prompts, boundary_report = await stitch_arc_boundaries(
+                client, beats, arc_drafts, prompt_chars=len(stitch_prompt), concurrency=concurrency
+            )
+            prompt_count += boundary_prompts
+            qa_report = [*retained_warning, *boundary_report]
         qa_report = [*qa_report, *composer_qa_report(beats, bank)]
 
     meta = build_review_meta(
@@ -1879,11 +2016,15 @@ async def compose_with_client(
     bank: SeriesEventBank,
     *,
     qa_max_revisions: int = 1,
+    concurrency: int = 1,
 ) -> tuple[list[SeriesReviewBeat], SeriesReviewMeta]:
+    """Compose the season script; concurrency > 1 is only safe for stateless clients (the gateway)."""
     if qa_max_revisions < 0:
         raise ValueError("qa_max_revisions must be >= 0")
     if bank.recap_format == "episode_arc_chaptered":
-        return await compose_episode_arc_chaptered_with_client(client, bank, qa_max_revisions=qa_max_revisions)
+        return await compose_episode_arc_chaptered_with_client(
+            client, bank, qa_max_revisions=qa_max_revisions, concurrency=concurrency
+        )
     prompt = build_composer_prompt(bank)
     revision_count = 0
     prompt_count = 0

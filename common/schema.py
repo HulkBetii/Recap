@@ -1272,6 +1272,9 @@ class ShotsMeta(BaseModel):
     video_profile_hash: str | None = None
     n_non_story: int = Field(default=0, ge=0)
     n_end_credit: int = Field(default=0, ge=0)
+    n_overlay: int = Field(default=0, ge=0)
+    overlay_intervals: list[list[float]] = Field(default_factory=list)
+    hardsub_ratio: float | None = Field(default=None, ge=0, le=1)
     intro_detection: dict[str, Any] | None = None
     story_start_s: float = Field(default=0.0, ge=0)
     created_at: datetime
@@ -1635,6 +1638,7 @@ class RenderMeta(BaseModel):
     height: int = Field(gt=0)
     fps: float = Field(gt=0)
     codec: str
+    encoder: str | None = None
     video_duration_s: float = Field(ge=0)
     audio_duration_s: float = Field(ge=0)
     audio_delay_s: float = Field(default=0.0, ge=0)

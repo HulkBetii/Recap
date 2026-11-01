@@ -750,3 +750,74 @@ def test_render_cli_source_map_uses_matching_episode_file(tmp_path: Path, monkey
     meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
     assert meta["source_count"] == 2
     assert meta["source_names"] == ["s03e01/Grand_Blue.S03E01.mp4", "s03e02/Grand_Blue.S03E02.mp4"]
+
+
+def test_render_cli_source_fps_encoder_and_intermediate_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = make_args(tmp_path)
+    args.fps = "source"
+    args.encoder = "auto"
+    args.nvenc_cq = 24
+    monkeypatch.setattr("render.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("render.cut.nvenc_available", lambda: True)
+
+    def fake_probe_video_stream(path):  # type: ignore[no-untyped-def]
+        duration = 1.0 if Path(path).parent.name == "temp_clips" else 10.0
+        return {"width": 1920, "height": 1080, "codec": "h264", "fps": 25.0, "duration": duration}
+
+    monkeypatch.setattr("render.__main__.probe_video_stream", fake_probe_video_stream)
+    monkeypatch.setattr("render.__main__.probe_duration", lambda path: 2.0)
+    monkeypatch.setattr("render.__main__.has_audio_stream", lambda path: True)
+    seen_params: list[RenderParams] = []
+
+    def fake_cut(**kwargs):  # type: ignore[no-untyped-def]
+        seen_params.append(kwargs["params"])
+        kwargs["output_path"].write_bytes(b"temp")
+
+    def fake_concat(temp_paths, output_path, work_dir):  # type: ignore[no-untyped-def]
+        output_path.write_bytes(b"video")
+        return work_dir / "concat.txt"
+
+    monkeypatch.setattr("render.__main__.cut_temp_clip", fake_cut)
+    monkeypatch.setattr("render.__main__.concat_video", fake_concat)
+    monkeypatch.setattr(
+        "render.__main__.mux_voiceover",
+        lambda video_path, voiceover_path, output_path, audio_delay_s=0.0: output_path.write_bytes(b"recap"),
+    )
+
+    assert run_render(args) == 0
+
+    meta = json.loads((tmp_path / "render.meta.json").read_text(encoding="utf-8"))
+    assert meta["fps"] == 25.0
+    assert meta["encoder"] == "h264_nvenc"
+    assert {params.fps for params in seen_params} == {25.0}
+    assert {params.encoder for params in seen_params} == {"h264_nvenc"}
+    assert not (args.work_dir / "video_only.mp4").exists()
+    assert len(list((args.work_dir / "temp_clips").glob("*.mp4"))) == 2
+
+    stale = args.work_dir / "temp_clips" / "stale-render.mp4"
+    stale.write_bytes(b"old")
+    assert run_render(args) == 0
+    assert not stale.exists()
+    assert len(list((args.work_dir / "temp_clips").glob("*.mp4"))) == 2
+
+
+def test_resolve_source_fps_falls_back_for_mixed_or_implausible_rates() -> None:
+    from render.__main__ import resolve_source_fps
+
+    ntsc = 24000 / 1001
+    assert resolve_source_fps({"a": {"fps": ntsc}, "b": {"fps": ntsc}}) == (ntsc, [])
+    fps, warnings = resolve_source_fps({"a": {"fps": 25.0}, "b": {"fps": 23.976}})
+    assert fps == 30.0 and "fell back" in warnings[0]
+    fps, warnings = resolve_source_fps({"a": {"fps": 1000.0}})
+    assert fps == 30.0 and warnings
+
+
+def test_parse_fps_accepts_source_keyword() -> None:
+    from render.__main__ import parse_fps
+
+    assert parse_fps("source") == "source"
+    assert parse_fps("25") == 25.0
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_fps("fast")

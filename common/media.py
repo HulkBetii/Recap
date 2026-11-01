@@ -203,6 +203,21 @@ def extract_frame(input_path: Path, timestamp: float, output_path: Path) -> None
     ])
 
 
+def write_image(output_path: Path, frame: Any) -> bool:
+    """Encode an OpenCV frame and write it through Python, which keeps non-ASCII Windows paths intact.
+
+    ``cv2.imwrite`` converts the path with the ANSI code page on Windows, so a film named in
+    Vietnamese produces mojibake file names that no longer match the paths recorded in JSON.
+    """
+    import cv2
+
+    ok, encoded = cv2.imencode(output_path.suffix or ".jpg", frame)
+    if not ok:
+        return False
+    output_path.write_bytes(encoded.tobytes())
+    return True
+
+
 def normalize_audio(input_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     run_command([

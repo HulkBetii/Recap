@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.media import MediaError, require_ffmpeg
+from common.media import MediaError, probe_video_stream, require_ffmpeg
 from common.schema import Shot, ShotsMeta, VideoProfile, validate_shots, write_json
 from shots.cache import ShotsCache, stable_hash
 from shots.detect import ShotSpan, detect_shots
@@ -25,6 +25,18 @@ from shots.features import (
     create_face_detector,
     iter_batch_sampled_frames,
     sample_frames,
+)
+from shots.overlays import (
+    HARDSUB_WARNING_RATIO,
+    OVERLAY_DETECTOR_VERSION,
+    OVERLAY_REASON,
+    OverlayResult,
+    apply_overlay_marking,
+    detect_overlays,
+    hardsub_ratio,
+    iter_overlay_frames,
+    overlay_intervals,
+    with_guard_neighbours,
 )
 from shots.profile import apply_video_profile_to_shots, profile_cache_key, video_profile_hash
 from shots.thumbs import thumbnail_path, write_thumbnail, write_thumbnail_from_frame
@@ -68,6 +80,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-end-credit-guard", dest="end_credit_guard", action="store_false")
     parser.add_argument("--end-credit-tail-s", default=DEFAULT_END_CREDIT_TAIL_S, type=float)
     parser.add_argument("--end-credit-threshold", default=DEFAULT_END_CREDIT_THRESHOLD, type=float)
+    parser.add_argument(
+        "--overlay-guard",
+        action="store_true",
+        default=False,
+        help="Exclude shots under a time-bounded burned-in overlay (site ads) and measure hardsub coverage",
+    )
+    parser.add_argument("--no-overlay-guard", dest="overlay_guard", action="store_false")
     parser.add_argument("--scene-threshold", default=DEFAULT_SCENE_THRESHOLD, type=float, help="ffmpeg-scene detector threshold")
     parser.add_argument("--scene-scale-width", default=DEFAULT_SCENE_SCALE_WIDTH, type=int, help="Scale width for ffmpeg-scene; 0 disables scaling")
     parser.add_argument("--scene-min-gap", default=DEFAULT_SCENE_MIN_GAP, type=float, help="Minimum seconds between ffmpeg-scene boundaries")
@@ -148,6 +167,14 @@ def end_credit_cache_key(
         "sample_frames": sample_frames,
         "tail_s": tail_s,
         "threshold": threshold,
+    })
+
+
+def overlay_cache_key(input_path: Path, spans: list[ShotSpan]) -> str:
+    return stable_hash({
+        "detector_version": OVERLAY_DETECTOR_VERSION,
+        "input": input_signature(input_path),
+        "spans": [span.__dict__ for span in spans],
     })
 
 
@@ -267,6 +294,8 @@ def run_shots(args: argparse.Namespace) -> int:
         args.end_credit_tail_s = DEFAULT_END_CREDIT_TAIL_S
     if not hasattr(args, "end_credit_threshold"):
         args.end_credit_threshold = DEFAULT_END_CREDIT_THRESHOLD
+    if not hasattr(args, "overlay_guard"):
+        args.overlay_guard = False
     input_path = args.input.expanduser().resolve()
     output_path = args.output.expanduser().resolve()
     thumb_dir = args.thumb_dir.expanduser().resolve()
@@ -391,7 +420,45 @@ def run_shots(args: argparse.Namespace) -> int:
                 end_credit_key,
                 {str(key): value for key, value in end_credit_scores.items()},
             )
-    profile_key = profile_cache_key(feature_key, profile_hash, end_credit_key)
+    overlay_key = "overlay-disabled"
+    overlay = OverlayResult()
+    if args.overlay_guard:
+        overlay_key = overlay_cache_key(input_path, spans)
+        cached_overlay = cache.read_cached("overlay_marking.json", overlay_key)
+        if cached_overlay is not None:
+            overlay = OverlayResult.from_json(cached_overlay)
+        else:
+            if args.profile_only:
+                raise ShotsError("profile-only requires existing overlay marking cache")
+            logger.info("[3/4] Scanning %s shot midpoints for burned-in overlays", len(spans))
+            source = probe_video_stream(input_path)
+            overlay = detect_overlays(
+                iter_overlay_frames(
+                    input_path,
+                    spans,
+                    source_width=int(source["width"]),
+                    source_height=int(source["height"]),
+                )
+            )
+            cache.write_cached("overlay_marking.json", overlay_key, overlay.to_json())
+        overlay_shots = with_guard_neighbours(spans, overlay.overlay_indices)
+        warnings.extend(overlay.warnings)
+        intervals = overlay_intervals(spans, overlay_shots)
+        if intervals:
+            warnings.append(
+                "burned-in overlay excluded at "
+                + ", ".join(f"{start:.1f}-{end:.1f}s" for start, end in intervals)
+            )
+        subtitle_share = hardsub_ratio(spans, overlay.subtitle_indices)
+        if subtitle_share >= HARDSUB_WARNING_RATIO:
+            warnings.append(
+                f"burned-in subtitles in {subtitle_share:.0%} of shot time; prefer a clean (raw) source"
+            )
+    else:
+        overlay_shots = set()
+        intervals = []
+        subtitle_share = None
+    profile_key = profile_cache_key(feature_key, profile_hash, end_credit_key, overlay_key)
     cached_profile = cache.read_cached("profile_marking.json", profile_key)
     if cached_profile is not None:
         shots = [Shot.model_validate(item) for item in cached_profile["shots"]]
@@ -404,6 +471,8 @@ def run_shots(args: argparse.Namespace) -> int:
                 end_credit_scores,
                 threshold=args.end_credit_threshold,
             )
+        if overlay_shots:
+            base_shots = apply_overlay_marking(base_shots, overlay_shots)
         shots, n_non_story = apply_video_profile_to_shots(base_shots, profile)
         cache.write_cached("profile_marking.json", profile_key, {"n_non_story": n_non_story, "shots": [shot.model_dump(mode="json") for shot in shots]})
     shots = validate_shots(clamp_shots_to_duration(shots, duration_s), duration_s)
@@ -423,6 +492,7 @@ def run_shots(args: argparse.Namespace) -> int:
             "min_brightness": args.min_brightness,
             "min_shot_len": args.min_shot_len,
             "end_credit_guard": args.end_credit_guard,
+            "overlay_guard": args.overlay_guard,
             "end_credit_tail_s": args.end_credit_tail_s,
             "end_credit_threshold": args.end_credit_threshold,
             "skip_intro": args.skip_intro,
@@ -436,7 +506,11 @@ def run_shots(args: argparse.Namespace) -> int:
         model_versions={
             "face_detector": face_detector_version,
             "end_credit_classifier": END_CREDIT_CLASSIFIER_VERSION if args.end_credit_guard else "off",
+            "overlay_detector": OVERLAY_DETECTOR_VERSION if args.overlay_guard else "off",
         },
+        n_overlay=sum(1 for shot in shots if OVERLAY_REASON in shot.unusable_reasons),
+        overlay_intervals=[[round(start, 3), round(end, 3)] for start, end in intervals],
+        hardsub_ratio=round(subtitle_share, 4) if subtitle_share is not None else None,
         video_profile_path=str(args.video_profile.expanduser().resolve()) if args.video_profile else None,
         video_profile_hash=profile_hash,
         n_non_story=n_non_story,

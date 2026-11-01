@@ -177,6 +177,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "end_credit_guard": False,
         "end_credit_tail_s": 600.0,
         "end_credit_threshold": 0.60,
+        "overlay_guard": True,
         "skip_intro": 0.0,
         "skip_outro": 0.0,
         "downscale": "auto",
@@ -261,6 +262,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "fit": "cover",
         "crf": 20,
         "preset": "medium",
+        "encoder": "auto",
+        "nvenc_cq": 24,
         "concurrency": 4,
         "audio_delay_s": 0.0,
         "log_level": "INFO",
@@ -299,6 +302,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "playwright_max_attempts": 2,
         "playwright_recovery_timeout_s": 60,
         "qa_max_revisions": 1,
+        # Parallel gateway requests for arc drafts/revisions/seams; Playwright always runs one at a time.
+        "composer_concurrency": 2,
+        # Episodes ingested at once; 2 peaked at 10.9 GB VRAM on a 12 GB card in the R8 benchmark.
+        "episode_concurrency": 1,
         "headless": False,
         "min_clip": 3.0,
         "max_clip": 5.0,

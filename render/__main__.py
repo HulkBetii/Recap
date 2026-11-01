@@ -32,7 +32,15 @@ from common.schema import (
 from render.audio import render_enhanced_audio
 from render.cache import RenderCache
 from render.compose import concat_video, mux_master_audio, mux_voiceover, pad_video_by_tail, pad_video_to_duration
-from render.cut import RenderParams, clamp_source, cut_temp_clip, required_enhanced_source_duration, temp_cache_key
+from render.cut import (
+    ENCODERS,
+    RenderParams,
+    clamp_source,
+    cut_temp_clip,
+    required_enhanced_source_duration,
+    resolve_encoder,
+    temp_cache_key,
+)
 from render.quantize import FramePlacement, quantize_placements
 
 
@@ -85,6 +93,29 @@ def validate_concat_output(
         )
 
 
+SOURCE_FPS = "source"
+SOURCE_FPS_RANGE = (10.0, 60.0)
+DEFAULT_FPS = 30.0
+
+
+def parse_fps(value: str) -> float | str:
+    if value.strip().lower() == SOURCE_FPS:
+        return SOURCE_FPS
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"fps must be a number or '{SOURCE_FPS}': {value}") from exc
+
+
+def resolve_source_fps(source_infos: dict[str, dict[str, object]]) -> tuple[float, list[str]]:
+    """Pick the shared source rate; mixed or implausible rates fall back to 30 fps with a warning."""
+    rates = sorted({round(float(info.get("fps") or 0.0), 3) for info in source_infos.values()})
+    if len(rates) == 1 and SOURCE_FPS_RANGE[0] <= rates[0] <= SOURCE_FPS_RANGE[1]:
+        exact = next(float(info.get("fps") or 0.0) for info in source_infos.values())
+        return exact, []
+    return DEFAULT_FPS, [f"fps=source fell back to {DEFAULT_FPS:g}: source rates {rates}"]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Stage 6: render recap video from EDL and voiceover.")
     parser.add_argument("--edl", type=Path, required=True)
@@ -94,10 +125,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1080)
-    parser.add_argument("--fps", type=float, default=30.0)
+    parser.add_argument(
+        "--fps",
+        type=parse_fps,
+        default=30.0,
+        help="Output frame rate, or 'source' to keep the source rate and avoid duplicated frames",
+    )
     parser.add_argument("--fit", choices=["cover"], default="cover")
     parser.add_argument("--crf", type=int, default=20)
     parser.add_argument("--preset", default="medium")
+    parser.add_argument(
+        "--encoder",
+        choices=ENCODERS,
+        default="libx264",
+        help="Video encoder; auto uses h264_nvenc when a one-frame probe succeeds, else libx264",
+    )
+    parser.add_argument("--nvenc-cq", type=int, default=24)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument(
         "--audio-delay-s",
@@ -243,7 +286,7 @@ def run_render(args: argparse.Namespace) -> int:
     ensure_file(args.voiceover, "voiceover")
     if args.film is not None:
         ensure_file(args.film, "film")
-    if args.width <= 0 or args.height <= 0 or args.fps <= 0:
+    if args.width <= 0 or args.height <= 0 or (args.fps != SOURCE_FPS and args.fps <= 0):
         raise RenderError("width, height and fps must be greater than zero")
     if args.concurrency <= 0:
         raise RenderError("concurrency must be greater than zero")
@@ -262,6 +305,13 @@ def run_render(args: argparse.Namespace) -> int:
     source_paths = load_source_map(source_map_arg, args.film.expanduser().resolve() if args.film else None, placements)
     source_infos = {key: probe_video_stream(path) for key, path in source_paths.items()}
     source_durations = {key: float(info["duration"]) for key, info in source_infos.items()}
+    setup_warnings: list[str] = []
+    if args.fps == SOURCE_FPS:
+        args.fps, fps_warnings = resolve_source_fps(source_infos)
+        setup_warnings.extend(fps_warnings)
+        logging.info("render at source frame rate %.3f fps", args.fps)
+    encoder = resolve_encoder(getattr(args, "encoder", "libx264"))
+    logging.info("video encoder: %s", encoder)
     audio_duration = probe_duration(args.voiceover)
     frames = quantize_placements(placements, args.fps)
     frame_duration = sum(frame.frame_count for frame in frames) / args.fps
@@ -269,7 +319,14 @@ def run_render(args: argparse.Namespace) -> int:
         max(frame_duration, audio_duration + args.audio_delay_s) if edit_plan else audio_duration + args.audio_delay_s
     )
     params = RenderParams(
-        width=args.width, height=args.height, fps=args.fps, fit=args.fit, crf=args.crf, preset=args.preset
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
+        fit=args.fit,
+        crf=args.crf,
+        preset=args.preset,
+        encoder=encoder,
+        nvenc_cq=getattr(args, "nvenc_cq", 24),
     )
     cache = RenderCache(args.work_dir, force=args.force)
     cache.prepare()
@@ -284,6 +341,7 @@ def run_render(args: argparse.Namespace) -> int:
     )
     if len(temp_paths) != len(frames):
         raise RenderError("not all temp clips were rendered")
+    warnings = [*setup_warnings, *warnings]
     if args.audio_delay_s > 0:
         warnings.append(f"voiceover audio delayed by {args.audio_delay_s:.3f}s at mux")
     video_only = args.work_dir / "video_only.mp4"
@@ -362,6 +420,13 @@ def run_render(args: argparse.Namespace) -> int:
         warnings.append("output resolution does not match requested size")
     if abs(float(output_info["fps"]) - args.fps) > 0.05:
         warnings.append("output fps does not match requested fps")
+    # The muxed output already carries this video stream; temp clips stay as the re-render cache,
+    # minus clips from earlier renders (other encoder/fps/EDL) that this render no longer uses.
+    for intermediate in (video_only, args.work_dir / "video_only_padded.mp4"):
+        intermediate.unlink(missing_ok=True)
+    pruned = cache.prune_temp_clips(set(temp_paths))
+    if pruned:
+        logging.info("pruned %s unused temp clip(s)", pruned)
     grade_moods: dict[str, int] = {}
     n_zoom = n_aspect = n_speed_ramp = n_freeze = n_music_cues = n_sfx_cues = None
     loudness: dict[str, float] = {}
@@ -394,6 +459,7 @@ def run_render(args: argparse.Namespace) -> int:
         height=args.height,
         fps=args.fps,
         codec=str(output_info.get("codec") or "h264"),
+        encoder=encoder,
         video_duration_s=round(video_duration, 3),
         audio_duration_s=round(mux_audio_duration, 3),
         audio_delay_s=round(args.audio_delay_s, 3),

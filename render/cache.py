@@ -40,6 +40,16 @@ class RenderCache:
             return path
         return None
 
+    def prune_temp_clips(self, keep: set[Path]) -> int:
+        """Delete temp clips the latest successful render did not use; returns how many were removed."""
+        keep_resolved = {path.resolve() for path in keep}
+        removed = 0
+        for path in self.temp_dir.glob("*.mp4"):
+            if path.resolve() not in keep_resolved:
+                path.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
     def audio_path(self, kind: str, cache_key: str) -> Path:
         return self.audio_dir / f"{kind}-{cache_key}.m4a"
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,6 +10,10 @@ from common.media import run_command
 from common.schema import EdlPlacement, PlacementEdit
 from render.cache import file_identity, stable_hash
 from render.quantize import FramePlacement
+
+ENCODERS = ("auto", "libx264", "h264_nvenc")
+NVENC_PRESET = "p5"
+
 
 @dataclass(frozen=True)
 class RenderParams:
@@ -17,6 +23,53 @@ class RenderParams:
     fit: str
     crf: int
     preset: str
+    encoder: str = "libx264"
+    nvenc_cq: int = 24
+
+
+def format_fps(fps: float) -> str:
+    """Return an exact ffmpeg rate: whole rates stay '30', NTSC rates become '24000/1001'."""
+    rate = Fraction(fps).limit_denominator(1001)
+    if rate.denominator == 1:
+        return str(rate.numerator)
+    return f"{rate.numerator}/{rate.denominator}"
+
+
+def video_encoder_args(params: RenderParams) -> list[str]:
+    """Encoder flags shared by temp clips and the tail pad so concat -c copy sees one stream format."""
+    if params.encoder == "h264_nvenc":
+        # p5/cq24 matched libx264 medium/crf20 SSIM at a similar bitrate and ran ~3x faster in R7 tests.
+        return [
+            "-c:v", "h264_nvenc", "-preset", NVENC_PRESET, "-tune", "hq",
+            "-rc", "vbr", "-cq", str(params.nvenc_cq), "-b:v", "0", "-bf", "3",
+        ]
+    return ["-c:v", "libx264", "-preset", params.preset, "-crf", str(params.crf)]
+
+
+def nvenc_available() -> bool:
+    """Probe a one-frame NVENC encode; listing the encoder is not enough without a usable GPU/driver."""
+    try:
+        completed = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-v", "error",
+                "-f", "lavfi", "-i", "color=c=black:s=256x144:r=30:d=0.1",
+                "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-",
+            ],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def resolve_encoder(requested: str) -> str:
+    if requested not in ENCODERS:
+        raise ValueError(f"unsupported encoder: {requested}")
+    if requested != "auto":
+        return requested
+    return "h264_nvenc" if nvenc_available() else "libx264"
 
 @dataclass(frozen=True)
 class ClampedSource:
@@ -54,7 +107,7 @@ def build_video_filter(*, params: RenderParams, frame_count: int, source_duratio
         ratio = source_duration / target_duration
         filters.append(f"setpts=PTS/{ratio:.6f}")
     filters.extend([
-        f"fps={params.fps:g}",
+        f"fps={format_fps(params.fps)}",
         f"tpad=stop_mode=clone:stop={frame_count}",
         f"trim=end_frame={frame_count}",
         "setpts=PTS-STARTPTS",
@@ -124,7 +177,7 @@ def build_enhanced_video_filter(
         output_label = f"timed{index}"
         chains.append(
             f"[{input_label}]trim=start={source_cursor:.6f}:end={source_cursor + source_duration:.6f},"
-            f"setpts=(PTS-STARTPTS)/{speed:.6f},fps={params.fps:g},"
+            f"setpts=(PTS-STARTPTS)/{speed:.6f},fps={format_fps(params.fps)},"
             f"tpad=stop_mode=clone:stop={output_frames},trim=end_frame={output_frames},"
             f"setpts=PTS-STARTPTS[{output_label}]"
         )
@@ -154,7 +207,7 @@ def build_enhanced_video_filter(
         y_expression = f"max(0,min(ih-ih/zoom,ih/2-ih/zoom/2+({edit.pan_y:.6f})*ih))"
         visual_filters.append(
             f"zoompan=z='{zoom_expression}':x='{x_expression}':y='{y_expression}':"
-            f"d=1:s={params.width}x{params.height}:fps={params.fps:g}"
+            f"d=1:s={params.width}x{params.height}:fps={format_fps(params.fps)}"
         )
     if edit.aspect_ratio is not None:
         content_height = min(params.height, round(params.width / edit.aspect_ratio))
@@ -178,7 +231,7 @@ def temp_cache_key(
     edit: PlacementEdit | None = None,
 ) -> str:
     placement = frame.placement
-    return stable_hash({
+    payload = {
         "film": file_identity(film_path),
         "src_in": round(source.src_in, 6),
         "src_out": round(source.src_out, 6),
@@ -191,7 +244,12 @@ def temp_cache_key(
         "crf": params.crf,
         "preset": params.preset,
         "edit": edit.model_dump(mode="json") if edit is not None else None,
-    })
+    }
+    # libx264 keeps its historical key so existing temp clip caches stay valid.
+    if params.encoder != "libx264":
+        payload["encoder"] = params.encoder
+        payload["nvenc_cq"] = params.nvenc_cq
+    return stable_hash(payload)
 
 
 def cut_temp_clip(
@@ -237,12 +295,7 @@ def cut_temp_clip(
             *filter_args,
             "-frames:v",
             str(frame.frame_count),
-            "-c:v",
-            "libx264",
-            "-preset",
-            params.preset,
-            "-crf",
-            str(params.crf),
+            *video_encoder_args(params),
             "-pix_fmt",
             "yuv420p",
             str(partial_path),

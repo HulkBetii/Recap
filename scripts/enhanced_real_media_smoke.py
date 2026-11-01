@@ -725,7 +725,8 @@ def analyze_enhanced_audio(
     sfx_path = _single_cache_file(audio_cache, "sfx")
     master_path = _single_cache_file(audio_cache, "master")
     video_only = render_work_dir / "video_only.mp4"
-    if probe_audio_stream_count(video_only) != 0:
+    # Render deletes the concat intermediate after a successful mux; temp clips remain as proof.
+    if video_only.exists() and probe_audio_stream_count(video_only) != 0:
         raise RealMediaSmokeError("video-only concat unexpectedly contains an audio stream")
     temp_clips = list((render_work_dir / "temp_clips").glob("*.mp4"))
     if not temp_clips or any(probe_audio_stream_count(path) != 0 for path in temp_clips):

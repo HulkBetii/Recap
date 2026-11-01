@@ -432,7 +432,13 @@ def episode_commands(
     episode_run_dir: Path,
     config_path: Path,
     force: bool,
+    split_ingest: bool = False,
 ) -> list[tuple[str, list[str], list[Path]]]:
+    """Planner and shots commands; split_ingest adds a separate ingest step that may run concurrently.
+
+    The planner reads earlier episodes' memory, so it always runs in episode order. When ingest is
+    split out, the planner command selects only its own stage so --force does not redo the ingest.
+    """
     base = [
         py,
         "run.py",
@@ -443,15 +449,20 @@ def episode_commands(
         "--config",
         str(config_path),
     ]
-    planner = base + ["--to", "episode_planner"]
+    planner = base + (["--only", "episode_planner"] if split_ingest else ["--to", "episode_planner"])
     shots = base + ["--only", "shots"]
+    ingest = base + ["--to", "storymap"]
     if force:
         planner.append("--force")
         shots.append("--force")
-    return [
+        ingest.append("--force")
+    commands = [
         ("episode_planner", planner, [episode_run_dir / "episode_meta.json", episode_run_dir / "episode_memory.json"]),
         ("episode_shots", shots, [episode_run_dir / "shots.json", episode_run_dir / "shots.meta.json"]),
     ]
+    if split_ingest:
+        commands.append(("episode_ingest", ingest, [episode_run_dir / "film_map.json", episode_run_dir / "story_map.json"]))
+    return commands
 
 def mode_target_ratio_args(section: dict[str, Any]) -> list[str]:
     ratios = section.get("mode_target_ratios") or {}
@@ -523,6 +534,7 @@ def composer_command(
         "log_level",
     ):
         add_option(command, key, section.get(key))
+    add_option(command, "concurrency", section.get("composer_concurrency"))
     command.extend(mode_target_ratio_args(section))
     if section.get("headless"):
         command.append("--headless")
@@ -685,7 +697,7 @@ def render_command(*, py: str, paths: SeriesPaths, config: dict[str, Any], force
     ]
     if postprocess_enabled(config):
         command.extend(["--edit-plan", str(paths.edit_plan), "--audio-assets", str(audio_assets_path(config))])
-    for key in ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s", "log_level"):
+    for key in ("width", "height", "fps", "fit", "crf", "preset", "encoder", "nvenc_cq", "concurrency", "audio_delay_s", "log_level"):
         add_option(command, key, section.get(key))
     command.extend(["--work-dir", str(paths.work_dir / "render")])
     if force:
@@ -906,7 +918,7 @@ def render_stage_fingerprint(paths: SeriesPaths, config: dict[str, Any]) -> str:
         "sources": source_media_identities(paths.source_map),
         "settings": config_values(
             section,
-            ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s"),
+            ("width", "height", "fps", "fit", "crf", "preset", "encoder", "nvenc_cq", "concurrency", "audio_delay_s"),
         ),
     }
     if postprocess_enabled(config):
@@ -928,6 +940,10 @@ def episode_stage_valid(stage_name: str, run_dir: Path, film: Path, config: dict
             stages.insert(0, "preflight")
     elif stage_name == "episode_shots":
         stages = ["shots"]
+        if config.get("preflight", {}).get("enabled", True):
+            stages.insert(0, "preflight")
+    elif stage_name == "episode_ingest":
+        stages = ["ingest", "storymap"]
         if config.get("preflight", {}).get("enabled", True):
             stages.insert(0, "preflight")
     else:
@@ -1125,6 +1141,62 @@ def run_step(
         outputs=output_text,
     )
 
+def run_episode_planner_and_queue_shots(
+    *,
+    spec: EpisodeSpec,
+    episode_run_dir: Path,
+    episode_config: dict[str, Any],
+    commands: list[tuple[str, list[str], list[Path]]],
+    args: argparse.Namespace,
+    paths: SeriesPaths,
+    runner: Callable[[list[str], Path], None],
+    summaries: list[StepSummary],
+    shots_pool: ThreadPoolExecutor,
+    shots_futures: list[Future[StepSummary]],
+) -> None:
+    planner_stage, planner_command, planner_outputs = commands[0]
+    planner_summary = run_step(
+        stage=f"{spec.episode_key}:{planner_stage}",
+        command=planner_command,
+        outputs=planner_outputs,
+        valid=lambda stage_name=planner_stage, run_dir=episode_run_dir, film=spec.source_path, stage_config=episode_config: episode_stage_valid(
+            stage_name,
+            run_dir,
+            film,
+            stage_config,
+        ),
+        log_path=paths.log_path,
+        force=args.force,
+        dry_run=args.dry_run,
+        executor=runner,
+    )
+    summaries.append(planner_summary)
+
+    shots_stage, shots_command, shots_outputs = commands[1]
+    force_shots = bool(args.force)
+    if force_shots and "--force" not in shots_command:
+        shots_command = [*shots_command, "--force"]
+    # Shot detection is CPU work that only needs this episode's planner outputs, so it runs
+    # while the next episode's GPU ingest proceeds; one shots job at a time keeps CPU bounded.
+    shots_futures.append(
+        shots_pool.submit(
+            run_step,
+            stage=f"{spec.episode_key}:{shots_stage}",
+            command=shots_command,
+            outputs=shots_outputs,
+            valid=lambda stage_name=shots_stage, run_dir=episode_run_dir, film=spec.source_path, stage_config=episode_config: episode_stage_valid(
+                stage_name,
+                run_dir,
+                film,
+                stage_config,
+            ),
+            log_path=paths.shots_log_path,
+            force=force_shots,
+            dry_run=args.dry_run,
+            executor=runner,
+        )
+    )
+
 def run_cached_step(
     *,
     stage: str,
@@ -1238,8 +1310,9 @@ def run_series_recap(
     summaries: list[StepSummary] = []
     series_memory_dir = root_dir / "series_memory"
 
-    shots_pool = ThreadPoolExecutor(max_workers=1)
-    shots_futures: list[Future[StepSummary]] = []
+    episode_concurrency = max(1, int(config.get("series_recap", {}).get("episode_concurrency", 1) or 1))
+    split_ingest = episode_concurrency > 1 and len(specs) > 1
+    prepared: list[tuple[EpisodeSpec, Path, dict[str, Any], list[tuple[str, list[str], list[Path]]]]] = []
     for spec in specs:
         episode_run_dir = root_dir / spec.episode_key
         episode_run_dirs[spec.episode_key] = episode_run_dir
@@ -1261,52 +1334,56 @@ def run_series_recap(
             episode_run_dir=episode_run_dir,
             config_path=config_path,
             force=args.force,
+            split_ingest=split_ingest,
         )
-        planner_stage, planner_command, planner_outputs = commands[0]
-        planner_summary = run_step(
-            stage=f"{spec.episode_key}:{planner_stage}",
-            command=planner_command,
-            outputs=planner_outputs,
-            valid=lambda stage_name=planner_stage, run_dir=episode_run_dir, film=spec.source_path, stage_config=episode_config: episode_stage_valid(
-                stage_name,
-                run_dir,
-                film,
-                stage_config,
-            ),
-            log_path=paths.log_path,
-            force=args.force,
-            dry_run=args.dry_run,
-            executor=runner,
-        )
-        summaries.append(planner_summary)
+        prepared.append((spec, episode_run_dir, episode_config, commands))
 
-        shots_stage, shots_command, shots_outputs = commands[1]
-        force_shots = bool(args.force)
-        if force_shots and "--force" not in shots_command:
-            shots_command = [*shots_command, "--force"]
-        # Shot detection is CPU work that only needs this episode's planner outputs, so it runs
-        # while the next episode's GPU ingest proceeds; one shots job at a time keeps CPU bounded.
-        shots_futures.append(
-            shots_pool.submit(
+    # Ingest mostly waits on the gateway (translation, vision) while the GPU idles, so up to
+    # episode_concurrency episodes ingest at once; each writes its own log to keep output readable.
+    ingest_pool = ThreadPoolExecutor(max_workers=episode_concurrency) if split_ingest else None
+    ingest_futures: dict[str, Future[StepSummary]] = {}
+    if ingest_pool is not None:
+        for spec, episode_run_dir, episode_config, commands in prepared:
+            ingest_stage, ingest_command, ingest_outputs = commands[2]
+            ingest_futures[spec.episode_key] = ingest_pool.submit(
                 run_step,
-                stage=f"{spec.episode_key}:{shots_stage}",
-                command=shots_command,
-                outputs=shots_outputs,
-                valid=lambda stage_name=shots_stage, run_dir=episode_run_dir, film=spec.source_path, stage_config=episode_config: episode_stage_valid(
+                stage=f"{spec.episode_key}:{ingest_stage}",
+                command=ingest_command,
+                outputs=ingest_outputs,
+                valid=lambda stage_name=ingest_stage, run_dir=episode_run_dir, film=spec.source_path, stage_config=episode_config: episode_stage_valid(
                     stage_name,
                     run_dir,
                     film,
                     stage_config,
                 ),
-                log_path=paths.shots_log_path,
-                force=force_shots,
+                log_path=paths.log_path.with_name(f"series_recap.{spec.episode_key}.ingest.log"),
+                force=args.force,
                 dry_run=args.dry_run,
                 executor=runner,
             )
-        )
+
+    shots_pool = ThreadPoolExecutor(max_workers=1)
+    shots_futures: list[Future[StepSummary]] = []
     try:
+        for spec, episode_run_dir, episode_config, commands in prepared:
+            if spec.episode_key in ingest_futures:
+                summaries.append(ingest_futures[spec.episode_key].result())
+            run_episode_planner_and_queue_shots(
+                spec=spec,
+                episode_run_dir=episode_run_dir,
+                episode_config=episode_config,
+                commands=commands,
+                args=args,
+                paths=paths,
+                runner=runner,
+                summaries=summaries,
+                shots_pool=shots_pool,
+                shots_futures=shots_futures,
+            )
         summaries.extend(future.result() for future in shots_futures)
     finally:
+        if ingest_pool is not None:
+            ingest_pool.shutdown(wait=True, cancel_futures=True)
         shots_pool.shutdown(wait=True)
 
     composer = run_cached_step(

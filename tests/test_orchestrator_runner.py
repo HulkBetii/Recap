@@ -19,6 +19,7 @@ from orchestrator.config import load_config
 from orchestrator.graph import build_paths
 from orchestrator.runner import OrchestratorError, build_command, outputs_valid, preflight, validate_runtime_requirements
 from shots.features import available_face_detector_version
+from shots.overlays import OVERLAY_DETECTOR_VERSION
 from preflight.__main__ import build_parser as build_preflight_parser
 from preflight.integrity import PREFLIGHT_CACHE_VERSION, preflight_identity
 from review.__main__ import build_parser as build_review_parser
@@ -225,6 +226,7 @@ def write_stage_outputs(command: list[str]) -> None:
             "end_credit_guard": args.end_credit_guard,
             "end_credit_tail_s": args.end_credit_tail_s,
             "end_credit_threshold": args.end_credit_threshold,
+            "overlay_guard": args.overlay_guard,
             "skip_intro": args.skip_intro,
             "skip_outro": args.skip_outro,
             "downscale": args.downscale,
@@ -236,9 +238,11 @@ def write_stage_outputs(command: list[str]) -> None:
         args.work_dir.mkdir(parents=True, exist_ok=True)
         for cache_name in ("detection.json", "features.json"):
             (args.work_dir / cache_name).write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
+        if args.overlay_guard:
+            (args.work_dir / "overlay_marking.json").write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
         if args.end_credit_guard:
             (args.work_dir / "end_credit_marking.json").write_text(json.dumps({"cache_key":"fixture","data":{}}), encoding="utf-8")
-        output.with_name("shots.meta.json").write_text(json.dumps({"src":str(args.input.resolve()),"duration_s":2,"n_shots":1,"n_usable":1,"detector":args.detector,"feature_config":feature_config,"model_versions":{"face_detector":available_face_detector_version()},"video_profile_path":str(args.video_profile.resolve()) if args.video_profile else None,"video_profile_hash":video_profile_hash(args.video_profile),"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
+        output.with_name("shots.meta.json").write_text(json.dumps({"src":str(args.input.resolve()),"duration_s":2,"n_shots":1,"n_usable":1,"detector":args.detector,"feature_config":feature_config,"model_versions":{"face_detector":available_face_detector_version(),"overlay_detector":OVERLAY_DETECTOR_VERSION if args.overlay_guard else "off"},"video_profile_path":str(args.video_profile.resolve()) if args.video_profile else None,"video_profile_hash":video_profile_hash(args.video_profile),"n_non_story":0,"created_at":NOW,"cache_hits":[],"warnings":[]}), encoding="utf-8")
     elif stage == "match":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")

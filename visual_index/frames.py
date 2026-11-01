@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from common.media import extract_frame
+from common.media import extract_frame, write_image
 
 
 @dataclass(frozen=True)
@@ -57,7 +57,7 @@ def extract_keyframes_batch(film_path: Path, requests: list[FrameRequest]) -> No
                 if not ok or cached_frame is None:
                     raise RuntimeError(f"Could not read keyframe at {request.timestamp:.3f}s")
             request.output_path.parent.mkdir(parents=True, exist_ok=True)
-            if not cv2.imwrite(str(request.output_path), cached_frame):
+            if not write_image(request.output_path, cached_frame):
                 raise RuntimeError(f"Could not write keyframe: {request.output_path}")
     finally:
         cap.release()

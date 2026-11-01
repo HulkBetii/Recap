@@ -74,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--playwright-max-attempts", default=2, type=int)
     parser.add_argument("--playwright-recovery-timeout-s", default=60, type=int)
     parser.add_argument("--qa-max-revisions", default=1, type=int)
+    parser.add_argument(
+        "--concurrency",
+        default=1,
+        type=int,
+        help=f"Parallel arc requests for llm_backend={GATEWAY_BACKEND}; Playwright always uses 1",
+    )
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--work-dir", default=Path("work") / "series_composer", type=Path)
     parser.add_argument("--force", action="store_true")
@@ -184,6 +190,8 @@ async def run_composer_async(args: argparse.Namespace) -> int:
         raise SeriesComposerError("--qa-max-revisions must be >= 0")
     if args.arc_size <= 0:
         raise SeriesComposerError("--arc-size must be > 0")
+    if getattr(args, "concurrency", 1) < 1:
+        raise SeriesComposerError("--concurrency must be >= 1")
     args.output = args.output.expanduser().resolve()
     args.output_event_bank = args.output_event_bank.expanduser().resolve()
     args.output_tts_script = args.output_tts_script.expanduser().resolve()
@@ -235,7 +243,12 @@ async def run_composer_async(args: argparse.Namespace) -> int:
                     base_url=getattr(args, "llm_base_url", None),
                     timeout_s=args.reply_timeout_s,
                 ) as client:
-                    beats, meta = await compose_with_client(client, bank, qa_max_revisions=args.qa_max_revisions)
+                    beats, meta = await compose_with_client(
+                        client,
+                        bank,
+                        qa_max_revisions=args.qa_max_revisions,
+                        concurrency=getattr(args, "concurrency", 1),
+                    )
             else:
                 async with PlaywrightChatClient(
                     profile_dir(args.chatgpt_profile_dir),

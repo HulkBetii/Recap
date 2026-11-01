@@ -22,6 +22,7 @@ from series_composer.builder import (
     compose_with_client,
     fallback_arc_draft,
     parse_composer_response,
+    plan_seam_rewrites,
     source_ref_from_event,
     to_tts_review_script,
 )
@@ -1037,3 +1038,86 @@ def test_episode_arc_chaptered_invalid_revision_keeps_prior_valid_draft(tmp_path
 
     assert beats[0].is_hook
     assert any(item["code"] == "invalid_revision_json" for item in meta.qa_report)
+
+
+class TrackingSequenceClient(SequenceChatClient):
+    """Sequence client that also answers arc-seam prompts and records peak request concurrency."""
+
+    def __init__(self, responses: list[dict[str, object]], *, reject_seams: set[int] | None = None) -> None:
+        super().__init__(responses)
+        self.in_flight = 0
+        self.peak = 0
+        self.seam_prompts = 0
+        self.reject_seams = reject_seams or set()
+
+    async def ask(self, prompt: str) -> str:
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        try:
+            if "smoothing the seam" in prompt:
+                self.prompts.append(prompt)
+                self.seam_prompts += 1
+                rewrite = json.loads(prompt.split("REWRITE_BEATS:\n", 1)[1].split("\n\nCONTEXT_AFTER", 1)[0])
+                if self.seam_prompts in self.reject_seams:
+                    return json.dumps({"beats": [{"narration": "x"}]})
+                return json.dumps({"beats": [{"narration": f"Nối mạch. {text}"} for text in rewrite]}, ensure_ascii=False)
+            response = await super().ask(prompt)
+            await asyncio.sleep(0.01)
+            return response
+        finally:
+            self.in_flight -= 1
+
+
+def detailed_arc_responses() -> list[dict[str, object]]:
+    return [
+        arc_response([1, 2, 3], include_hook=True, hook_episode=12),
+        arc_response([4, 5, 6]),
+        arc_response([7, 8, 9]),
+        arc_response([10, 11, 12]),
+    ]
+
+
+def test_episode_arc_chaptered_drafts_arcs_concurrently_with_identical_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import series_composer.builder as builder
+
+    monkeypatch.setattr(builder, "MAX_FINAL_STITCH_PROMPT_CHARS", 10)
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=12, tts_cps=1.0)
+    sequential = TrackingSequenceClient(detailed_arc_responses())
+    concurrent = TrackingSequenceClient(detailed_arc_responses())
+
+    sequential_beats, _ = asyncio.run(compose_with_client(sequential, bank, qa_max_revisions=0, concurrency=1))
+    concurrent_beats, _ = asyncio.run(compose_with_client(concurrent, bank, qa_max_revisions=0, concurrency=2))
+
+    assert sequential.peak == 1
+    assert concurrent.peak == 2
+    assert [beat.model_dump() for beat in concurrent_beats] == [beat.model_dump() for beat in sequential_beats]
+
+
+def test_oversized_stitch_smooths_each_arc_seam(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import series_composer.builder as builder
+
+    monkeypatch.setattr(builder, "MAX_FINAL_STITCH_PROMPT_CHARS", 10)
+    _manifest, bank = write_detailed_episode_set(tmp_path, count=12, tts_cps=1.0)
+    client = TrackingSequenceClient(detailed_arc_responses(), reject_seams={3})
+
+    beats, meta = asyncio.run(compose_with_client(client, bank, qa_max_revisions=0))
+
+    # Arc 0 is hook + 3 beats, the others 3 beats: seams rewrite beats 3/4, 6/7 and 9/10.
+    assert client.seam_prompts == 3
+    assert [index for index, beat in enumerate(beats) if beat.narration.startswith("Nối mạch.")] == [3, 4, 6, 7]
+    assert meta.model_versions["prompt_count"] == "7"
+    codes = [item["code"] for item in meta.qa_report]
+    assert "final_stitch_skipped_prompt_too_large" not in codes
+    assert "invalid_boundary_stitch" in codes
+    summary = next(item for item in meta.qa_report if item["code"] == "boundary_stitch")
+    assert (summary["seams"], summary["stitched_seams"]) == (3, 2)
+
+
+def test_seam_plans_skip_the_hook_and_beats_claimed_by_an_earlier_seam() -> None:
+    def beats(count: int) -> list[SeriesReviewBeat]:
+        return [SeriesReviewBeat.model_construct(beat_id=index, narration=f"beat {index}") for index in range(count)]
+
+    assert plan_seam_rewrites([beats(1), beats(3)], 4) == [[1]]
+    assert plan_seam_rewrites([beats(3), beats(1), beats(2)], 6) == [[2, 3], [4]]

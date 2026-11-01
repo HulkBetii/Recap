@@ -202,10 +202,12 @@ match:
 render:
   width: 1920
   height: 1080
-  fps: 30
+  fps: source  # keep the source rate; 25->30 duplicated 1 frame in 5
   fit: cover
   crf: 20
   preset: medium
+  encoder: auto  # h264_nvenc when a probe encode succeeds, else libx264
+  nvenc_cq: 24
   concurrency: 4
   audio_delay_s: 0.0
   log_level: INFO

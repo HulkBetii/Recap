@@ -814,3 +814,75 @@ def test_final_stage_fingerprints_track_their_direct_inputs(tmp_path: Path) -> N
     render_first = render_stage_fingerprint(paths, {"render": {"width": 1920, "height": 1080}})
     source.write_bytes(b"video-two-with-different-size")
     assert render_stage_fingerprint(paths, {"render": {"width": 1920, "height": 1080}}) != render_first
+
+
+def test_episode_concurrency_overlaps_ingest_but_keeps_planner_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import threading
+
+    manifest_path = tmp_path / "series_manifest.json"
+    config_path = tmp_path / "config.json"
+    write_manifest(manifest_path, tmp_path / "Grand_Blue.S03E01.mp4", tmp_path / "Grand_Blue.S03E02.mp4")
+    write_config(config_path)
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["series_recap"]["episode_concurrency"] = 2
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    both_ingesting = threading.Barrier(2, timeout=5)
+    order: list[str] = []
+    lock = threading.Lock()
+
+    class StopAfterShots(RuntimeError):
+        pass
+
+    def fake_run_step(**kwargs):  # type: ignore[no-untyped-def]
+        stage, command = kwargs["stage"], kwargs["command"]
+        if stage.endswith(":episode_ingest"):
+            assert command[-2:] == ["--to", "storymap"]
+            assert kwargs["log_path"].name == f"series_recap.{stage.split(':')[0]}.ingest.log"
+            # Sequential ingest would time out here: both episodes must be ingesting together.
+            both_ingesting.wait()
+        if stage.endswith(":episode_planner"):
+            assert command[-2:] == ["--only", "episode_planner"]
+        with lock:
+            order.append(stage)
+        if stage == "s03e02:episode_shots":
+            raise StopAfterShots
+        return recap_cli.StepSummary(stage=stage, status="ran", duration_s=0.0, command=command, outputs=[])
+
+    monkeypatch.setattr(recap_cli, "run_step", fake_run_step)
+    args = argparse.Namespace(
+        manifest=manifest_path,
+        config=config_path,
+        episodes="1-2",
+        run_dir=tmp_path / "runs" / "grand-blue-s03",
+        python="python",
+        dry_run=True,
+        force=False,
+        force_final=False,
+        log_level="ERROR",
+    )
+
+    with pytest.raises(StopAfterShots):
+        run_series_recap(args, executor=lambda _command, _log_path: None)
+
+    planners = [stage for stage in order if stage.endswith(":episode_planner")]
+    assert planners == ["s03e01:episode_planner", "s03e02:episode_planner"]
+    assert order.index("s03e02:episode_ingest") < order.index("s03e01:episode_planner")
+
+
+def test_episode_commands_split_ingest_keeps_force_out_of_planner_rerun(tmp_path: Path) -> None:
+    spec = recap_cli.EpisodeSpec(
+        episode_key="s03e01",
+        episode_number=1,
+        title="Episode 1",
+        source_path=tmp_path / "e01.mp4",
+        arc=None,
+        spoiler_limit_episode=1,
+    )
+    commands = recap_cli.episode_commands(
+        py="python", spec=spec, episode_run_dir=tmp_path / "s03e01", config_path=tmp_path / "c.json", force=True, split_ingest=True
+    )
+    stages = {stage: command for stage, command, _outputs in commands}
+    assert stages["episode_planner"][-3:] == ["--only", "episode_planner", "--force"]
+    assert stages["episode_ingest"][-3:] == ["--to", "storymap", "--force"]

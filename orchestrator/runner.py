@@ -57,6 +57,7 @@ from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
 from shots.features import available_face_detector_version
+from shots.overlays import OVERLAY_DETECTOR_VERSION
 from episode_planner.integrity import EPISODE_PLANNER_CACHE_VERSION, episode_planner_config_hash, episode_planner_input_hashes
 from tts.providers import TtsProviderError, resolve_provider_order
 from tts.vieneu_provider import VieneuProviderError, require_vieneu_runtime, validate_vieneu_settings
@@ -100,6 +101,7 @@ SHOTS_FEATURE_CONFIG_KEYS = (
     "end_credit_guard",
     "end_credit_tail_s",
     "end_credit_threshold",
+    "overlay_guard",
     "skip_intro",
     "skip_outro",
     "downscale",
@@ -187,6 +189,7 @@ def shots_non_profile_identity_current(
         "end_credit_guard": bool(section.get("end_credit_guard", False)),
         "end_credit_tail_s": float(section.get("end_credit_tail_s", 600.0)),
         "end_credit_threshold": float(section.get("end_credit_threshold", 0.60)),
+        "overlay_guard": bool(section.get("overlay_guard", True)),
         "skip_intro": float(section.get("skip_intro", 0.0)),
         "skip_outro": float(section.get("skip_outro", 0.0)),
         "downscale": str(section.get("downscale", "auto")),
@@ -201,11 +204,15 @@ def shots_non_profile_identity_current(
     # better detector loads, otherwise face_count=0 survives the environment fix.
     if expected["face_detection"] == "on" and meta.model_versions.get("face_detector") != available_face_detector_version():
         return False
+    if expected["overlay_guard"] and meta.model_versions.get("overlay_detector") != OVERLAY_DETECTOR_VERSION:
+        return False
     if not require_cache:
         return True
     required_cache = [paths.work_dir / "shots" / "detection.json", paths.work_dir / "shots" / "features.json"]
     if expected["end_credit_guard"]:
         required_cache.append(paths.work_dir / "shots" / "end_credit_marking.json")
+    if expected["overlay_guard"]:
+        required_cache.append(paths.work_dir / "shots" / "overlay_marking.json")
     return all(path.is_file() for path in required_cache)
 
 
@@ -551,6 +558,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         for key in ("detector", "min_shot_len", "sample_frames", "frame_sampling", "face_detection", "min_brightness", "end_credit_tail_s", "end_credit_threshold", "skip_intro", "skip_outro", "downscale", "scene_threshold", "scene_scale_width", "scene_min_gap", "max_shot_len", "log_level"):
             add_option(command, key, section.get(key))
         command.append("--end-credit-guard" if section.get("end_credit_guard", False) else "--no-end-credit-guard")
+        command.append("--overlay-guard" if section.get("overlay_guard", True) else "--no-overlay-guard")
     elif stage == "visual_index":
         command += ["--film", str(film), "--shots", str(paths.shots), "--output", str(paths.shot_visual_index), "--asset-dir", str(paths.visual_index_dir)]
         for key in ("embedding_mode", "embedding_model", "device", "batch_size", "keyframes_per_shot", "frame_sampling", "log_level"):
@@ -603,7 +611,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command.append("--no-review-html")
     elif stage == "render":
         command += ["--edl", str(paths.edl), "--voiceover", str(paths.voiceover), "--film", str(film), "--output", str(paths.recap)]
-        for key in ("width", "height", "fps", "fit", "crf", "preset", "concurrency", "audio_delay_s", "log_level"):
+        for key in ("width", "height", "fps", "fit", "crf", "preset", "encoder", "nvenc_cq", "concurrency", "audio_delay_s", "log_level"):
             add_option(command, key, section.get(key))
     else:
         raise OrchestratorError(f"unknown stage: {stage}")

@@ -456,13 +456,17 @@ def _render_checks(
         }
     )
     duration_delta = abs(audio_duration - voiceover_duration) if voiceover_duration else None
+    # render.fps may be "source" (R7-2), so the rate render actually wrote is the reference.
+    expected_fps = float(meta.get("fps") or 30.0) if isinstance(meta, dict) else 30.0
     render_reports_one_stream = isinstance(meta, dict) and meta.get("audio_stream_count") == 1
     render_reports_original_audio_excluded = isinstance(meta, dict) and meta.get("original_audio_included") is False
     checks = [
         _check(
             "render_format",
             "Render format",
-            DeliveryStatus.PASS if width == 1920 and height == 1080 and abs(fps - 30.0) <= 0.01 else DeliveryStatus.BLOCK,
+            DeliveryStatus.PASS
+            if width == 1920 and height == 1080 and abs(fps - expected_fps) <= 0.01
+            else DeliveryStatus.BLOCK,
             f"{width}x{height} at {fps:.3f} fps",
             output_video.name,
         ),

@@ -26,8 +26,11 @@ from render.cut import (
     build_video_filter,
     clamp_source,
     cut_temp_clip,
+    format_fps,
     required_enhanced_source_duration,
+    resolve_encoder,
     temp_cache_key,
+    video_encoder_args,
 )
 from render.quantize import QuantizeError, quantize_placements
 
@@ -418,3 +421,58 @@ def test_enhanced_audio_builders_loop_fade_duck_and_limit(tmp_path: Path, monkey
     for filter_text in (music_filter, master_filter):
         _, _, after_loudnorm = filter_text.partition("loudnorm=")
         assert "aresample=48000" in after_loudnorm
+
+
+def test_temp_cache_key_keeps_libx264_identity_and_separates_nvenc(tmp_path: Path) -> None:
+    film = tmp_path / "film.mp4"
+    film.write_bytes(b"film")
+    frame = quantize_placements([placement(0, 1)], fps=30)[0]
+    source = clamp_source(frame.placement, 10)
+    legacy = RenderParams(width=1920, height=1080, fps=30, fit="cover", crf=20, preset="medium")
+    explicit = RenderParams(width=1920, height=1080, fps=30, fit="cover", crf=20, preset="medium", encoder="libx264")
+    nvenc = RenderParams(width=1920, height=1080, fps=30, fit="cover", crf=20, preset="medium", encoder="h264_nvenc")
+    key = temp_cache_key(film_path=film, frame=frame, source=source, params=legacy)
+    assert temp_cache_key(film_path=film, frame=frame, source=source, params=explicit) == key
+    assert temp_cache_key(film_path=film, frame=frame, source=source, params=nvenc) != key
+
+
+def test_video_encoder_args_select_nvenc_or_libx264() -> None:
+    x264 = RenderParams(width=1920, height=1080, fps=30, fit="cover", crf=20, preset="medium")
+    nvenc = RenderParams(width=1920, height=1080, fps=30, fit="cover", crf=20, preset="medium", encoder="h264_nvenc", nvenc_cq=23)
+    assert video_encoder_args(x264) == ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+    args = video_encoder_args(nvenc)
+    assert args[:2] == ["-c:v", "h264_nvenc"]
+    assert args[args.index("-cq") + 1] == "23"
+
+
+def test_resolve_encoder_auto_probes_nvenc(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("render.cut.nvenc_available", lambda: True)
+    assert resolve_encoder("auto") == "h264_nvenc"
+    monkeypatch.setattr("render.cut.nvenc_available", lambda: False)
+    assert resolve_encoder("auto") == "libx264"
+    assert resolve_encoder("libx264") == "libx264"
+    with pytest.raises(ValueError):
+        resolve_encoder("hevc")
+
+
+def test_format_fps_is_exact_for_ntsc_rates() -> None:
+    assert format_fps(30) == "30"
+    assert format_fps(25.0) == "25"
+    assert format_fps(24000 / 1001) == "24000/1001"
+    assert format_fps(30000 / 1001) == "30000/1001"
+
+
+def test_pad_video_by_tail_uses_the_clip_encoder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    commands = []
+    monkeypatch.setattr("render.compose.run_command", lambda command: commands.append(command))
+    params = RenderParams(width=1920, height=1080, fps=25, fit="cover", crf=20, preset="medium", encoder="h264_nvenc")
+    pad_video_by_tail(
+        video_path=tmp_path / "video_only.mp4",
+        output_path=tmp_path / "video_only_padded.mp4",
+        work_dir=tmp_path / "work",
+        shortage_s=0.5,
+        params=params,
+    )
+    assert "h264_nvenc" in commands[1]
+    assert "libx264" not in commands[1]
+    assert "scale=1920:1080,fps=25,format=yuv420p" in commands[1]
