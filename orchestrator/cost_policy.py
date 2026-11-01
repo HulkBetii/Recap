@@ -179,7 +179,7 @@ def describe_tts(tts: dict[str, Any]) -> dict[str, Any]:
         "available_providers": available_providers,
         "text_normalization": tts.get("text_normalization", "vi"),
         "pronunciation_suggest_backend": tts.get("pronunciation_suggest_backend", "off"),
-        "backend": "local_vieneu_onnx" if is_vieneu else "paid_tts_provider",
+        "backend": f"local_vieneu_{tts.get('vieneu_backend') or 'onnx'}" if is_vieneu else "paid_tts_provider",
         "cost": "local_compute" if is_vieneu else "paid_audio_cacheable",
     }
 

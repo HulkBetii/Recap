@@ -761,6 +761,9 @@ def validate_runtime_requirements(will_run: set[str], config: dict[str, Any]) ->
     tts = config.get("tts", {})
     if "tts" in will_run and tts.get("provider_mode") == "vieneu":
         modules.update({"vieneu", "onnxruntime", "soundfile"})
+        if tts.get("vieneu_backend") == "pytorch":
+            modules.update({"torch", "transformers"})
+            cuda_required = True
     missing = sorted(module for module in modules if not runtime_module_available(module))
     if missing:
         raise OrchestratorError(

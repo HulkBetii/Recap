@@ -165,7 +165,7 @@ def test_vieneu_anime_series_preset_uses_local_storytelling_voice() -> None:
     assert config["tts"]["provider_mode"] == "vieneu"
     assert config["tts"]["voice_id"] == "Ngọc Linh"
     assert config["tts"]["vieneu_style"] == "doc_truyen"
-    assert config["tts"]["vieneu_backend"] == "onnx"
+    assert config["tts"]["vieneu_backend"] == "pytorch"
     assert config["tts"]["vieneu_precision"] == "int8"
     assert config["tts"]["speed"] == 0.9
     assert config["tts"]["pronunciation_lexicon"] == "examples/anime/solo_leveling_vi_pronunciation.yaml"

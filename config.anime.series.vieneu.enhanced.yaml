@@ -108,7 +108,7 @@ tts:
   voice_id: "Ngọc Linh"
   provider_mode: vieneu
   vieneu_style: doc_truyen
-  vieneu_backend: onnx
+  vieneu_backend: pytorch  # SDK 3.8 CUDA engine; use onnx on machines without an NVIDIA GPU
   vieneu_precision: int8
   vieneu_model: pnnbao-ump/VieNeu-TTS-v3-Turbo
   vieneu_threads: 0

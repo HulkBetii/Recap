@@ -34,8 +34,10 @@ from tts.vieneu_provider import (
     DEFAULT_VIENEU_MODEL,
     DEFAULT_VIENEU_PRECISION,
     DEFAULT_VIENEU_STYLE,
+    reference_identity,
     validate_vieneu_settings,
     vieneu_package_version,
+    voice_reference_path,
 )
 
 DEFAULT_MODEL = "eleven_multilingual_v2"
@@ -66,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openai-model", default=DEFAULT_OPENAI_MODEL)
     parser.add_argument("--openai-voice", default=DEFAULT_OPENAI_VOICE)
     parser.add_argument("--vieneu-style", choices=["tu_nhien", "tin_tuc", "doc_truyen"], default=DEFAULT_VIENEU_STYLE)
-    parser.add_argument("--vieneu-backend", choices=["onnx"], default=DEFAULT_VIENEU_BACKEND)
+    parser.add_argument("--vieneu-backend", choices=["onnx", "pytorch"], default=DEFAULT_VIENEU_BACKEND)
     parser.add_argument("--vieneu-precision", choices=["int8", "fp32"], default=DEFAULT_VIENEU_PRECISION)
     parser.add_argument("--vieneu-model", default=DEFAULT_VIENEU_MODEL)
     parser.add_argument("--vieneu-threads", default=0, type=int)
@@ -271,6 +273,11 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
             "apply_watermark": True,
             "speed_method": "ffmpeg_atempo",
         }
+        reference = voice_reference_path(args.voice_id)
+        if reference is not None:
+            # A cloned voice must re-render when the clip changes, not only when its path does.
+            provider_config["vieneu"]["voice_id"] = reference.name
+            provider_config["vieneu"]["reference_sha256"] = reference_identity(reference)
     capcut_voice_type: str | None = None
     if args.provider_mode == "capcut":
         capcut_voice = resolve_capcut_voice(args.voice_id)
