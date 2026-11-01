@@ -38,9 +38,13 @@ class FakeReviewClient:
                 ],
                 ensure_ascii=False,
             )
+        if "Regenerate only this one" in prompt and "length:" in prompt:
+            current = json.loads(prompt.split("CURRENT_BEAT:\n", 1)[1].split("\n", 1)[0])
+            return json.dumps({"beat_id": current["beat_id"], "narration": current["narration"] + " Chi tiết thêm."}, ensure_ascii=False)
         if "Regenerate only this one" in prompt:
             return json.dumps({"beat_id": 1, "narration": "Minh lần theo dấu vết và nhận ra cả nhà đang che giấu một bí mật."}, ensure_ascii=False)
-        if "Review this Vietnamese recap" in prompt and not any("Regenerate only" in call for call in self.calls):
+        qa_rewrites = [call for call in self.calls if "Regenerate only" in call and "length:" not in call]
+        if "Review this Vietnamese recap" in prompt and not qa_rewrites:
             return json.dumps(
                 {"pass": False, "issues": [{"beat_id": 1, "type": "accuracy", "suggestion": "Làm rõ theo film_map"}], "notes": "needs fix"},
                 ensure_ascii=False,

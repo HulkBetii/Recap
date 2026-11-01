@@ -15,6 +15,8 @@ GENERATED_FILES = (
     "narration.json",
     "narration_consistent.json",
     "narration_style_checked.json",
+    "narration_length_checked.json",
+    "length_qa.json",
     "qa.json",
     "style_qa.json",
     "style_config.json",

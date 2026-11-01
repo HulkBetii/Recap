@@ -56,7 +56,7 @@ storymap:
 
 review:
   llm_backend: ninerouter
-  llm_model: heavy
+  llm_model: ag/gemini-3.8-flash-high
   content_type: movie
   hook_mode: setup
   target_ratio: auto

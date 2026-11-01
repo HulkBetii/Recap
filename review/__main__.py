@@ -54,6 +54,7 @@ DEFAULT_TTS_CPS = 15.0
 DEFAULT_MIN_COVERAGE = 0.85
 DEFAULT_MAX_QA_ITERATIONS = 3
 DEFAULT_PROFILE_DIR = CHATGPT_PLAYWRIGHT_PROFILE_DIR
+LENGTH_EXPAND_RATIO = 0.75
 LLM_BACKENDS = ("chatgpt_playwright", GATEWAY_BACKEND)
 
 
@@ -340,6 +341,22 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
     narration, consistency_warnings = ensure_narration_consistency(cache, narration, outline_result.glossary, logger)
     warnings.extend(consistency_warnings)
     beats = derive_review_beats(outline=outline_result.outline, narration=narration, film_map=film_map)
+    narration, beats, n_length_expansions, length_warnings = await ensure_narration_length(
+        cache=cache,
+        client=client,
+        narration=narration,
+        beats=beats,
+        outline=outline_result.outline,
+        film_map=film_map,
+        glossary=outline_result.glossary,
+        char_targets=char_targets,
+        style_guide=style_guide,
+        logger=logger,
+        anime_context=anime_context,
+        episode_memory=episode_memory,
+        content_type=args.content_type,
+    )
+    warnings.extend(length_warnings)
     style_qa_report: list[dict] = []
     n_style_rewrites = 0
     readability_warnings: list[str] = []
@@ -394,7 +411,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             n_qa_iterations = iteration
             break
         narration_by_id = {item.beat_id: item for item in narration}
-        limited_issues = qa.issues[:args.max_qa_rewrites_per_iteration] if args.max_qa_rewrites_per_iteration else []
+        limited_issues = qa.issues[: qa_rewrite_cap(args.max_qa_rewrites_per_iteration, len(beats))]
         if len(qa.issues) > len(limited_issues):
             warnings.append(f"qa rewrite limited to {len(limited_issues)} of {len(qa.issues)} issue(s) in iteration {iteration}")
         for issue in limited_issues:
@@ -412,8 +429,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                     episode_memory=episode_memory,
                     content_type=args.content_type,
                 )
-            except (PlaywrightChatError, OpenAIChatError, GatewayChatError) as exc:
-                warning = f"qa rewrite skipped for beat {issue.beat_id} after LLM transport failure: {exc}"
+            except (PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError) as exc:
+                warning = f"qa rewrite skipped for beat {issue.beat_id} after LLM failure: {exc}"
                 logger.warning(warning)
                 warnings.append(warning)
                 continue
@@ -443,8 +460,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                     episode_memory=episode_memory,
                     content_type=args.content_type,
                 )
-            except (PlaywrightChatError, OpenAIChatError, GatewayChatError) as exc:
-                warning = f"opening coherence rewrite skipped after LLM transport failure: {exc}"
+            except (PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError) as exc:
+                warning = f"opening coherence rewrite skipped after LLM failure: {exc}"
                 logger.warning(warning)
                 warnings.append(warning)
             else:
@@ -658,8 +675,8 @@ async def ensure_style_readability(
                     episode_memory=episode_memory,
                     content_type=content_type,
                 )
-            except (PlaywrightChatError, OpenAIChatError, GatewayChatError) as exc:
-                warning = f"style readability rewrite skipped for beat {issue.beat_id} after LLM transport failure: {exc}"
+            except (PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError) as exc:
+                warning = f"style readability rewrite skipped for beat {issue.beat_id} after LLM failure: {exc}"
                 logger.warning(warning)
                 consistency_warnings.append(warning)
                 continue
@@ -671,6 +688,80 @@ async def ensure_style_readability(
         narration, round_consistency_warnings = apply_narration_consistency(narration, glossary)
         consistency_warnings.extend(round_consistency_warnings)
         beats = derive_review_beats(outline=outline, narration=narration, film_map=film_map)
+
+
+async def ensure_narration_length(
+    *,
+    cache: ReviewCache,
+    client,
+    narration: list[NarrationBeat],
+    beats: list[ReviewBeat],
+    outline,
+    film_map,
+    glossary: list[dict],
+    char_targets: list[int],
+    style_guide: str,
+    logger: logging.Logger,
+    anime_context: AnimeContext | None,
+    episode_memory: EpisodeMemory | None,
+    content_type: str,
+) -> tuple[list[NarrationBeat], list[ReviewBeat], int, list[str]]:
+    """Expand beats written well below their character target once.
+
+    Models plateau around 700-1,350 characters per beat, so long per-beat targets came back at ~60%.
+    """
+    if cache.has("narration_length_checked.json") and cache.has("length_qa.json"):
+        logger.info("[2/4] Using cached narration_length_checked.json")
+        cached = [NarrationBeat.model_validate(item) for item in cache.read_json("narration_length_checked.json")]
+        report = cache.read_json("length_qa.json")
+        return cached, derive_review_beats(outline=outline, narration=cached, film_map=film_map), int(report.get("n_expanded", 0)), list(report.get("warnings", []))
+    short = [
+        item
+        for item in narration
+        if item.beat_id < len(char_targets) and len(item.narration) < LENGTH_EXPAND_RATIO * char_targets[item.beat_id]
+    ]
+    if short:
+        logger.info("[2/4] Expanding %d beat(s) written below %.0f%% of their target", len(short), LENGTH_EXPAND_RATIO * 100)
+    narration_by_id = {item.beat_id: item for item in narration}
+    warnings: list[str] = []
+    expanded = 0
+    for item in short:
+        target = char_targets[item.beat_id]
+        try:
+            revised = await regenerate_beat(
+                client,
+                beat=beats[item.beat_id],
+                issue=(
+                    f"length: the narration has {len(item.narration)} characters but should be about {target}. "
+                    "Expand it with concrete events, character names and cause/effect from this beat's span; "
+                    "no filler, no repeated sentences, no quoted dialogue."
+                ),
+                glossary=glossary,
+                char_target=target,
+                style_sample=style_guide,
+                anime_context=anime_context,
+                episode_memory=episode_memory,
+                content_type=content_type,
+            )
+        except (PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError) as exc:
+            warning = f"length expansion skipped for beat {item.beat_id}: {exc}"
+            logger.warning(warning)
+            warnings.append(warning)
+            continue
+        if len(revised.narration) > len(item.narration):
+            narration_by_id[item.beat_id] = revised
+            expanded += 1
+    narration = [narration_by_id[index] for index in sorted(narration_by_id)]
+    narration, consistency_warnings = apply_narration_consistency(narration, glossary)
+    warnings.extend(consistency_warnings)
+    cache.write_json("narration_length_checked.json", narration)
+    cache.write_json("length_qa.json", {"n_short": len(short), "n_expanded": expanded, "warnings": warnings})
+    return narration, derive_review_beats(outline=outline, narration=narration, film_map=film_map), expanded, warnings
+
+
+def qa_rewrite_cap(configured: int, n_beats: int) -> int:
+    """Scale the per-iteration QA rewrite budget with script size; 0 still disables rewrites."""
+    return max(configured, n_beats // 3) if configured else 0
 
 
 def ensure_narration_consistency(

@@ -59,11 +59,12 @@ storymap:
 
 review:
   llm_backend: ninerouter
-  llm_model: heavy
+  llm_model: ag/gemini-3.8-flash-high
   content_type: movie
   hook_mode: setup
   target_ratio: auto
-  tts_cps: 15
+  # Measured speed of the CapCut voice below (BV074 20.56, BV421 20.31, BV562 19.72, vi_female_huong 15.85).
+  tts_cps: 20.5
   min_coverage: 0.85
   max_qa_iterations: 3
   max_qa_rewrites_per_iteration: 6

@@ -81,7 +81,7 @@ review:
   chat_session_policy: auto
   reply_timeout_s: 600
   llm_backend: ninerouter
-  llm_model: heavy
+  llm_model: ag/gemini-3.8-flash-high
   playwright_max_attempts: 2
   playwright_recovery_timeout_s: 60
   openai_fallback_model: null
@@ -191,7 +191,7 @@ series_recap:
   format: episode_arc_chaptered
   detail_level: detailed
   llm_backend: ninerouter
-  llm_model: heavy
+  llm_model: ag/gemini-3.8-flash-high
   tts_cps: 24.0
   target_total_min_s: 2100
   target_total_max_s: 2700

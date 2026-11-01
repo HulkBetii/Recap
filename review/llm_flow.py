@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import Callable
 from typing import Protocol
 
@@ -13,6 +14,13 @@ from review.models import NarrationBeat, OutlineBeat, OutlineResult, QaResult
 NARRATION_FIELDS = ("beat_id", "narration")
 # 9router rejects very large responses (502 response_too_large); ~8k Vietnamese chars per request stays well below it.
 NARRATION_BATCH_CHARS = 8000
+# Models write ~700-1,350 characters per beat regardless of the target, so long films need more,
+# shorter beats; ~700 chars is ~35 s of CapCut narration.
+MAX_CHARS_PER_BEAT = 700
+
+
+def min_outline_beats(char_budget: int) -> int:
+    return max(1, math.ceil(char_budget / MAX_CHARS_PER_BEAT))
 
 MOVIE_CONTENT_TYPES = {"movie", "anime_movie"}
 
@@ -105,6 +113,7 @@ Rules:
 - If story_start_s is given, do not choose setup/opening source spans before story_start_s.
 - glossary: list of characters with Vietnamese canonical name and short role.
 - outline: ordered beats covering the full plot with recap pacing. Each beat has from_seg_id, to_seg_id, summary.
+- Use at least {min_outline_beats(char_budget)} beats so that no beat needs more than about {MAX_CHARS_PER_BEAT} Vietnamese characters; split long stretches of plot into several beats.
 - Do NOT create standalone beats for credits, production info, black screen, title cards, or non-story outro; keep the real plot ending, but ignore post-plot credits.
 {hook_rule}
 {pacing_rule}

@@ -85,7 +85,7 @@ review:
   content_type: movie
   hook_mode: setup
   target_ratio: auto
-  tts_cps: 15
+  tts_cps: 20.5
   min_coverage: 0.85
   max_qa_iterations: 3
   max_qa_rewrites_per_iteration: 6
@@ -102,7 +102,7 @@ review:
   chat_title: null
   reply_timeout_s: 600
   llm_backend: ninerouter
-  llm_model: heavy
+  llm_model: ag/gemini-3.8-flash-high
   playwright_max_attempts: 2
   playwright_recovery_timeout_s: 60
   openai_fallback_model: null
@@ -253,11 +253,11 @@ postprocess:
 
 series_recap:
   llm_backend: ninerouter
-  llm_model: heavy
+  llm_model: ag/gemini-3.8-flash-high
   scope: end_to_end
   format: compact
   detail_level: standard
-  tts_cps: 15.0
+  tts_cps: 20.5
   target_total_min_s: 2100
   target_total_max_s: 2700
   target_total_hard_cap_s: 3000

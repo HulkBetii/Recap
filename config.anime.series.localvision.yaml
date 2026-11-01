@@ -81,7 +81,7 @@ review:
   chat_session_policy: auto
   reply_timeout_s: 600
   llm_backend: ninerouter
-  llm_model: heavy
+  llm_model: ag/gemini-3.8-flash-high
   playwright_max_attempts: 2
   playwright_recovery_timeout_s: 60
   openai_fallback_model: null
@@ -188,7 +188,7 @@ render:
 
 series_recap:
   llm_backend: ninerouter
-  llm_model: heavy
+  llm_model: ag/gemini-3.8-flash-high
   scope: end_to_end
   format: episode_arc_chaptered
   detail_level: detailed
