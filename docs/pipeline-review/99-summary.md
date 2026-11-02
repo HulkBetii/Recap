@@ -65,4 +65,18 @@ Nguyên nhân QA không pass: outline gán span lệch so với nội dung tóm 
 | Request 9router của GĐ2 | — / — / 35 | 17 / 13 |
 | Input token GĐ2 | — / — / 738k | 383k / 334k |
 
+Chạy lại từ GĐ2 tới render trên cache ingest/shots của `final4` (`runs/bench-qods-final5`):
+
+| Chỉ số | final4 | final5 |
+|---|---|---|
+| Tổng thời gian các stage review → render | 25,8 phút | 19,6 phút |
+| review | 19,9 phút | 11,5 phút |
+| QA GĐ2 theo vòng | 14 → 5 → 5 → 4 | 1 → 0 |
+| Chấm độc lập (2 lần) | 3+2 | 0+0 |
+| Độ dài recap / mục tiêu | 103,6% | 106,1% |
+| Sync QA | sạch | sạch |
+| Beat drift cao | 5 | 7 |
+| Drift nguồn trung vị / p90 | 3,0 / 9,8 s | 3,4 / 9,3 s |
+| Placement trên shot quảng cáo | 0 | 0 |
+
 Bộ chấm dao động mạnh (final2 lần 0 lỗi, lần 4 lỗi), nên đây là xu hướng chứ chưa phải tỷ lệ chính xác.

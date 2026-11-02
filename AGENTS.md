@@ -194,7 +194,7 @@ repo/
 ## 12. GĐ3 IMPLEMENTATION HIỆN TẠI
 
 - GĐ3 là CLI local, chạy bằng `python -m tts`.
-- Provider TTS: `provider_mode=auto` dùng AI33.PRO Vivoo V3 primary, Genmax secondary và OpenAI `gpt-4o-mini-tts` fallback cuối. `provider_mode=capcut` (preset production/example, giọng `BV074_streaming`, concurrency 4) và `vieneu` là provider chọn tường minh, không tự fallback.
+- Provider TTS: `provider_mode=auto` dùng AI33.PRO Vivoo V3 primary, Genmax secondary và OpenAI `gpt-4o-mini-tts` fallback cuối. `provider_mode=vieneu` (preset production: clone giọng từ `data/voices/ngochuyen_ref.mp3`, CUDA) và `capcut` (preset example, giọng `BV074_streaming`, concurrency 4) là provider chọn tường minh, không tự fallback.
 - Env vars: `VIVOO_API_KEY` cho AI33, `GENMAX_API_KEY` cho Genmax, `OPENAI_API_KEY` cho OpenAI fallback.
 - Package thực tế:
   - `tts/`: provider adapters, cache manifest, sanitize, timing builder, concat, cost/meta và CLI orchestration.
@@ -502,7 +502,7 @@ repo/
 
 ## 36. PRODUCTION KOREAN MOVIE PRESET / TTS RUNTIME
 
-- `config.movie.production.yaml` là preset production cho phim Hàn trên máy CUDA: Faster Whisper + WhisperX, 9router (`ag/gemini-3.8-flash-high`) cho dịch/vision/review, CapCut TTS, ffmpeg-scene batch shots, End-Credit Guard, BGE-M3 matching và GĐ6 1080p; Visual Index tắt từ đợt review 2026-11 (R5-5: đóng góp trung vị 2% điểm chọn shot cho ~4 phút GPU), `config.movie.visual.yaml` vẫn bật để thử nghiệm.
+- `config.movie.production.yaml` là preset production cho phim Hàn trên máy CUDA: Faster Whisper + WhisperX, 9router (`ag/gemini-3.8-flash-high`) cho dịch/vision/review, VieNeu TTS (clone giọng Ngọc Huyền, CUDA), ffmpeg-scene batch shots, End-Credit Guard, BGE-M3 matching và GĐ6 1080p; Visual Index tắt từ đợt review 2026-11 (R5-5: đóng góp trung vị 2% điểm chọn shot cho ~4 phút GPU), `config.movie.visual.yaml` vẫn bật để thử nghiệm.
 - Production preset bật `orchestrator.runtime_preflight=true`; thiếu optional module trong `movie-visual` hoặc CUDA phải fail-fast trước khi chạy stage nặng.
 - TTS production dùng VieNeu 3.8 CUDA clone từ `data/voices/ngochuyen_ref.mp3` (đo được 17,9 (mẫu) và 18,15 (cả phim) ký tự/giây ở speed 1.0, `review.tts_cps=18.5`); chuyển về CapCut bằng `provider_mode: capcut` + `voice_id: BV074_streaming`. Cấu hình CapCut cũ: concurrency `4`, đo được 20,6–21,7 ký tự/giây; `review.tts_cps=20.0` để recap đạt 95–100% mục tiêu sau khi trừ beat ngắn). Cấu hình AI33/Genmax/OpenAI vẫn giữ trong preset cho `provider_mode=auto`. `TtsMeta` có diagnostics optional/backward-compatible cho provider usage và fallback count.
 - Stable/visual presets cũ vẫn tương thích và không bị tự động chuyển sang production behavior.
@@ -620,14 +620,14 @@ repo/
 
 ## 46. OPTIONAL VIENEU LOCAL TTS PROVIDER
 
-- GĐ3 supports `provider_mode=vieneu` as an explicit local provider through the Apache-2.0 PyPI SDK `vieneu==3.2.3`; existing `auto` behavior remains AI33 -> Genmax -> OpenAI and must not silently select VieNeu.
-- V1 forces VieNeu v3 Turbo `backend=onnx` and `device=cpu`; it defaults to `precision=int8` and `style=doc_truyen`, with `fp32` available only as an explicit CLI/config choice. The recommended female storytelling preset is the exact built-in voice ID `Ngọc Linh`; `Trúc Ly` is a separate voice ID. Voice cloning and GPU batching are not part of this integration.
+- GĐ3 supports `provider_mode=vieneu` as an explicit local provider through the Apache-2.0 PyPI SDK `vieneu==3.8.3`; existing `auto` behavior remains AI33 -> Genmax -> OpenAI and must not silently select VieNeu.
+- VieNeu v3 Turbo runs with `backend=onnx` on CPU (`precision=int8` default, `fp32` explicit) or `backend=pytorch` on CUDA (SDK 3.8, precision ignored). `style` is kept in config/cache identity but SDK >= 3.7 ignores it and the adapter no longer sends it. Built-in voices are exact IDs such as `Ngọc Linh` or `Trúc Ly`; a `voice_id` that is a path to a 3-8 s audio clip is cloned once per process (`add_voice`, denoise on) and its SHA-256 enters the cache identity. Batched inference across beats (`infer_batch`) is not implemented.
 - Install with `python -m pip install -e ".[tts-vieneu]"`. The optional extra pins `gradio>=5.49.1,<6` and `huggingface-hub>=0.34,<1` to remain compatible with the existing Transformers stack. VieNeu is lazy-imported and model weights are not downloaded during normal preflight.
 - VieNeu emits 48 kHz WAV. The adapter serializes inference per process, writes a temporary WAV, converts it to a real MP3 with ffmpeg, applies `atempo` when `tts.speed != 1`, and leaves the existing normalization, timing, manifest and resume contracts unchanged. The SDK watermark remains enabled.
-- Cache identity records provider package version, model, backend, precision, voice, style, thread count, watermark policy and speed method. Missing SDK/ONNX/SoundFile runtime, invalid style/voice and model-download failures fail clearly without falling back to a paid provider.
+- Cache identity records provider package version, model, backend, precision, voice (clip name plus `reference_sha256` for clones), style, thread count, watermark policy and speed method. Missing SDK/ONNX/SoundFile runtime, invalid style/voice and model-download failures fail clearly without falling back to a paid provider.
 - UI may select VieNeu only through the allowlisted `tts.provider_mode`/`tts.vieneu_style` overrides; backend, precision, model path and reference audio remain locked. Local preflight reports runtime readiness without exposing model paths, secrets or prompts.
 - UI preflight also validates the locked VieNeu backend/precision/style/thread settings and checks a configured pronunciation lexicon before enqueue; it exposes only safe runtime details such as the lexicon filename and first-run model-download notice.
-- `config.anime.series.vieneu.yaml` is the dedicated season preset for the selected production voice: exact voice ID `Ngọc Linh`, `style=doc_truyen`, ONNX/int8 CPU, and `speed=0.9`. It uses 9router for required JA->EN transcript translation with `api_budget_guard=block`; the OpenAI-translation practical preset remains unchanged.
+- `config.anime.series.vieneu.yaml` is the dedicated season preset for the selected production voice: exact voice ID `Ngọc Linh`, `style=doc_truyen`, pytorch/CUDA (SDK 3.8; switch to `vieneu_backend: onnx` on machines without an NVIDIA GPU), and `speed=0.9`. It uses 9router for required JA->EN transcript translation with `api_budget_guard=block`; the OpenAI-translation practical preset remains unchanged.
 - Its `series_recap.tts_cps=17.0` is calibrated from the Tensei S01 production run: 63,107 normalized narration characters over 3,674.842 seconds, or 17.17 characters/second. The slightly conservative planning value keeps the 35-45 minute season target aligned with measured VieNeu delivery; `review.tts_cps=15` and generic anime presets remain unchanged.
 - The VieNeu Solo Leveling preset loads `examples/anime/solo_leveling_vi_pronunciation.yaml`; current validated aliases normalize `Sung Jinwoo`/`Jinwoo` spellings to `Sung Chin U`/`Chin U` before cache identity and synthesis. VieNeu/sea-g2p maps `Chin U` closer to Korean `진우` than `Jin U`, which introduces a "you" glide. Add other character names only after a short pronunciation smoke test.
 

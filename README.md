@@ -362,7 +362,7 @@ python -m tts `
   --work-dir work\tts
 ```
 
-VieNeu synthesis is serialized within one TTS process, writes a temporary WAV, converts it to a real MP3 with ffmpeg (including `atempo` for non-1.0 speed), and then follows the existing normalization/cache/resume path. The SDK watermark remains enabled. Voice cloning and GPU batching are intentionally out of scope for this integration.
+VieNeu synthesis is serialized within one TTS process, writes a temporary WAV, converts it to a real MP3 with ffmpeg (including `atempo` for non-1.0 speed), and then follows the existing normalization/cache/resume path. The SDK watermark remains enabled. With SDK 3.8, `--vieneu-backend pytorch` runs on CUDA, and a `--voice-id` that points at a 3-8 s audio clip is cloned zero-shot (only clone voices you have the right to use). Batched inference across beats is not implemented.
 
 Env vars:
 
