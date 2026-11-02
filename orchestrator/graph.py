@@ -55,8 +55,10 @@ class RunPaths:
     review_meta: Path
     review_meta_alias: Path
     review_intent: Path
+    review_sentences: Path
     voiceover: Path
     beats_timing: Path
+    sentence_timing: Path
     tts_meta: Path
     audio_dir: Path
     shots: Path
@@ -97,8 +99,10 @@ def build_paths(run_dir: Path) -> RunPaths:
         review_meta=run_dir / "review_script.meta.json",
         review_meta_alias=run_dir / "review_meta.json",
         review_intent=run_dir / "review_script.intent.json",
+        review_sentences=run_dir / "review_script.sentences.json",
         voiceover=run_dir / "voiceover.mp3",
         beats_timing=run_dir / "beats_timing.json",
+        sentence_timing=run_dir / "sentence_timing.json",
         tts_meta=run_dir / "tts_meta.json",
         audio_dir=run_dir / "audio",
         shots=run_dir / "shots.json",

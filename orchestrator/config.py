@@ -106,6 +106,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "review": {
         "target_ratio": "auto",
+        "sentence_refs": False,
         "content_type": "movie",
         "hook_mode": "setup",
         "opening_coherence_qa": True,
@@ -163,6 +164,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "normalize": True,
         "cost_per_1k_chars": 0.0,
         "text_normalization": "vi",
+        "sentence_timing": "off",
         "pronunciation_lexicon": None,
         "normalized_script_output": None,
         "normalization_report": None,
@@ -255,6 +257,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "story_map": "auto",
         "opening_ordered_fill": True,
         "opening_intra_beat_align": False,
+        "sentence_anchors": False,
         "hook_min_brightness": 0.0,
         "ordered_fill_by_audio_progress": True,
         "review_html": True,

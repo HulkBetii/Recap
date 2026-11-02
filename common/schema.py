@@ -290,6 +290,10 @@ class ReviewMeta(BaseModel):
     micro_beat_split_ids: list[int] = Field(default_factory=list)
     micro_beat_warnings: list[str] = Field(default_factory=list)
     qa_rewrite_limited: bool = False
+    sentence_refs_enabled: bool = False
+    n_sentences: int | None = None
+    n_grounded_sentences: int | None = None
+    sentence_ref_warnings: list[str] = Field(default_factory=list)
     film_map_hash: str | None = None
     film_map_meta_hash: str | None = None
     story_map_hash: str | None = None
@@ -326,6 +330,59 @@ class BeatTiming(BaseModel):
         return self
 
 
+class SentenceRef(BaseModel):
+    """Source segments one narration sentence describes (G2 sidecar `review_script.sentences.json`).
+
+    `from_seg_id`/`to_seg_id` are None for commentary sentences without a concrete scene; timecodes are
+    always derived from film_map by code, never written by the LLM.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: int = Field(ge=0)
+    idx: int = Field(ge=0)
+    text: str
+    from_seg_id: int | None = Field(default=None, ge=0)
+    to_seg_id: int | None = Field(default=None, ge=0)
+    src_tc_start: float | None = Field(default=None, ge=0)
+    src_tc_end: float | None = Field(default=None, gt=0)
+    grounded: bool = False
+
+    @model_validator(mode="after")
+    def validate_refs(self) -> "SentenceRef":
+        ids = (self.from_seg_id, self.to_seg_id)
+        times = (self.src_tc_start, self.src_tc_end)
+        if (ids[0] is None) != (ids[1] is None) or (times[0] is None) != (times[1] is None):
+            raise ValueError("segment ids and timecodes must be set together")
+        if (ids[0] is None) != (times[0] is None):
+            raise ValueError("timecodes require segment ids")
+        if ids[0] is not None and ids[1] < ids[0]:
+            raise ValueError("to_seg_id must be >= from_seg_id")
+        if times[0] is not None and times[1] <= times[0]:
+            raise ValueError("src_tc_end must be greater than src_tc_start")
+        if self.grounded and ids[0] is None:
+            raise ValueError("a grounded sentence needs segment ids")
+        return self
+
+
+class SentenceTimestamp(BaseModel):
+    """Output-timeline window of one narration sentence (G3 sidecar `sentence_timing.json`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: int = Field(ge=0)
+    idx: int = Field(ge=0)
+    tl_start: float = Field(ge=0)
+    tl_end: float = Field(gt=0)
+    method: Literal["silence", "proportional"]
+
+    @model_validator(mode="after")
+    def validate_window(self) -> "SentenceTimestamp":
+        if self.tl_end <= self.tl_start:
+            raise ValueError("tl_end must be greater than tl_start")
+        return self
+
+
 class TtsMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -356,6 +413,8 @@ class TtsMeta(BaseModel):
     openai_model: str | None = None
     openai_voice: str | None = None
     review_script_hash: str | None = None
+    sentence_timing: str | None = None
+    n_sentence_aligned_beats: int | None = None
 
 
 
@@ -1331,6 +1390,8 @@ class EdlMeta(BaseModel):
     n_capacity_exhausted_beats: int = Field(default=0, ge=0)
     n_unused_source_reuse: int = Field(default=0, ge=0)
     n_overlapping_repeats: int = Field(default=0, ge=0)
+    n_sentence_anchored_beats: int = Field(default=0, ge=0)
+    sentence_ref_hit_ratio: float | None = None
     max_repeat_ratio: float = Field(default=0.0, ge=0)
     avg_clip_len: float = Field(ge=0)
     coverage_ok: bool
@@ -1761,6 +1822,43 @@ def validate_beats_timing(timings: list[BeatTiming], pause_s: float = 0.0) -> li
         previous_end = timing.tl_end
     return ordered
 
+
+
+def validate_sentence_refs(refs: list[SentenceRef], beats: list[ReviewBeat]) -> list[SentenceRef]:
+    """Every beat has contiguous sentence indexes and grounded spans stay inside the beat's own span."""
+    by_beat = {beat.beat_id: beat for beat in beats}
+    ordered = sorted(refs, key=lambda item: (item.beat_id, item.idx))
+    expected: dict[int, int] = {}
+    for ref in ordered:
+        beat = by_beat.get(ref.beat_id)
+        if beat is None:
+            raise ValueError(f"sentence ref for unknown beat #{ref.beat_id}")
+        if ref.idx != expected.get(ref.beat_id, 0):
+            raise ValueError(f"beat #{ref.beat_id} sentence indexes must be continuous")
+        expected[ref.beat_id] = ref.idx + 1
+        if ref.from_seg_id is not None and not (beat.from_seg_id <= ref.from_seg_id and ref.to_seg_id <= beat.to_seg_id):
+            raise ValueError(f"beat #{ref.beat_id} sentence {ref.idx} refs fall outside the beat span")
+    return ordered
+
+
+def validate_sentence_timing(stamps: list[SentenceTimestamp], timings: list[BeatTiming]) -> list[SentenceTimestamp]:
+    """Sentence windows tile each beat's audio window in order."""
+    by_beat = {timing.beat_id: timing for timing in timings}
+    ordered = sorted(stamps, key=lambda item: (item.beat_id, item.idx))
+    previous: SentenceTimestamp | None = None
+    for stamp in ordered:
+        timing = by_beat.get(stamp.beat_id)
+        if timing is None:
+            raise ValueError(f"sentence timing for unknown beat #{stamp.beat_id}")
+        first = previous is None or previous.beat_id != stamp.beat_id
+        if first and (stamp.idx != 0 or abs(stamp.tl_start - timing.tl_start) > 1e-3):
+            raise ValueError(f"beat #{stamp.beat_id} sentence timing must start at the beat start")
+        if not first and (stamp.idx != previous.idx + 1 or abs(stamp.tl_start - previous.tl_end) > 1e-3):
+            raise ValueError(f"beat #{stamp.beat_id} sentence {stamp.idx} does not follow sentence {previous.idx}")
+        if stamp.tl_end > timing.tl_end + 1e-3:
+            raise ValueError(f"beat #{stamp.beat_id} sentence {stamp.idx} ends after the beat")
+        previous = stamp
+    return ordered
 
 
 def validate_shots(shots: list[Shot], duration: float | None = None) -> list[Shot]:

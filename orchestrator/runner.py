@@ -40,6 +40,8 @@ from common.schema import (
     ReviewBeat,
     ReviewMeta,
     ReviewIntent,
+    SentenceRef,
+    SentenceTimestamp,
     Shot,
     ShotVisualIndexFile,
     ShotsMeta,
@@ -49,6 +51,8 @@ from common.schema import (
     validate_film_map,
     validate_review_script,
     validate_review_intents,
+    validate_sentence_refs,
+    validate_sentence_timing,
     validate_shots,
     validate_shot_visual_index,
     validate_story_map,
@@ -293,11 +297,31 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
         raise OrchestratorError(f"{stage} output validation failed: {exc}") from exc
 
 
+def sentence_sidecars_valid(paths: RunPaths, stage: str, config: dict[str, Any]) -> bool:
+    """Sentence-anchored matching needs review_script.sentences.json (G2) and sentence_timing.json (G3)."""
+    try:
+        if stage == "review" and config.get("review", {}).get("sentence_refs", False):
+            if not paths.review_sentences.is_file():
+                return False
+            beats = [ReviewBeat.model_validate(item) for item in load_json(paths.review_script)]
+            validate_sentence_refs([SentenceRef.model_validate(item) for item in load_json(paths.review_sentences)], beats)
+        if stage == "tts" and config.get("tts", {}).get("sentence_timing", "off") not in {None, False, "off"}:
+            if not paths.sentence_timing.is_file():
+                return False
+            timings = [BeatTiming.model_validate(item) for item in load_json(paths.beats_timing)]
+            validate_sentence_timing([SentenceTimestamp.model_validate(item) for item in load_json(paths.sentence_timing)], timings)
+    except (OrchestratorError, OSError, ValueError):
+        return False
+    return True
+
+
 def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, config: dict[str, Any] | None = None) -> bool:
     if not all_outputs_exist(paths, stage):
         return False
     try:
         validate_stage(paths, stage)
+        if config is not None and not sentence_sidecars_valid(paths, stage, config):
+            return False
         if stage == "preflight" and film is not None and config is not None:
             section = config.get("preflight", {})
             expected_input, expected_config = preflight_identity(
@@ -505,6 +529,8 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             command += ["--story-map", str(story_map_setting)]
         review_intent_output = section.get("review_intent_output")
         command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
+        if section.get("sentence_refs", False):
+            command += ["--sentence-refs", "--sentence-refs-output", str(paths.review_sentences)]
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
         for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "context_file", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "llm_model", "llm_base_url", "llm_fallback_model", "llm_concurrency", "playwright_max_attempts", "playwright_recovery_timeout_s", "openai_fallback_model", "log_level"):
@@ -550,6 +576,9 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         else:
             command.append("--no-pronunciation-qa")
         command += ["--film-meta", str(paths.film_map_meta)]
+        sentence_timing = section.get("sentence_timing", "off")
+        if sentence_timing not in {None, False, "off"}:
+            command += ["--sentence-timing", str(sentence_timing), "--sentence-timing-output", str(paths.sentence_timing)]
         if not section.get("normalize", True):
             command.append("--no-normalize")
     elif stage == "shots":
@@ -607,6 +636,8 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command.append("--opening-allow-short-fill" if section.get("opening_allow_short_fill", True) else "--no-opening-allow-short-fill")
         command.append("--opening-ordered-fill" if section.get("opening_ordered_fill", True) else "--no-opening-ordered-fill")
         command.append("--opening-intra-beat-align" if section.get("opening_intra_beat_align", False) else "--no-opening-intra-beat-align")
+        if section.get("sentence_anchors", False):
+            command += ["--sentence-anchors", "--review-sentences", str(paths.review_sentences), "--sentence-timing", str(paths.sentence_timing)]
         command.append("--ordered-fill-by-audio-progress" if section.get("ordered_fill_by_audio_progress", True) else "--no-ordered-fill-by-audio-progress")
         if not section.get("review_html", True):
             command.append("--no-review-html")

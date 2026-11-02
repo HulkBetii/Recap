@@ -27,7 +27,8 @@ from tts.providers import (
     resolve_provider_order,
 )
 from tts.pronunciation_qa import analyze_pronunciation_risks
-from tts.sanitize import normalize_tts_script
+from tts.sanitize import load_pronunciation_lexicon, normalize_tts_script
+from tts.sentence_timing import build_sentence_timing
 from tts.timing import build_timings
 from tts.vieneu_provider import (
     DEFAULT_VIENEU_BACKEND,
@@ -89,6 +90,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pronunciation-qa-output", default=None, type=Path)
     parser.add_argument("--pronunciation-suggest-backend", choices=["off", "chatgpt_playwright", "openai_api"], default="off")
     parser.add_argument("--lexicon-candidates-output", default=None, type=Path)
+    parser.add_argument(
+        "--sentence-timing",
+        choices=["off", "proportional", "silence"],
+        default="off",
+        help="Write sentence_timing.json (per-sentence windows on the output timeline) for sentence-anchored G5 matching.",
+    )
+    parser.add_argument("--sentence-timing-output", default=None, type=Path)
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser
 
@@ -424,6 +432,26 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         primary_voice_id = args.voice_id
         primary_model = args.model
 
+    sentence_timing_mode = getattr(args, "sentence_timing", "off")
+    n_sentence_aligned: int | None = None
+    if sentence_timing_mode != "off":
+        logger.info("[3/4] Timing narration sentences (%s)", sentence_timing_mode)
+        stamps, sentence_warnings, n_sentence_aligned = build_sentence_timing(
+            beats=beats,
+            timings=timings,
+            audio_dir=public_audio_dir,
+            text_mode=text_normalization,
+            lexicon=load_pronunciation_lexicon(lexicon_path),
+            mode=sentence_timing_mode,
+            cache_path=work_dir / "sentence_timing_cache.json",
+            logger=logger,
+        )
+        warnings.extend(sentence_warnings)
+        sentence_output = getattr(args, "sentence_timing_output", None)
+        sentence_output = sentence_output.expanduser().resolve() if sentence_output else output_timing.with_name("sentence_timing.json")
+        write_json(sentence_output, stamps)
+        logger.info("[3/4] Sentence timing: %d/%d beat(s) snapped to pauses, %d sentence(s)", n_sentence_aligned, len(beats), len(stamps))
+
     logger.info("[4/4] Writing timing and meta")
     write_json(output_timing, timings)
     chars = sum(len(item.tts_text) for item in normalized_items)
@@ -455,6 +483,8 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         openai_model=openai_model,
         openai_voice=openai_voice,
         review_script_hash=review_script_hash,
+        sentence_timing=None if sentence_timing_mode == "off" else sentence_timing_mode,
+        n_sentence_aligned_beats=n_sentence_aligned,
     )
     write_json(output_timing.with_name("tts_meta.json"), meta)
     return timings, meta

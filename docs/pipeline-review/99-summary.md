@@ -80,3 +80,17 @@ Chạy lại từ GĐ2 tới render trên cache ingest/shots của `final4` (`ru
 | Placement trên shot quảng cáo | 0 | 0 |
 
 Bộ chấm dao động mạnh (final2 lần 0 lỗi, lần 4 lỗi), nên đây là xu hướng chứ chưa phải tỷ lệ chính xác.
+
+## Đợt bổ sung 2026-11-02: khớp tiếng–hình theo từng câu
+
+Đo bằng `scripts/av_sync_audit.py` (giám khảo đa phương thức chấm từng câu với khung hình giữa câu), cùng kịch bản và giọng đọc:
+
+| Chỉ số | Theo beat (`final6-legacy`) | Theo câu (`final6b`) |
+|---|---|---|
+| Tỷ lệ khớp theo thời lượng | 0,527 | **0,638** |
+| match / partial / mismatch | 65 / 131 / 56 | 102 / 121 / 34 |
+| So từng câu | | 81 tốt hơn, 36 kém hơn, 130 như nhau |
+| Footage lặp | 0 s | 17,6 s (0,9%) |
+| Sync QA | sạch | sạch |
+
+Độ dao động của giám khảo khoảng ±0,02. Đổi lại: pass gán nguồn câu tốn khoảng 12 phút ở GĐ2.

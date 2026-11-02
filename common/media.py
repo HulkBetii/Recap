@@ -26,6 +26,30 @@ def run_command(args: list[str]) -> None:
         message = stderr.strip() or stdout.strip() or "unknown error"
         raise MediaError(message)
 
+def detect_silences(input_path: Path, *, noise_db: float = -35.0, min_duration_s: float = 0.15) -> list[tuple[float, float]]:
+    """(start, end) of every silence in an audio file, from ffmpeg silencedetect."""
+    result = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-nostats", "-i", str(input_path),
+            "-af", f"silencedetect=noise={noise_db}dB:d={min_duration_s}", "-f", "null", "-",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    stderr = _decode_process_output(result.stderr)
+    if result.returncode != 0:
+        raise MediaError(stderr.strip() or "silencedetect failed")
+    silences: list[tuple[float, float]] = []
+    start: float | None = None
+    for line in stderr.splitlines():
+        if "silence_start:" in line:
+            start = max(0.0, float(line.split("silence_start:")[1].split()[0]))
+        elif "silence_end:" in line and start is not None:
+            silences.append((start, float(line.split("silence_end:")[1].split()[0])))
+            start = None
+    return silences
+
+
 def _decode_process_output(value: str | bytes | None) -> str:
     if value is None:
         return ""

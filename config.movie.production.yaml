@@ -82,6 +82,8 @@ review:
   max_beat_audio_s: 18
   story_map: auto
   review_intent_output: null
+  # Link every narration sentence to its film-map segments (review_script.sentences.json) for sentence-anchored G5 matching.
+  sentence_refs: true
   chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
   chat_session_policy: auto
   chat_session_meta: null
@@ -119,6 +121,8 @@ tts:
   normalize: true
   cost_per_1k_chars: 0.0
   text_normalization: vi
+  # Per-sentence windows on the output timeline (sentence_timing.json): letter-proportional estimate snapped to real pauses.
+  sentence_timing: silence
   pronunciation_lexicon: null
   normalized_script_output: null
   normalization_report: null
@@ -212,6 +216,8 @@ match:
   story_map: auto
   opening_ordered_fill: true
   opening_intra_beat_align: true
+  # Show each sentence over its own source segments; beats without usable sentence data keep beat-level matching.
+  sentence_anchors: true
   hook_min_brightness: 0.10
   ordered_fill_by_audio_progress: true
   review_html: true

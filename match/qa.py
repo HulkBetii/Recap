@@ -80,7 +80,10 @@ def build_edl_qa(
         anchor_interval_weights = [float(item) for item in candidate_info.get("content_anchor_interval_weights", [])]
         intra_beat_chunks = [
             item
-            for item in candidate_info.get("intra_beat_chunks", candidate_info.get("opening_intra_beat_chunks", []))
+            for item in [
+                *candidate_info.get("intra_beat_chunks", candidate_info.get("opening_intra_beat_chunks", [])),
+                *candidate_info.get("sentence_windows", []),
+            ]
             if isinstance(item, dict) and item.get("replaced")
         ]
         beat_drifts: list[float] = []

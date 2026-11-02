@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from math import ceil
 
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, Shot
+from common.text import split_sentences
 from match.candidates import is_dark_fallback_candidate
 
 
-SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?\u2026])\s+")
 ENTITY_TOKEN_RE = re.compile(r"[\w\u00c0-\u1ef9]+(?:-[\w\u00c0-\u1ef9]+)*", re.UNICODE)
 ENTITY_STOPWORDS = {"anh", "cô", "gã", "người", "trước", "trên", "đúng", "ngay", "sau"}
 MIN_AUDIO_DURATION_S = 45.0
@@ -78,10 +78,7 @@ class HookLeadingGuardResult:
 
 
 def split_narration_sentences(text: str) -> list[str]:
-    normalized = " ".join(text.split())
-    if not normalized:
-        return []
-    return [part.strip() for part in SENTENCE_SPLIT_RE.split(normalized) if part.strip()]
+    return split_sentences(text)
 
 
 def estimate_sentence_timings(beat: ReviewBeat, timing: BeatTiming) -> list[SentenceTiming]:

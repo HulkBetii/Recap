@@ -246,7 +246,7 @@ def write_stage_outputs(command: list[str]) -> None:
     elif stage == "match":
         output = flag(command, "--output")
         output.write_text(json.dumps([{"tl_start":0,"tl_end":2,"src":"film.mp4","src_in":0,"src_out":2,"beat_id":0,"shot_index":0,"reused":False,"speed":1}]), encoding="utf-8")
-        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[],"algorithm_version":"6"}), encoding="utf-8")
+        output.with_name("edl.meta.json").write_text(json.dumps({"total_duration_s":2,"n_placements":1,"n_beats_widened":0,"n_reused":0,"n_speedfit":0,"avg_clip_len":2,"coverage_ok":True,"warnings":[],"seed":1234,"created_at":NOW,"cache_hits":[],"algorithm_version":"7"}), encoding="utf-8")
         output.with_name("edl.qa.json").write_text(json.dumps({"version":1,"semantic_enabled":True,"min_semantic_score":0.12,"beats":[]}), encoding="utf-8")
         flag(command, "--output-sync-qa").write_text(json.dumps({"version":1,"summary":{},"beats":[]}), encoding="utf-8")
         flag(command, "--output-visual-qa").write_text(json.dumps({"version":1,"visual_mode":"off","visual_enabled":False,"beats":[]}), encoding="utf-8")
@@ -1006,6 +1006,21 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     assert "--visual-index" not in match
     assert review[review.index("--llm-fallback-model") + 1] == "ag/claude-sonnet-4-6"
     assert review[review.index("--llm-concurrency") + 1] == "3"
+    assert review[review.index("--sentence-refs-output") + 1] == str(paths.review_sentences)
+    assert tts[tts.index("--sentence-timing") + 1] == "silence"
+    assert match[match.index("--review-sentences") + 1] == str(paths.review_sentences)
+    assert match[match.index("--sentence-timing") + 1] == str(paths.sentence_timing)
+
+
+def test_enabled_sentence_sidecars_must_exist_for_review_and_tts_to_skip(tmp_path: Path) -> None:
+    from orchestrator.runner import sentence_sidecars_valid
+
+    paths = build_paths(tmp_path)
+    config = {"review": {"sentence_refs": True}, "tts": {"sentence_timing": "silence"}}
+    assert sentence_sidecars_valid(paths, "review", config) is False
+    assert sentence_sidecars_valid(paths, "tts", config) is False
+    assert sentence_sidecars_valid(paths, "match", config) is True
+    assert sentence_sidecars_valid(paths, "review", {"review": {}, "tts": {}}) is True
 
 
 def test_tts_auto_preflight_accepts_openai_as_only_available_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

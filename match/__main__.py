@@ -7,7 +7,7 @@ import random
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.schema import BeatTiming, EdlMeta, EdlPlacement, FilmMapSegment, ReviewBeat, ReviewIntent, Shot, StorySection, validate_edl, validate_review_intents, validate_story_map, write_json
+from common.schema import BeatTiming, EdlMeta, EdlPlacement, FilmMapSegment, ReviewBeat, ReviewIntent, SentenceRef, SentenceTimestamp, Shot, StorySection, validate_edl, validate_review_intents, validate_sentence_refs, validate_sentence_timing, validate_story_map, write_json
 from match.anchors import plan_content_anchors
 from match.cache import MatchCache, file_hash, stable_hash
 from match.fill import assign_timeline, chronology_tier, fill_beat, fill_timeline_gaps, split_long_placements
@@ -16,6 +16,7 @@ from match.intra_beat import alignment_queries, apply_hook_leading_brightness_gu
 from match.qa import build_edl_qa
 from match.review_html import write_review_html
 from match.scoring import ScoringWeights, score_shot
+from match.sentence_fill import fill_beat_by_sentences, plan_sentence_windows
 from match.semantic import DEFAULT_EMBEDDING_MODEL, SemanticConfig, SemanticError, compute_semantic_result
 from match.sync_qa import build_sync_qa
 from match.timing import average_clip_len, validate_source_bounds, validate_timeline
@@ -102,6 +103,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--opening-intra-beat-align", action="store_true", default=False)
     parser.add_argument("--no-opening-intra-beat-align", dest="opening_intra_beat_align", action="store_false")
     parser.add_argument("--hook-min-brightness", default=0.0, type=float)
+    parser.add_argument(
+        "--sentence-anchors",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Fill each narration sentence from its own source segments (needs --review-sentences and --sentence-timing).",
+    )
+    parser.add_argument("--review-sentences", default=None, type=Path)
+    parser.add_argument("--sentence-timing", default=None, type=Path)
     parser.add_argument("--ordered-fill-by-audio-progress", action="store_true", default=True)
     parser.add_argument("--no-ordered-fill-by-audio-progress", dest="ordered_fill_by_audio_progress", action="store_false")
     parser.add_argument("--no-exclude-non-story", dest="exclude_non_story", action="store_false")
@@ -139,6 +148,9 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "content_anchors": args.content_anchors,
         "opening_intra_beat_align": args.opening_intra_beat_align,
         "hook_min_brightness": args.hook_min_brightness,
+        "sentence_anchors": getattr(args, "sentence_anchors", False),
+        "review_sentences": file_hash(args.review_sentences.expanduser().resolve()) if getattr(args, "review_sentences", None) else None,
+        "sentence_timing": file_hash(args.sentence_timing.expanduser().resolve()) if getattr(args, "sentence_timing", None) else None,
         "visual_index": visual_index_artifact_hash(args.visual_index.expanduser().resolve()) if args.visual_index and args.visual_index.expanduser().resolve().is_file() else None,
         "visual_mode": args.visual_mode,
         "visual_cache_dir": str(args.visual_cache_dir) if args.visual_cache_dir else None,
@@ -157,6 +169,39 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "repeat_guard": [args.max_repeat_per_beat, args.max_repeat_ratio_per_beat, args.min_repeat_alternative_score_ratio, args.adjacent_shot_repeat_penalty],
         "opening_guard": [args.opening_guard_s, args.opening_max_repeat_ratio, args.opening_max_repeat_per_shot, args.opening_min_unique_shots, args.opening_allow_short_fill, args.opening_ordered_fill, args.ordered_fill_by_audio_progress, args.opening_story_visual_start, args.hook_min_brightness],
     })
+
+
+def load_sentence_inputs(
+    args: argparse.Namespace,
+    beats: list[ReviewBeat],
+    timings: list[BeatTiming],
+    warnings: list[str],
+) -> tuple[dict[int, list[SentenceRef]] | None, dict[int, list[SentenceTimestamp]]]:
+    """Sentence refs/timing grouped by beat, or (None, {}) when sentence anchors are off or unusable."""
+    if not getattr(args, "sentence_anchors", False):
+        return None, {}
+    refs_path = args.review_sentences.expanduser().resolve() if args.review_sentences else None
+    timing_path = args.sentence_timing.expanduser().resolve() if args.sentence_timing else None
+    if refs_path is None or timing_path is None or not refs_path.is_file() or not timing_path.is_file():
+        warnings.append("sentence anchors disabled: review_script.sentences.json or sentence_timing.json is missing")
+        return None, {}
+    try:
+        refs = validate_sentence_refs(
+            [SentenceRef.model_validate(item) for item in json.loads(refs_path.read_text(encoding="utf-8"))], beats
+        )
+        stamps = validate_sentence_timing(
+            [SentenceTimestamp.model_validate(item) for item in json.loads(timing_path.read_text(encoding="utf-8"))], timings
+        )
+    except ValueError as exc:
+        warnings.append(f"sentence anchors disabled: {exc}")
+        return None, {}
+    refs_by_beat: dict[int, list[SentenceRef]] = {}
+    stamps_by_beat: dict[int, list[SentenceTimestamp]] = {}
+    for ref in refs:
+        refs_by_beat.setdefault(ref.beat_id, []).append(ref)
+    for stamp in stamps:
+        stamps_by_beat.setdefault(stamp.beat_id, []).append(stamp)
+    return refs_by_beat, stamps_by_beat
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -405,6 +450,9 @@ def run_match(args: argparse.Namespace) -> int:
     use_content_anchors = args.content_anchors and strict_timecodes
     if args.content_anchors and args.film_map is not None and not use_content_anchors:
         warnings.append("content anchors disabled because film_map timecodes are not strict")
+    sentence_refs_by_beat, sentence_stamps_by_beat = load_sentence_inputs(args, review_beats, timings, warnings)
+    n_sentence_anchored_beats = 0
+    sentence_hits: list[tuple[float, float]] = []
     intra_beat_alignment_sentences = prepare_intra_beat_alignment_sentences(
         beats=review_beats,
         timings=timings,
@@ -473,9 +521,22 @@ def run_match(args: argparse.Namespace) -> int:
         source_start_override = None
         if in_opening_guard and args.opening_story_visual_start and film_map:
             source_start_override = opening_story_visual_start(beat, film_map)
+        sentence_windows = None
+        sentence_fallback_reason = None
+        if sentence_refs_by_beat is not None:
+            sentence_windows, sentence_fallback_reason = plan_sentence_windows(
+                beat,
+                timing,
+                sentence_refs_by_beat.get(beat.beat_id, []),
+                sentence_stamps_by_beat.get(beat.beat_id, []),
+            )
+            if sentence_windows is not None:
+                # Sentence refs already point at story footage; the opening logo/title skip would fight them.
+                source_start_override = None
         anchor_plan = None
         if (
-            use_content_anchors
+            sentence_windows is None
+            and use_content_anchors
             and not in_opening_guard
             and semantic_result is not None
             and semantic_result.segment_scores
@@ -491,11 +552,8 @@ def run_match(args: argparse.Namespace) -> int:
                 min_visual_clip=args.min_visual_clip,
                 allow_dark_fallback=args.allow_dark_fallback,
             )
-        result = fill_beat(
-            beat=beat,
-            timing=timing,
+        fill_kwargs = dict(
             shots=shots,
-            reuse_counts=reuse_counts,
             weights=weights,
             min_clip=args.min_clip,
             max_clip=args.max_clip,
@@ -522,12 +580,30 @@ def run_match(args: argparse.Namespace) -> int:
             dark_candidate_ids=anchor_plan.dark_candidate_ids if anchor_plan else None,
             source_intervals=anchor_plan.intervals if anchor_plan else None,
         )
-        beat_placements = assign_timeline(result.fragments, timing)
+        sentence_diagnostics: list[dict] = []
+        if sentence_windows is not None:
+            result, beat_placements, sentence_diagnostics = fill_beat_by_sentences(
+                beat=beat,
+                timing=timing,
+                windows=sentence_windows,
+                reuse_counts=reuse_counts,
+                fill_kwargs=fill_kwargs,
+                used_sources=placements,
+            )
+            n_sentence_anchored_beats += 1
+            sentence_hits.extend(
+                (float(item["ref_hit_ratio"]), float(item["tl_end"]) - float(item["tl_start"]))
+                for item in sentence_diagnostics
+                if "ref_hit_ratio" in item
+            )
+        else:
+            result = fill_beat(beat=beat, timing=timing, reuse_counts=reuse_counts, **fill_kwargs)
+            beat_placements = assign_timeline(result.fragments, timing)
         intra_beat_result = None
         alignment_mode = None
         alignment_trigger_drift = None
         long_alignment_required = False
-        if beat.beat_id in intra_beat_alignment_sentences and not in_opening_guard and anchor_plan is None:
+        if beat.beat_id in intra_beat_alignment_sentences and not in_opening_guard and anchor_plan is None and sentence_windows is None:
             long_alignment_required, alignment_trigger_drift = long_beat_alignment_required(
                 beat=beat,
                 timing=timing,
@@ -535,7 +611,8 @@ def run_match(args: argparse.Namespace) -> int:
                 max_source_drift_s=args.max_source_drift_s,
             )
         if (
-            beat.beat_id in intra_beat_alignment_sentences
+            sentence_windows is None
+            and beat.beat_id in intra_beat_alignment_sentences
             and (in_opening_guard or long_alignment_required)
             and semantic_result is not None
             and semantic_result.provider == "bge-m3"
@@ -624,6 +701,9 @@ def run_match(args: argparse.Namespace) -> int:
             "hook_leading_original_shot": hook_guard_result.original_shot_index,
             "hook_leading_replacement_shots": hook_guard_result.replacement_shot_ids,
             "excluded_end_credit_ids": excluded_end_credit_ids,
+            "sentence_anchor_used": sentence_windows is not None,
+            "sentence_anchor_fallback_reason": sentence_fallback_reason,
+            "sentence_windows": sentence_diagnostics,
         }
         n_dark_fallback_beats += int(bool(result.dark_selected_ids))
         n_capacity_exhausted_beats += int(result.capacity_exhausted)
@@ -700,6 +780,12 @@ def run_match(args: argparse.Namespace) -> int:
         n_capacity_exhausted_beats=n_capacity_exhausted_beats,
         n_unused_source_reuse=n_unused_source_reuse,
         n_overlapping_repeats=n_overlapping_repeats,
+        n_sentence_anchored_beats=n_sentence_anchored_beats,
+        sentence_ref_hit_ratio=(
+            round(sum(ratio * seconds for ratio, seconds in sentence_hits) / sum(seconds for _ratio, seconds in sentence_hits), 4)
+            if sentence_hits
+            else None
+        ),
         max_repeat_ratio=round(max(repeat_ratios), 6) if repeat_ratios else 0.0,
         avg_clip_len=round(average_clip_len(placements), 3),
         coverage_ok=coverage_ok,

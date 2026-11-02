@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common.inputs import load_review_context
-from common.schema import AnimeContext, EpisodeMemory, ReviewBeat, ReviewMeta, StorySection, VideoProfile, validate_review_intents, validate_review_script, validate_story_map, write_json
+from common.schema import AnimeContext, EpisodeMemory, ReviewBeat, ReviewMeta, SentenceRef, StorySection, VideoProfile, validate_review_intents, validate_review_script, validate_sentence_refs, validate_story_map, write_json
 from common.runtime import CHATGPT_PLAYWRIGHT_PROFILE_DIR
 from review.budget import allocate_char_targets, compute_budget, estimate_total_chars
 from review.cache import ReviewCache
@@ -34,6 +34,7 @@ from review.models import NarrationBeat, OutlineResult, QaIssue, QaResult
 from review.openai_chat import FallbackChatClient, OpenAIChatClient, OpenAIChatError
 from review.playwright_chat import PlaywrightChatClient, PlaywrightChatError
 from review.non_story import drop_non_story_beats
+from review.sentence_refs import request_sentence_refs, sentence_refs_key
 from review.session import build_chat_session_meta, resolve_initial_chat_url, save_chat_session
 from review.style import (
     DEFAULT_MAX_SENTENCE_CHARS,
@@ -160,6 +161,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video-profile", default=None, type=Path)
     parser.add_argument("--story-map", default=None, type=Path)
     parser.add_argument("--review-intent-output", default=None, type=Path)
+    parser.add_argument(
+        "--sentence-refs",
+        dest="sentence_refs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Link every narration sentence to its film-map segments (review_script.sentences.json) for sentence-anchored G5 matching.",
+    )
+    parser.add_argument("--sentence-refs-output", default=None, type=Path)
     parser.add_argument("--work-dir", default=Path("work/review"), type=Path)
     parser.add_argument("--chatgpt-profile-dir", default=DEFAULT_PROFILE_DIR, type=Path)
     parser.add_argument("--chat-session-policy", default="auto", choices=["auto", "new", "resume"], help="ChatGPT conversation policy for this video/run")
@@ -588,6 +597,29 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
     else:
         review_intents = build_review_intents(beats, [])
     validate_review_intents(review_intents, beats)
+    sentence_refs = None
+    sentence_ref_warnings: list[str] = []
+    if getattr(args, "sentence_refs", False):
+        model_name = getattr(args, "llm_model", None) or DEFAULT_GATEWAY_MODEL if args.llm_backend == GATEWAY_BACKEND else args.llm_backend
+        refs_key = sentence_refs_key(beats, identity.film_map_hash, model_name)
+        cached_refs = cache.read_json("sentence_refs.json") if cache.has("sentence_refs.json") else None
+        if isinstance(cached_refs, dict) and cached_refs.get("key") == refs_key:
+            logger.info("[4/4] Using cached sentence_refs.json")
+            sentence_refs = [SentenceRef.model_validate(item) for item in cached_refs["refs"]]
+            sentence_ref_warnings = list(cached_refs.get("warnings", []))
+        else:
+            sentence_refs, sentence_ref_warnings, complete = await request_sentence_refs(
+                client,
+                beats=beats,
+                film_map=film_map,
+                concurrency=rewrite_concurrency(args),
+                errors=(PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError),
+                logger=logger,
+            )
+            if complete:
+                cache.write_json("sentence_refs.json", {"key": refs_key, "refs": [ref.model_dump(mode="json") for ref in sentence_refs], "warnings": sentence_ref_warnings})
+        validate_sentence_refs(sentence_refs, beats)
+        warnings.extend(warning for warning in sentence_ref_warnings if "failed" in warning)
     intent_output = args.review_intent_output.expanduser().resolve() if args.review_intent_output else output_path.with_name("review_script.intent.json")
 
     meta = ReviewMeta(
@@ -622,6 +654,10 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         n_opening_rewrites=n_opening_rewrites,
         opening_warnings=opening_warnings,
         qa_rewrite_limited=any("qa rewrite limited" in warning for warning in warnings),
+        sentence_refs_enabled=sentence_refs is not None,
+        n_sentences=len(sentence_refs) if sentence_refs is not None else None,
+        n_grounded_sentences=sum(ref.grounded for ref in sentence_refs) if sentence_refs is not None else None,
+        sentence_ref_warnings=sentence_ref_warnings,
         video_profile_path=str(args.video_profile) if args.video_profile else None,
         context_file_path=str(context_file_path) if context_file_path else None,
         story_start_s=story_start_s,
@@ -642,6 +678,9 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
     )
     write_json(output_path, beats)
     write_json(intent_output, review_intents)
+    if sentence_refs is not None:
+        sentences_output = args.sentence_refs_output.expanduser().resolve() if getattr(args, "sentence_refs_output", None) else output_path.with_name("review_script.sentences.json")
+        write_json(sentences_output, sentence_refs)
     write_json(output_path.with_name(f"{output_path.stem}.meta.json"), meta)
     return beats, meta
 

@@ -75,6 +75,11 @@ Các stage giao tiếp QUA FILE JSON, không truyền object in-memory. Mỗi st
 ```
 - Tile kín timeline; mỗi placement ≤ 5s (cắt vụn).
 
+### Sidecar tùy chọn cho khớp theo câu (GĐ2 → GĐ5, GĐ3 → GĐ5)
+- `review_script.sentences.json` (`SentenceRef`): mỗi câu narration (tách bằng `common.text.split_sentences`) có `beat_id`, `idx`, `text`, `from_seg_id`/`to_seg_id` và `src_tc_start`/`src_tc_end` (null với câu bình luận), `grounded`. Segment nằm trong span của beat; timecode do code suy ra từ `film_map`.
+- `sentence_timing.json` (`SentenceTimestamp`): `beat_id`, `idx`, `tl_start`, `tl_end`, `method` (`silence` | `proportional`); các câu lát kín cửa sổ audio của beat, khoảng ngắt sau câu thuộc về câu đó.
+- Hai file không thay contract bắt buộc; thiếu hoặc không khớp số câu thì GĐ5 dùng khớp theo beat như cũ.
+
 ---
 
 ## 4. QUY ƯỚC CHUNG (áp dụng mọi stage)
@@ -185,6 +190,7 @@ repo/
 - `api_budget_guard=block` luôn chặn OpenAI fallback ở mọi quality mode nhưng vẫn cho Playwright chạy. Thiếu key hoặc budget bị chặn phải fail với lý do rõ ràng, không tạo API request.
 - `work/review/openai_usage.json` và báo cáo orchestrator ghi trạng thái configured/allowed/blocked/triggered, mã lỗi, lý do, số lần thử Playwright, model và token usage; không thay đổi contract JSON giữa các stage.
 - LLM chỉ được trả segment ids (`from_seg_id`, `to_seg_id`, hook ids). Code tự suy ra `src_tc_start` và `src_tc_end` từ `film_map`; không nhận timecode do LLM viết.
+- `--sentence-refs` (config `review.sentence_refs`, bật trong preset production): sau khi narration cuối xong, một pass riêng (`review/sentence_refs.py`, batch ~8.000 ký tự narration, mỗi beat kèm dòng `source`) hỏi LLM segment id cho từng câu, clamp vào span beat và ghi `review_script.sentences.json`. Cache riêng `work/review/sentence_refs.json` theo hash narration/span/film_map/model, nên bật pass này không chạy lại outline/narration; batch lỗi để câu `grounded=false` và không cache.
 - Package thực tế:
   - `review/`: orchestrator, cache, Playwright adapter, prompt flow, budget, coverage, timecode derivation.
   - `common/schema.py`: có thêm `ReviewBeat`, `ReviewMeta`, `validate_review_script`.
@@ -204,6 +210,7 @@ repo/
 - `provider_mode=auto` chỉ dùng provider có key hợp lệ theo thứ tự AI33 → Genmax → OpenAI; Genmax trong auto còn yêu cầu `genmax_voice_id`. Cache key bao gồm toàn bộ provider chain/model/voice và manifest ghi provider thực tế.
 - `beats_timing.json` luôn dựng từ duration đo bằng ffprobe sau khi audio thật đã render/normalize.
 - Test tự động dùng mock provider và mock ffprobe/concat; không gọi AI33/Genmax thật.
+- `--sentence-timing silence|proportional|off` (config `tts.sentence_timing`, preset production `silence`): `tts/sentence_timing.py` chuẩn hóa từng câu, ước lượng ranh giới theo số chữ cái + quãng ngắt, rồi bắt dính vào quãng lặng thật (`common.media.detect_silences`, ffmpeg silencedetect −35 dB, ≥ 0,15 s; ưu tiên quãng lặng dài trong ±2,5 s). Giọng TTS ngắt 0,5–0,7 s cuối câu và 0,2–0,35 s ở dấu phẩy. Không dùng WhisperX cho audio TTS: căn cả beat 30 s bị nén mọi câu vào vài giây đầu. Cache `work/tts/sentence_timing_cache.json`; `tts_meta.json` ghi `sentence_timing`, `n_sentence_aligned_beats`.
 ## 13. GĐ4 IMPLEMENTATION HIỆN TẠI
 
 - GĐ4 là CLI local/offline, chạy bằng `python -m shots`.
@@ -250,6 +257,8 @@ repo/
 - Repeat fallback dùng phần source chưa dùng trong shot trước, sau đó mới chọn span overlap thấp nhất; tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier.
 - `edl.meta.json` ghi `algorithm_version` và counters dark/capacity/reuse/end-credit; algorithm version 6 invalidates artifacts created before end-credit exclusion.
 - Cache GD5 nam trong `--work-dir/plan.json`; embedding cache nam trong `--semantic-cache-dir` theo hash `{model, device, text}`.
+- `--sentence-anchors --review-sentences ... --sentence-timing ...` (config `match.sentence_anchors`, preset production bật): `match/sentence_fill.py` chia beat thành cửa sổ câu; cửa sổ nguồn = segment của câu, nới tới ≥ max(4 s, 1,5× audio câu) trong span beat; câu bình luận lấy khoảng giữa hai câu có nguồn kề bên. Mỗi cửa sổ được lấp bằng `fill_beat` hiện có (cùng lọc story/usable/overlay/end-credit, widen, repeat guard) rồi `assign_timeline`. Câu chỉ được lấy phần nguồn chưa chiếu (trừ đi footage các placement trước; nới về sau rồi về trước trong span beat tới khi đủ 1,5× audio câu, hết chỗ mới cho lặp), vì các câu liền nhau hay trỏ cùng segment: bản đầu không có luật này lặp 153 s footage trên 2.041 s. Beat dùng đường này bỏ qua content anchors, opening story-visual start và intra-beat alignment; hook brightness guard vẫn chạy. `edl.qa.json` đo drift theo cửa sổ câu, `candidate_diagnostics.sentence_windows` ghi `ref_hit_ratio`; `edl.meta.json` ghi `n_sentence_anchored_beats`, `sentence_ref_hit_ratio`. `MATCH_ALGORITHM_VERSION=7`.
+- Đo đồng bộ nội dung độc lập: `python -m scripts.av_sync_audit --run-dir runs/<name>` cho giám khảo đa phương thức (9router) xem từng câu + khung hình giữa câu + dòng FILM_MAP tại nguồn đang chiếu, chấm match/partial/mismatch/commentary; ghi `av_sync_audit.json/.html`. `edl.sync.qa.json` chỉ kiểm cấu trúc timeline, không đo được nội dung.
 - Test tu dong dung JSON fixtures/mock; khong dung video/ffmpeg/API.
 
 
