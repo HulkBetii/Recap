@@ -1007,6 +1007,7 @@ def test_production_movie_preset_builds_cuda_visual_and_resilient_tts_commands(t
     assert review[review.index("--llm-fallback-model") + 1] == "ag/claude-sonnet-4-6"
     assert review[review.index("--llm-concurrency") + 1] == "3"
     assert review[review.index("--sentence-refs-output") + 1] == str(paths.review_sentences)
+    assert review[review.index("--sentence-refs-model") + 1] == "ag/gemini-3.8-flash-low"
     assert tts[tts.index("--sentence-timing") + 1] == "silence"
     assert match[match.index("--review-sentences") + 1] == str(paths.review_sentences)
     assert match[match.index("--sentence-timing") + 1] == str(paths.sentence_timing)

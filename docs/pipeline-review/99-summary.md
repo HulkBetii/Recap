@@ -98,3 +98,7 @@ Bộ chấm dao động mạnh (final2 lần 0 lỗi, lần 4 lỗi), nên đây
 ### Thử thêm: chấm hình theo câu bằng SigLIP
 
 Cùng refs và giọng đọc: 0,642 (không chấm hình) so với 0,652 (có chấm hình), 36 câu tốt hơn và 28 câu kém hơn. Mức này nằm trong độ dao động của bộ chấm nên preset production không bật; code giữ dạng tùy chọn (`match.sentence_visual`, `review.sentence_visual_queries`).
+
+### Tăng tốc gán nguồn câu
+
+Bước gán nguồn câu chạy riêng bằng `ag/gemini-3.8-flash-low`: 12 s thay vì khoảng 11 phút với `-high`, tỷ lệ khớp audit tương đương (0,647 so với 0,642). Thời gian GĐ2 trở về mức trước khi thêm khớp theo câu.

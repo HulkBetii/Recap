@@ -531,6 +531,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
         if section.get("sentence_refs", False):
             command += ["--sentence-refs", "--sentence-refs-output", str(paths.review_sentences)]
+            add_option(command, "sentence_refs_model", section.get("sentence_refs_model"))
             if section.get("sentence_visual_queries", False):
                 command.append("--sentence-visual-queries")
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():

@@ -107,6 +107,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "review": {
         "target_ratio": "auto",
         "sentence_refs": False,
+        "sentence_refs_model": None,
         "sentence_visual_queries": False,
         "content_type": "movie",
         "hook_mode": "setup",

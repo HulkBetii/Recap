@@ -261,3 +261,44 @@ def test_qa_merges_issues_per_beat_and_rechecks_only_rewritten_beats(tmp_path) -
     assert len(qa_calls) == 2 and "were just rewritten" in qa_calls[1]
     assert meta.n_qa_iterations == 1
     assert meta.qa_report[-1]["issues"] == []
+
+
+def test_sentence_refs_can_use_a_separate_fast_model(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import asyncio
+
+    import review.__main__ as review_main
+
+    opened: list[dict] = []
+
+    class FastClient:
+        def __init__(self, **kwargs):  # type: ignore[no-untyped-def]
+            opened.append(kwargs)
+
+        async def __aenter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        async def __aexit__(self, *_exc):  # type: ignore[no-untyped-def]
+            return False
+
+        async def ask(self, prompt: str) -> str:
+            assert "Link every narration sentence" in prompt
+            return json.dumps([{"beat_id": beat, "sentences": [{"idx": 0, "seg_ids": [seg, seg]}]} for beat, seg in ((0, 3), (1, 0), (2, 2))])
+
+        def usage_summary(self) -> dict:
+            return {"request_count": 1}
+
+    monkeypatch.setattr(review_main, "GatewayChatClient", FastClient)
+    film_map_path = write_film_map(tmp_path)
+    args = make_args(tmp_path, film_map_path)
+    args.sentence_refs = True
+    args.sentence_refs_model = "fast-model"
+    args.llm_backend = "ninerouter"
+    args.llm_model = "slow-model"
+    client = FakeReviewClient()
+    asyncio.run(build_review_with_client(args, client))
+
+    assert opened and opened[0]["model"] == "fast-model" and opened[0]["fallback_models"] == ["slow-model"]
+    assert not any("Link every narration sentence" in call for call in client.calls)
+    refs = json.loads((tmp_path / "review_script.sentences.json").read_text(encoding="utf-8"))
+    assert [ref["grounded"] for ref in refs if ref["idx"] == 0] == [True, True, True]
+    assert (tmp_path / "work" / "review" / "sentence_refs_gateway_usage.json").exists()

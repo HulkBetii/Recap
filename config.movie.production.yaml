@@ -84,6 +84,9 @@ review:
   review_intent_output: null
   # Link every narration sentence to its film-map segments (review_script.sentences.json) for sentence-anchored G5 matching.
   sentence_refs: true
+  # Mapping sentences to segment ids needs no long reasoning: -high took ~11 min for the benchmark, -low 12 s with the
+  # same audited sync (0.647 vs 0.642). The main llm_model is the fallback.
+  sentence_refs_model: ag/gemini-3.8-flash-low
   chatgpt_profile_dir: "D:\\VibeCoding\\auto_YT\\data\\chrome_user_data\\PROFILE_GPT_1"
   chat_session_policy: auto
   chat_session_meta: null

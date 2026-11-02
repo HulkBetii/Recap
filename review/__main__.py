@@ -170,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sentence-refs-output", default=None, type=Path)
     parser.add_argument(
+        "--sentence-refs-model",
+        default=None,
+        help="Gateway model for the sentence-refs pass only (default: --llm-model); the main model is its fallback.",
+    )
+    parser.add_argument(
         "--sentence-visual-queries",
         dest="sentence_visual_queries",
         action=argparse.BooleanOptionalAction,
@@ -607,7 +612,9 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
     sentence_refs = None
     sentence_ref_warnings: list[str] = []
     if getattr(args, "sentence_refs", False):
-        model_name = getattr(args, "llm_model", None) or DEFAULT_GATEWAY_MODEL if args.llm_backend == GATEWAY_BACKEND else args.llm_backend
+        main_model = getattr(args, "llm_model", None) or DEFAULT_GATEWAY_MODEL
+        refs_model = getattr(args, "sentence_refs_model", None) if args.llm_backend == GATEWAY_BACKEND else None
+        model_name = (refs_model or main_model) if args.llm_backend == GATEWAY_BACKEND else args.llm_backend
         visual_queries = bool(getattr(args, "sentence_visual_queries", False))
         refs_key = sentence_refs_key(beats, identity.film_map_hash, model_name, visual_queries=visual_queries)
         cached_refs = cache.read_json("sentence_refs.json") if cache.has("sentence_refs.json") else None
@@ -616,8 +623,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             sentence_refs = [SentenceRef.model_validate(item) for item in cached_refs["refs"]]
             sentence_ref_warnings = list(cached_refs.get("warnings", []))
         else:
-            sentence_refs, sentence_ref_warnings, complete = await request_sentence_refs(
-                client,
+            refs_kwargs = dict(
                 beats=beats,
                 film_map=film_map,
                 concurrency=rewrite_concurrency(args),
@@ -625,6 +631,22 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                 errors=(PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError),
                 logger=logger,
             )
+            if refs_model and refs_model != main_model:
+                # Mapping sentences to segment ids needs no long reasoning: the -high model spends ~10 min per
+                # request on it, a low-reasoning model ~12 s.
+                async with GatewayChatClient(
+                    model=refs_model,
+                    base_url=getattr(args, "llm_base_url", None),
+                    timeout_s=getattr(args, "reply_timeout_s", None) or 600,
+                    max_concurrency=rewrite_concurrency(args),
+                    fallback_models=[main_model],
+                ) as refs_client:
+                    try:
+                        sentence_refs, sentence_ref_warnings, complete = await request_sentence_refs(refs_client, **refs_kwargs)
+                    finally:
+                        cache.write_json("sentence_refs_gateway_usage.json", refs_client.usage_summary())
+            else:
+                sentence_refs, sentence_ref_warnings, complete = await request_sentence_refs(client, **refs_kwargs)
             if complete:
                 cache.write_json("sentence_refs.json", {"key": refs_key, "refs": [ref.model_dump(mode="json") for ref in sentence_refs], "warnings": sentence_ref_warnings})
         validate_sentence_refs(sentence_refs, beats)

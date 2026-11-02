@@ -1,5 +1,11 @@
 # PROJECT_LOG.md
 
+## 2026-11-02 - Fast model for the sentence-refs pass
+
+- Measured the G2 sentence-refs pass alone on the benchmark script (5 batches, all in flight at once): `ag/gemini-3.8-flash-high` 709.7 s, `-low` 12.3 s, non-reasoning `ag/gemini-3.8-flash` 13.0 s. Concurrency was not the bottleneck; each `-high` request reasoned for ~10 minutes. A second `-high` run agreed with the first at mean segment IoU 0.857; `-low` agreed at 0.762.
+- Audited footage built from the `-low` refs (`bench-qods-final8-low`) against the `-high` refs (`bench-qods-final7-novisual`), same script and voiceover: 0.647 vs 0.642 duration-weighted match rate, paired 42 better / 38 worse, inside judge noise.
+- Added `--sentence-refs-model` / `review.sentence_refs_model` (separate gateway client, main model as fallback, usage in `work/review/sentence_refs_gateway_usage.json`); the production preset uses `ag/gemini-3.8-flash-low`. Real run with cached narration (`bench-qods-final9`, `--only review`): the whole G2 stage took 107 s (648-781 s before), 5 requests, 0 fallback switches, 285/296 sentences grounded. Validation: 821 Python tests, Ruff, Tach, secret scan.
+
 ## 2026-11-02 - Per-sentence SigLIP shot ranking (opt-in, not enabled)
 
 - Motivation: in `bench-qods-final6b`, mismatched sentences had source windows 3.4x their audio (median 5.5 shots) versus 1.6x for matched ones, so a better shot usually existed inside the right window.
