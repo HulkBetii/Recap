@@ -61,3 +61,17 @@ def test_request_parses_answers() -> None:
     refs, warnings, complete = asyncio.run(request_sentence_refs(Client(), beats=beats(), film_map=film_map()))
     assert complete and warnings == []
     assert [ref.grounded for ref in refs] == [True, True, False, True]
+
+
+def test_visual_queries_are_only_requested_when_enabled() -> None:
+    from review.sentence_refs import build_sentence_ref_prompt
+
+    assert '"visual"' not in build_sentence_ref_prompt(beats(), film_map())
+    assert '"visual": string or null' in build_sentence_ref_prompt(beats(), film_map(), visual_queries=True)
+
+    class Client:
+        async def ask(self, prompt: str) -> str:
+            return json.dumps([{"beat_id": 0, "sentences": [{"idx": 0, "seg_ids": [0, 1], "visual": " a man   running down a dark street "}]}])
+
+    refs, _warnings, _complete = asyncio.run(request_sentence_refs(Client(), beats=beats(), film_map=film_map(), visual_queries=True))
+    assert refs[0].visual_en == "a man running down a dark street"

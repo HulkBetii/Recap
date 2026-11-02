@@ -9,7 +9,7 @@ instead of the beat's span being spread linearly over the beat's audio.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, SentenceRef, SentenceTimestamp, Shot
@@ -164,6 +164,8 @@ def fill_beat_by_sentences(
     reuse_counts: dict[int, int],
     fill_kwargs: dict[str, Any],
     used_sources: Sequence[EdlPlacement] | None = None,
+    sentence_visual_scores: dict[tuple[int, int], dict[int, float]] | None = None,
+    visual_weight: float = 0.0,
 ) -> tuple[FillResult, list[EdlPlacement], list[dict[str, Any]]]:
     """Fill every sentence window with `fill_beat` and merge the results into one beat-level result."""
     placements: list[EdlPlacement] = []
@@ -196,6 +198,11 @@ def fill_beat_by_sentences(
                 },
                 "source_intervals": intervals,
             }
+        visual = (sentence_visual_scores or {}).get((beat.beat_id, window.idx))
+        if visual and visual_weight > 0:
+            # SigLIP scores for this sentence's own query replace the beat-level visual scores.
+            restrict["visual_scores"] = {(beat.beat_id, shot_index): score for shot_index, score in visual.items()}
+            restrict["weights"] = replace(fill_kwargs["weights"], visual=visual_weight)
         span = (intervals[0][0], intervals[-1][1]) if intervals is not None else (window.src_start, window.src_end)
         sentence_beat = beat.model_copy(update={"src_tc_start": span[0], "src_tc_end": span[1]})
         result = fill_beat(beat=sentence_beat, timing=window.timing, reuse_counts=reuse_counts, **{**fill_kwargs, **restrict})
@@ -212,6 +219,12 @@ def fill_beat_by_sentences(
             "grounded": window.grounded,
             "ref_window": [window.ref_start, window.ref_end] if window.grounded else None,
             "n_placements": len(sentence_placements),
+            "visual_scored": bool(visual and visual_weight > 0),
+            "visual_score_avg": (
+                round(sum(visual.get(p.shot_index, 0.0) for p in sentence_placements) / len(sentence_placements), 3)
+                if visual and sentence_placements
+                else None
+            ),
             "widen_count": result.widen_count,
         }
         if window.grounded:

@@ -347,6 +347,8 @@ class SentenceRef(BaseModel):
     src_tc_start: float | None = Field(default=None, ge=0)
     src_tc_end: float | None = Field(default=None, gt=0)
     grounded: bool = False
+    # Short English description of what should be on screen; G5 scores shots against it with SigLIP.
+    visual_en: str | None = None
 
     @model_validator(mode="after")
     def validate_refs(self) -> "SentenceRef":

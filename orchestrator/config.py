@@ -107,6 +107,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "review": {
         "target_ratio": "auto",
         "sentence_refs": False,
+        "sentence_visual_queries": False,
         "content_type": "movie",
         "hook_mode": "setup",
         "opening_coherence_qa": True,
@@ -258,6 +259,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "opening_ordered_fill": True,
         "opening_intra_beat_align": False,
         "sentence_anchors": False,
+        "sentence_visual": False,
+        "sentence_visual_weight": 0.6,
         "hook_min_brightness": 0.0,
         "ordered_fill_by_audio_progress": True,
         "review_html": True,

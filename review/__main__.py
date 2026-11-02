@@ -169,6 +169,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Link every narration sentence to its film-map segments (review_script.sentences.json) for sentence-anchored G5 matching.",
     )
     parser.add_argument("--sentence-refs-output", default=None, type=Path)
+    parser.add_argument(
+        "--sentence-visual-queries",
+        dest="sentence_visual_queries",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also ask for a short English visual description per sentence (SentenceRef.visual_en) for G5 --sentence-visual.",
+    )
     parser.add_argument("--work-dir", default=Path("work/review"), type=Path)
     parser.add_argument("--chatgpt-profile-dir", default=DEFAULT_PROFILE_DIR, type=Path)
     parser.add_argument("--chat-session-policy", default="auto", choices=["auto", "new", "resume"], help="ChatGPT conversation policy for this video/run")
@@ -601,7 +608,8 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
     sentence_ref_warnings: list[str] = []
     if getattr(args, "sentence_refs", False):
         model_name = getattr(args, "llm_model", None) or DEFAULT_GATEWAY_MODEL if args.llm_backend == GATEWAY_BACKEND else args.llm_backend
-        refs_key = sentence_refs_key(beats, identity.film_map_hash, model_name)
+        visual_queries = bool(getattr(args, "sentence_visual_queries", False))
+        refs_key = sentence_refs_key(beats, identity.film_map_hash, model_name, visual_queries=visual_queries)
         cached_refs = cache.read_json("sentence_refs.json") if cache.has("sentence_refs.json") else None
         if isinstance(cached_refs, dict) and cached_refs.get("key") == refs_key:
             logger.info("[4/4] Using cached sentence_refs.json")
@@ -613,6 +621,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                 beats=beats,
                 film_map=film_map,
                 concurrency=rewrite_concurrency(args),
+                visual_queries=visual_queries,
                 errors=(PlaywrightChatError, OpenAIChatError, GatewayChatError, ValueError),
                 logger=logger,
             )

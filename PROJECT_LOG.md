@@ -1,5 +1,11 @@
 # PROJECT_LOG.md
 
+## 2026-11-02 - Per-sentence SigLIP shot ranking (opt-in, not enabled)
+
+- Motivation: in `bench-qods-final6b`, mismatched sentences had source windows 3.4x their audio (median 5.5 shots) versus 1.6x for matched ones, so a better shot usually existed inside the right window.
+- Added `match.visual.compute_sentence_visual_scores` (shared `load_frame_bank`), G5 `--sentence-visual --sentence-visual-weight` (per-sentence SigLIP scores, min-max within the beat span, replace beat-level visual scores inside sentence windows), G2 `--sentence-visual-queries` (`SentenceRef.visual_en`, short English camera description), orchestrator keys `review.sentence_visual_queries`, `match.sentence_visual`, `match.sentence_visual_weight`. Sentence-ref batches now retry once: one batch returned malformed JSON once the free-text visual field was added and left 55 sentences ungrounded.
+- A/B on the benchmark with identical refs and voiceover (`bench-qods-final7` vs `bench-qods-final7-novisual`): duration-weighted match rate 0.652 vs 0.642 (match 115 vs 102, mismatch 37 vs 32), paired 36 better / 28 worse. That is inside the judge's +/-0.02 noise, so the production preset keeps it off and the refs prompt does not ask for visual descriptions by default. Visual Index cost 455 s GPU (parallel to review). Validation: 820 Python tests, Ruff, Tach, secret scan.
+
 ## 2026-11-02 - Sentence-anchored footage (audio describes what is on screen)
 
 - Problem: G5 only knew each beat's whole source span (12-18 s of audio over 60-300 s of source) and spread it roughly linearly, so a sentence about a specific event was shown over whatever happened at that fraction of the span. The existing intra-beat alignment never fired on production beats (needs >= 45 s audio) and sync QA was structural only.

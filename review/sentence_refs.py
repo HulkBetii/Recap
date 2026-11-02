@@ -21,12 +21,22 @@ from common.text import split_sentences
 from review.json_utils import extract_json
 from review.llm_flow import ChatClient, build_source_view, plan_narration_batches
 
-SENTENCE_REFS_VERSION = "sentence-refs-v1"
+SENTENCE_REFS_VERSION = "sentence-refs-v2"
+# Visual descriptions feed a 64-token SigLIP text encoder.
+MAX_VISUAL_WORDS = 20
 # Narration characters per request; each beat also carries its source lines, so requests stay ~20-25k chars.
 SENTENCE_REF_BATCH_CHARS = 8000
+SENTENCE_REF_ATTEMPTS = 2
 
 
-def build_sentence_ref_prompt(beats: Sequence[ReviewBeat], film_map: Sequence[FilmMapSegment]) -> str:
+VISUAL_QUERY_RULE = (
+    "For every sentence with seg_ids also return visual: a short ENGLISH description (at most 15 words) of what the\n"
+    "camera should show at that moment, using visible things only (people by appearance or role, action, place, objects),\n"
+    'for example "a man in a suit handcuffed in the back seat of a car at night". No names, no dialogue.\n'
+)
+
+
+def build_sentence_ref_prompt(beats: Sequence[ReviewBeat], film_map: Sequence[FilmMapSegment], *, visual_queries: bool = False) -> str:
     payload = [
         {
             "beat_id": beat.beat_id,
@@ -35,15 +45,17 @@ def build_sentence_ref_prompt(beats: Sequence[ReviewBeat], film_map: Sequence[Fi
         }
         for beat in beats
     ]
+    visual_rule = VISUAL_QUERY_RULE if visual_queries else ""
+    visual_field = ', "visual": string or null' if visual_queries else ""
     return f"""
 Link every narration sentence of a Vietnamese movie recap to the film moment it tells.
 For each beat you get its numbered SENTENCES and SOURCE: the film-map lines ("#id text") of the beat's span.
 For every sentence return seg_ids = [from_id, to_id]: the NARROWEST inclusive range of SOURCE ids that shows
 the event, action or people the sentence describes. Use only ids listed in that beat's SOURCE.
 Return null when the sentence is commentary with no concrete moment (opinion, summary, rhetorical question).
-Ranges normally follow the sentence order, but a sentence that recalls an earlier moment points back to it.
+{visual_rule}Ranges normally follow the sentence order, but a sentence that recalls an earlier moment points back to it.
 
-Return ONLY JSON: [{{"beat_id": number, "sentences": [{{"idx": number, "seg_ids": [number, number] or null}}]}}].
+Return ONLY JSON: [{{"beat_id": number, "sentences": [{{"idx": number, "seg_ids": [number, number] or null{visual_field}}}]}}].
 
 BEATS:
 {json.dumps(payload, ensure_ascii=False)}
@@ -62,6 +74,7 @@ def resolve_sentence_refs(
     beats: Sequence[ReviewBeat],
     film_map: Sequence[FilmMapSegment],
     answers: dict[int, dict[int, Any]],
+    visuals: dict[int, dict[int, str]] | None = None,
 ) -> tuple[list[SentenceRef], list[str]]:
     """Turn raw LLM answers ({beat_id: {idx: seg_ids}}) into validated refs clamped to each beat's span."""
     by_id = {segment.id: segment for segment in film_map}
@@ -91,9 +104,28 @@ def resolve_sentence_refs(
                     src_tc_start=by_id[pair[0]].tc_start,
                     src_tc_end=by_id[pair[1]].tc_end,
                     grounded=True,
+                    visual_en=compact_visual((visuals or {}).get(beat.beat_id, {}).get(index)),
                 )
             )
     return refs, warnings
+
+
+def compact_visual(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return " ".join(value.split()[:MAX_VISUAL_WORDS])
+
+
+def parse_sentence_visuals(data: Any) -> dict[int, dict[int, str]]:
+    visuals: dict[int, dict[int, str]] = {}
+    for item in data if isinstance(data, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("beat_id"), int) and isinstance(item.get("sentences"), list):
+            visuals[item["beat_id"]] = {
+                sentence["idx"]: sentence["visual"]
+                for sentence in item["sentences"]
+                if isinstance(sentence, dict) and isinstance(sentence.get("idx"), int) and isinstance(sentence.get("visual"), str)
+            }
+    return visuals
 
 
 def parse_sentence_ref_answers(data: Any) -> dict[int, dict[int, Any]]:
@@ -111,9 +143,9 @@ def parse_sentence_ref_answers(data: Any) -> dict[int, dict[int, Any]]:
     return answers
 
 
-def sentence_refs_key(beats: Sequence[ReviewBeat], film_map_hash: str, model: str) -> str:
+def sentence_refs_key(beats: Sequence[ReviewBeat], film_map_hash: str, model: str, *, visual_queries: bool = False) -> str:
     payload = [(beat.beat_id, beat.narration, beat.from_seg_id, beat.to_seg_id) for beat in beats]
-    raw = json.dumps([SENTENCE_REFS_VERSION, model, film_map_hash, payload], ensure_ascii=False)
+    raw = json.dumps([SENTENCE_REFS_VERSION, model, film_map_hash, visual_queries, payload], ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -123,6 +155,7 @@ async def request_sentence_refs(
     beats: Sequence[ReviewBeat],
     film_map: Sequence[FilmMapSegment],
     concurrency: int = 1,
+    visual_queries: bool = False,
     errors: tuple[type[BaseException], ...] = (ValueError,),
     logger: logging.Logger | None = None,
 ) -> tuple[list[SentenceRef], list[str], bool]:
@@ -135,21 +168,28 @@ async def request_sentence_refs(
     semaphore = asyncio.Semaphore(max(1, concurrency))
     warnings: list[str] = []
 
-    async def run(number: int, batch: list[int]) -> dict[int, dict[int, Any]]:
+    async def run(number: int, batch: list[int]) -> tuple[dict[int, dict[int, Any]], dict[int, dict[int, str]]]:
         async with semaphore:
-            log.info("[4/4] Requesting sentence refs batch %d/%d (beats %d-%d)", number, len(batches), batch[0], batch[-1])
-            try:
-                response = await client.ask(build_sentence_ref_prompt([beats[index] for index in batch], film_map))
-                return parse_sentence_ref_answers(extract_json(response))
-            except errors as exc:
-                warnings.append(f"sentence refs batch {number}/{len(batches)} failed: {exc}")
-                log.warning(warnings[-1])
-                return {}
+            failure: BaseException | None = None
+            for attempt in range(1, SENTENCE_REF_ATTEMPTS + 1):
+                log.info("[4/4] Requesting sentence refs batch %d/%d (beats %d-%d)", number, len(batches), batch[0], batch[-1])
+                try:
+                    response = await client.ask(build_sentence_ref_prompt([beats[index] for index in batch], film_map, visual_queries=visual_queries))
+                    data = extract_json(response)
+                    return parse_sentence_ref_answers(data), parse_sentence_visuals(data)
+                except errors as exc:
+                    # Free-text visual descriptions occasionally break the JSON; a fresh sample usually parses.
+                    failure = exc
+                    log.warning("sentence refs batch %d/%d attempt %d failed: %s", number, len(batches), attempt, exc)
+            warnings.append(f"sentence refs batch {number}/{len(batches)} failed: {failure}")
+            return {}, {}
 
     results = await asyncio.gather(*(run(number, batch) for number, batch in enumerate(batches, start=1)))
     complete = len(warnings) == 0
     answers: dict[int, dict[int, Any]] = {}
-    for result in results:
-        answers.update(result)
-    refs, resolve_warnings = resolve_sentence_refs(beats, film_map, answers)
+    visuals: dict[int, dict[int, str]] = {}
+    for result_answers, result_visuals in results:
+        answers.update(result_answers)
+        visuals.update(result_visuals)
+    refs, resolve_warnings = resolve_sentence_refs(beats, film_map, answers, visuals)
     return refs, [*warnings, *resolve_warnings], complete

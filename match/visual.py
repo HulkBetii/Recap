@@ -90,17 +90,11 @@ def calibrated_probability(cosine: np.ndarray, *, logit_scale: float, logit_bias
     return 1.0 / (1.0 + np.exp(-logits))
 
 
-def compute_visual_scores(
-    *,
-    beats: list[ReviewBeat],
-    shots: list[Shot],
-    review_intents: dict[int, ReviewIntent],
+def load_frame_bank(
     index_path: Path,
-    cache_dir: Path,
-    device: str,
-    batch_size: int,
-    encoder: VisualEncoder | None = None,
-) -> VisualScoreResult:
+    shots: list[Shot],
+) -> tuple[ShotVisualIndexFile, list[list[float]], list[tuple[int, Any]], dict[int, list[int]], list[str]]:
+    """Keyframe embeddings of the given shots: (index, vectors, (shot, keyframe) per vector, positions by shot, warnings)."""
     index = load_visual_index(index_path, shots)
     by_shot = {item.shot_index: item for item in index.shots}
     warnings: list[str] = []
@@ -121,6 +115,72 @@ def compute_visual_scores(
             frame_positions_by_shot.setdefault(shot.index, []).append(position)
     if not frame_vectors:
         raise VisualMatchError("visual index has no usable keyframe embeddings")
+    return index, frame_vectors, frame_meta, frame_positions_by_shot, warnings
+
+
+def compute_sentence_visual_scores(
+    *,
+    sentences: list[tuple[int, int, str, float, float]],
+    shots: list[Shot],
+    index_path: Path,
+    cache_dir: Path,
+    device: str,
+    batch_size: int,
+    encoder: VisualEncoder | None = None,
+) -> tuple[dict[tuple[int, int], dict[int, float]], list[str]]:
+    """Per-sentence shot scores for sentence-anchored matching.
+
+    `sentences` holds (beat_id, idx, query, span_start, span_end): each query is scored against the keyframes
+    of the shots overlapping that span, and the best-keyframe probability is min-max rescaled within the span
+    so the weight is comparable to motion/brightness instead of being drowned by tiny sigmoid differences.
+    """
+    index, frame_vectors, _frame_meta, frame_positions_by_shot, warnings = load_frame_bank(index_path, shots)
+    unique_queries = dedupe([query for _beat, _idx, query, _start, _end in sentences])
+    if not unique_queries:
+        return {}, warnings
+    unique_vectors, _cache_hits, _device = encode_queries(
+        unique_queries,
+        cache_dir=cache_dir,
+        model=index.meta.embedding_model,
+        device=device,
+        batch_size=batch_size,
+        encoder=encoder,
+        trust_remote_code=index.meta.embedding_mode == "jina-clip-v2",
+        expected_dim=index.meta.embedding_dim,
+    )
+    vector_by_query = {query.casefold(): vector for query, vector in zip(unique_queries, unique_vectors)}
+    frame_matrix = np.asarray(frame_vectors, dtype=np.float32)
+    output: dict[tuple[int, int], dict[int, float]] = {}
+    for beat_id, idx, query, start, end in sentences:
+        vector = vector_by_query.get(" ".join(query.split()).casefold())
+        span_shots = [shot for shot in shots if shot.tc_start < end and start < shot.tc_end and frame_positions_by_shot.get(shot.index)]
+        if vector is None or not span_shots:
+            continue
+        probabilities = calibrated_probability(
+            np.matmul(frame_matrix, np.asarray(vector, dtype=np.float32)),
+            logit_scale=float(index.meta.logit_scale),
+            logit_bias=float(index.meta.logit_bias),
+        )
+        best = {shot.index: float(max(probabilities[position] for position in frame_positions_by_shot[shot.index])) for shot in span_shots}
+        low, high = min(best.values()), max(best.values())
+        output[(beat_id, idx)] = {
+            shot_index: round((value - low) / (high - low), 6) if high > low else 0.0 for shot_index, value in best.items()
+        }
+    return output, warnings
+
+
+def compute_visual_scores(
+    *,
+    beats: list[ReviewBeat],
+    shots: list[Shot],
+    review_intents: dict[int, ReviewIntent],
+    index_path: Path,
+    cache_dir: Path,
+    device: str,
+    batch_size: int,
+    encoder: VisualEncoder | None = None,
+) -> VisualScoreResult:
+    index, frame_vectors, frame_meta, frame_positions_by_shot, warnings = load_frame_bank(index_path, shots)
 
     queries = {beat.beat_id: build_visual_queries(beat, review_intents.get(beat.beat_id)) for beat in beats}
     query_weights = {beat_id: visual_query_weights(items) for beat_id, items in queries.items()}

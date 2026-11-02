@@ -20,7 +20,7 @@ from match.sentence_fill import fill_beat_by_sentences, plan_sentence_windows
 from match.semantic import DEFAULT_EMBEDDING_MODEL, SemanticConfig, SemanticError, compute_semantic_result
 from match.sync_qa import build_sync_qa
 from match.timing import average_clip_len, validate_source_bounds, validate_timeline
-from match.visual import VisualMatchError, build_visual_qa, compute_visual_scores
+from match.visual import VisualMatchError, build_visual_qa, compact_query, compute_sentence_visual_scores, compute_visual_scores
 from match.version import MATCH_ALGORITHM_VERSION
 from visual_index.encoder import VisualEncoderError
 from visual_index.integrity import visual_index_artifact_hash
@@ -110,6 +110,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fill each narration sentence from its own source segments (needs --review-sentences and --sentence-timing).",
     )
     parser.add_argument("--review-sentences", default=None, type=Path)
+    parser.add_argument(
+        "--sentence-visual",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="With --sentence-anchors and --visual-index, rank shots inside each sentence window by SigLIP score for that sentence.",
+    )
+    parser.add_argument("--sentence-visual-weight", default=0.6, type=float)
     parser.add_argument("--sentence-timing", default=None, type=Path)
     parser.add_argument("--ordered-fill-by-audio-progress", action="store_true", default=True)
     parser.add_argument("--no-ordered-fill-by-audio-progress", dest="ordered_fill_by_audio_progress", action="store_false")
@@ -149,6 +156,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "opening_intra_beat_align": args.opening_intra_beat_align,
         "hook_min_brightness": args.hook_min_brightness,
         "sentence_anchors": getattr(args, "sentence_anchors", False),
+        "sentence_visual": [getattr(args, "sentence_visual", False), getattr(args, "sentence_visual_weight", 0.6)],
         "review_sentences": file_hash(args.review_sentences.expanduser().resolve()) if getattr(args, "review_sentences", None) else None,
         "sentence_timing": file_hash(args.sentence_timing.expanduser().resolve()) if getattr(args, "sentence_timing", None) else None,
         "visual_index": visual_index_artifact_hash(args.visual_index.expanduser().resolve()) if args.visual_index and args.visual_index.expanduser().resolve().is_file() else None,
@@ -499,6 +507,32 @@ def run_match(args: argparse.Namespace) -> int:
             logger.warning("Visual matching disabled: %s", exc)
     elif args.visual_mode != "off":
         warnings.append("visual matching requested but no usable visual index was provided")
+    sentence_visual_scores: dict[tuple[int, int], dict[int, float]] = {}
+    if sentence_refs_by_beat is not None and getattr(args, "sentence_visual", False):
+        index_path = args.visual_index.expanduser().resolve() if args.visual_index else None
+        if index_path is None or not index_path.is_file():
+            warnings.append("sentence visual scoring disabled: no visual index")
+        else:
+            queries = [
+                (beat_id, ref.idx, ref.visual_en or compact_query(ref.text), beats_by_id[beat_id].src_tc_start, beats_by_id[beat_id].src_tc_end)
+                for beat_id, refs in sentence_refs_by_beat.items()
+                if beat_id in beats_by_id
+                for ref in refs
+                if ref.grounded
+            ]
+            try:
+                sentence_visual_scores, sentence_visual_warnings = compute_sentence_visual_scores(
+                    sentences=queries,
+                    shots=shots,
+                    index_path=index_path,
+                    cache_dir=args.visual_cache_dir.expanduser().resolve() if args.visual_cache_dir else args.work_dir.expanduser().resolve() / "visual",
+                    device=args.visual_device or args.semantic_device,
+                    batch_size=args.visual_batch_size or args.semantic_batch_size,
+                )
+                warnings.extend(f"sentence visual: {warning}" for warning in sentence_visual_warnings)
+            except (VisualMatchError, VisualEncoderError, ValueError, OSError) as exc:
+                warnings.append(f"sentence visual scoring disabled: {exc}")
+                logger.warning("Sentence visual scoring disabled: %s", exc)
     weights = ScoringWeights(args.w_motion, args.w_face, args.w_bright, args.w_reuse, args.w_semantic, args.w_visual if visual_scores else 0.0)
     reuse_counts: dict[int, int] = {}
     placements: list[EdlPlacement] = []
@@ -589,6 +623,8 @@ def run_match(args: argparse.Namespace) -> int:
                 reuse_counts=reuse_counts,
                 fill_kwargs=fill_kwargs,
                 used_sources=placements,
+                sentence_visual_scores=sentence_visual_scores,
+                visual_weight=args.sentence_visual_weight,
             )
             n_sentence_anchored_beats += 1
             sentence_hits.extend(

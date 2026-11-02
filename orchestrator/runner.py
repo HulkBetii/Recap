@@ -531,6 +531,8 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--review-intent-output", str(review_intent_output or paths.review_intent)]
         if section.get("sentence_refs", False):
             command += ["--sentence-refs", "--sentence-refs-output", str(paths.review_sentences)]
+            if section.get("sentence_visual_queries", False):
+                command.append("--sentence-visual-queries")
         if config.get("preflight", {}).get("enabled", True) and paths.video_profile.exists():
             command += ["--video-profile", str(paths.video_profile)]
         for key in ("target_ratio", "tts_cps", "min_coverage", "max_qa_iterations", "max_qa_rewrites_per_iteration", "content_type", "hook_mode", "target_beat_audio_s", "max_beat_audio_s", "style_sample", "style_preset", "style_strength", "target_sentence_chars", "max_sentence_chars", "non_story_tail_s", "context_file", "chatgpt_profile_dir", "chatgpt_session_file", "chat_session_policy", "chat_session_meta", "chat_title", "reply_timeout_s", "llm_backend", "llm_model", "llm_base_url", "llm_fallback_model", "llm_concurrency", "playwright_max_attempts", "playwright_recovery_timeout_s", "openai_fallback_model", "log_level"):
@@ -638,6 +640,9 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command.append("--opening-intra-beat-align" if section.get("opening_intra_beat_align", False) else "--no-opening-intra-beat-align")
         if section.get("sentence_anchors", False):
             command += ["--sentence-anchors", "--review-sentences", str(paths.review_sentences), "--sentence-timing", str(paths.sentence_timing)]
+            if section.get("sentence_visual", False):
+                command.append("--sentence-visual")
+                add_option(command, "sentence_visual_weight", section.get("sentence_visual_weight"))
         command.append("--ordered-fill-by-audio-progress" if section.get("ordered_fill_by_audio_progress", True) else "--no-ordered-fill-by-audio-progress")
         if not section.get("review_html", True):
             command.append("--no-review-html")
