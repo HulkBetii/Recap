@@ -224,3 +224,40 @@ def test_repeated_asr_warnings_are_collapsed() -> None:
         "ASR warning: short segment merged near <t>s x2 (details in film_map.meta.json)",
         "ASR warning: whisperx alignment failed: oom",
     ]
+
+
+def test_qa_merges_issues_per_beat_and_rechecks_only_rewritten_beats(tmp_path) -> None:
+    class FocusQaClient(FakeReviewClient):
+        async def ask(self, prompt: str) -> str:
+            if "Review this Vietnamese recap" in prompt:
+                self.calls.append(prompt)
+                if "were just rewritten" in prompt:
+                    # Beat 2 was not rewritten, so an issue for it must be ignored.
+                    return json.dumps({"pass": False, "issues": [{"beat_id": 2, "type": "accuracy", "suggestion": "nitpick"}], "notes": ""})
+                return json.dumps(
+                    {
+                        "pass": False,
+                        "issues": [
+                            {"beat_id": 1, "type": "accuracy", "suggestion": "fix A"},
+                            {"beat_id": 1, "type": "plot_desync", "suggestion": "fix B"},
+                        ],
+                        "notes": "",
+                    }
+                )
+            return await super().ask(prompt)
+
+    film_map_path = write_film_map(tmp_path)
+    client = FocusQaClient()
+
+    import asyncio
+
+    _beats, meta = asyncio.run(build_review_with_client(make_args(tmp_path, film_map_path), client))
+
+    rewrites = [call for call in client.calls if "Regenerate only" in call and "length:" not in call]
+    assert len(rewrites) == 1
+    assert "accuracy: fix A | plot_desync: fix B" in rewrites[0]
+    assert "SOURCE:\n#0 A boy enters." in rewrites[0]
+    qa_calls = [call for call in client.calls if "Review this Vietnamese recap" in call]
+    assert len(qa_calls) == 2 and "were just rewritten" in qa_calls[1]
+    assert meta.n_qa_iterations == 1
+    assert meta.qa_report[-1]["issues"] == []

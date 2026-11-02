@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Protocol
 
-from common.schema import AnimeContext, EpisodeMemory, ReviewBeat
+from common.schema import AnimeContext, EpisodeMemory, FilmMapSegment, ReviewBeat
 from review.budget import estimate_total_chars
 from review.json_utils import extract_json
 from review.models import NarrationBeat, OutlineBeat, OutlineResult, QaResult
@@ -23,6 +23,31 @@ def min_outline_beats(char_budget: int) -> int:
     return max(1, math.ceil(char_budget / MAX_CHARS_PER_BEAT))
 
 MOVIE_CONTENT_TYPES = {"movie", "anime_movie"}
+# Per-segment cap keeps source-grounded narration/rewrite/QA prompts well under gateway limits.
+SOURCE_SEGMENT_CHARS = 220
+# Segments shown on each side of a beat so a rewrite can see what belongs to the neighbouring beats.
+SOURCE_CONTEXT_SEGMENTS = 3
+OPENING_REWRITE_RULE = (
+    "- This is the opening beat of a movie recap: clearly establish who the protagonist is, where the scene takes place, "
+    "the problem they face and why it matters, using only facts from SOURCE; no later twist and no hype without context."
+)
+
+
+def segment_text(segment: FilmMapSegment) -> str:
+    text = (segment.en if segment.type == "speech" else segment.scene_desc) or ""
+    return " ".join(text.split())[:SOURCE_SEGMENT_CHARS]
+
+
+def build_source_view(film_map: Sequence[FilmMapSegment], spans: Sequence[tuple[int, int]], *, context: int = 0) -> str:
+    """FILM_MAP lines for the given segment spans; with context, lines outside every span are tagged [other beat]."""
+    lines: list[str] = []
+    for segment in film_map:
+        if not any(start - context <= segment.id <= end + context for start, end in spans):
+            continue
+        tag = "" if any(start <= segment.id <= end for start, end in spans) else " [other beat]"
+        lines.append(f"#{segment.id}{tag} {segment_text(segment)}")
+    return "\n".join(lines)
+
 
 class ChatClient(Protocol):
     async def ask(self, prompt: str) -> str:
@@ -113,6 +138,7 @@ Rules:
 - If story_start_s is given, do not choose setup/opening source spans before story_start_s.
 - glossary: list of characters with Vietnamese canonical name and short role.
 - outline: ordered beats covering the full plot with recap pacing. Each beat has from_seg_id, to_seg_id, summary.
+- A beat's summary must describe ONLY events whose segments lie inside its own from_seg_id..to_seg_id; every event belongs to exactly one beat. If a summary needs a later event, end that beat later instead of borrowing the event from the next beat.
 - Use at least {min_outline_beats(char_budget)} beats so that no beat needs more than about {MAX_CHARS_PER_BEAT} Vietnamese characters; split long stretches of plot into several beats.
 - Do NOT create standalone beats for credits, production info, black screen, title cards, or non-story outro; keep the real plot ending, but ignore post-plot credits.
 {hook_rule}
@@ -139,6 +165,7 @@ def build_narration_prompt(
     episode_memory: EpisodeMemory | None = None,
     beat_ids: list[int] | None = None,
     previous_narration: str | None = None,
+    film_map: Sequence[FilmMapSegment] | None = None,
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
     anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
@@ -161,6 +188,14 @@ def build_narration_prompt(
         for index, beat in enumerate(outline)
         if beat_ids is None or index in beat_ids
     ]
+    source_rule = ""
+    if film_map is not None:
+        for item in payload:
+            item["source"] = build_source_view(film_map, [(item["from_seg_id"], item["to_seg_id"])])
+        source_rule = (
+            "\n- Each beat carries SOURCE: the FILM_MAP lines of its own segment span. Narrate only events present in that beat's "
+            "source (the summary is guidance); never move events from another beat's span into this beat."
+        )
     # A batched request (long films) only adds context blocks; the single-request prompt stays byte-identical.
     batch_block = ""
     if beat_ids is not None:
@@ -180,7 +215,7 @@ Rules:
 - Dramatic fast-paced Vietnamese recap style.
 {movie_rule}
 {hook_rule}
-- Use the glossary names consistently.
+- Use the glossary names consistently.{source_rule}
 - Do NOT quote original dialogue verbatim; transform into narration.
 - Stay within ±20% of each char_target where possible.
 {style_block}
@@ -249,17 +284,26 @@ def build_regenerate_prompt(
     anime_context: AnimeContext | None = None,
     episode_memory: EpisodeMemory | None = None,
     content_type: str = "episode",
+    source: str = "",
+    opening_rule: str = "",
 ) -> str:
     style_block = f"\nSTYLE GUIDE:\n{style_sample}\n" if style_sample else ""
     anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
     memory_block = f"\n{build_episode_memory_block(episode_memory, content_type=content_type)}\n" if episode_memory else ""
+    extra_rules = ""
+    source_block = ""
+    if source:
+        extra_rules += "\n- Use only facts from SOURCE; lines tagged [other beat] belong to the neighbouring beats and must not be narrated here."
+        source_block = f"SOURCE:\n{source}\n\n"
+    if opening_rule:
+        extra_rules += f"\n{opening_rule}"
     return f"""
 Regenerate only this one Vietnamese recap beat.
 Return ONLY JSON: {{"beat_id": {beat.beat_id}, "narration": string}}.
 
 Rules:
 - Fix this issue: {issue}
-- Keep same segment span: {beat.from_seg_id}-{beat.to_seg_id}.
+- Keep same segment span: {beat.from_seg_id}-{beat.to_seg_id}.{extra_rules}
 - Do not quote original dialogue verbatim.
 - Use glossary names consistently.
 - Aim for about {char_target} Vietnamese characters.
@@ -267,7 +311,7 @@ Rules:
 {style_block}
 {anime_block}
 {memory_block}
-CURRENT_BEAT:
+{source_block}CURRENT_BEAT:
 {json.dumps({"beat_id": beat.beat_id, "narration": beat.narration}, ensure_ascii=False)}
 
 GLOSSARY:
@@ -318,6 +362,7 @@ async def request_narration(
     max_batch_chars: int = NARRATION_BATCH_CHARS,
     load_batch: Callable[[list[int]], list[NarrationBeat] | None] | None = None,
     save_batch: Callable[[list[int], list[NarrationBeat]], None] | None = None,
+    film_map: Sequence[FilmMapSegment] | None = None,
 ) -> list[NarrationBeat]:
     batches = plan_narration_batches(char_targets, max_batch_chars)
     if len(batches) <= 1:
@@ -331,6 +376,7 @@ async def request_narration(
                 hook_mode=hook_mode,
                 anime_context=anime_context,
                 episode_memory=episode_memory,
+                film_map=film_map,
             )
         )
         data = extract_json(response)
@@ -357,6 +403,7 @@ async def request_narration(
                     episode_memory=episode_memory,
                     beat_ids=batch,
                     previous_narration=previous,
+                    film_map=film_map,
                 )
             )
             by_id = {item.beat_id: item for item in (NarrationBeat.model_validate(narration_fields(raw)) for raw in extract_json(response))}
@@ -399,7 +446,21 @@ async def request_qa(
     story_start_s: float = 0.0,
     anime_context: AnimeContext | None = None,
     episode_memory: EpisodeMemory | None = None,
+    focus_beat_ids: Sequence[int] | None = None,
+    film_map: Sequence[FilmMapSegment] | None = None,
 ) -> QaResult:
+    if focus_beat_ids is not None and film_map is not None:
+        return await request_focus_qa(
+            client,
+            film_map=film_map,
+            beats=beats,
+            focus_beat_ids=focus_beat_ids,
+            glossary=glossary,
+            content_type=content_type,
+            story_start_s=story_start_s,
+            anime_context=anime_context,
+            episode_memory=episode_memory,
+        )
     response = await client.ask(
         build_qa_prompt(
             film_map_view=film_map_view,
@@ -426,6 +487,97 @@ async def request_qa(
         ]
     return QaResult.model_validate(data)
 
+def build_focus_qa_prompt(
+    *,
+    source_view: str,
+    beats: list[ReviewBeat],
+    focus_beat_ids: Sequence[int],
+    glossary: list[dict],
+    content_type: str = "episode",
+    story_start_s: float = 0.0,
+    anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
+) -> str:
+    focus = set(focus_beat_ids)
+    payload = [beat.model_dump() | {"focus": beat.beat_id in focus} for beat in beats]
+    opening_rule = (
+        f"- Beat 0 is the movie opening: it must clearly establish who/where/problem/why it matters, with its source span at or after story_start_s={story_start_s:.1f}s."
+        if 0 in focus and content_type in MOVIE_CONTENT_TYPES
+        else ""
+    )
+    anime_block = f"\n{build_anime_context_block(anime_context, content_type=content_type)}\n" if anime_context else ""
+    memory_block = f"\n{build_episode_memory_block(episode_memory, content_type=content_type)}\n" if episode_memory else ""
+    return f"""
+Review this Vietnamese recap script again: only the beats marked "focus": true were just rewritten.
+Return ONLY valid JSON: {{"pass": boolean, "issues": [{{"beat_id": number, "type": string, "suggestion": string}}], "notes": string}}.
+Report issues for focus beats only; the other beats are read-only context. Do not nitpick wording or style.
+
+Check each focus beat against FILM_MAP:
+- Accuracy: no plot, role, relationship or outcome that FILM_MAP does not support.
+- Span: it narrates only events inside its own from_seg_id..to_seg_id, not events of the neighbouring beats.
+- Names: use glossary consistently.
+- Flow: it follows on from the previous beat and leads into the next one.
+{opening_rule}
+{anime_block}
+{memory_block}
+
+GLOSSARY:
+{json.dumps(glossary, ensure_ascii=False)}
+
+FILM_MAP (only the spans of these beats; [other beat] lines lie just outside them):
+{source_view}
+
+REVIEW_SCRIPT:
+{json.dumps(payload, ensure_ascii=False)}
+""".strip()
+
+
+async def request_focus_qa(
+    client: ChatClient,
+    *,
+    film_map: Sequence[FilmMapSegment],
+    beats: list[ReviewBeat],
+    focus_beat_ids: Sequence[int],
+    glossary: list[dict],
+    content_type: str = "episode",
+    story_start_s: float = 0.0,
+    anime_context: AnimeContext | None = None,
+    episode_memory: EpisodeMemory | None = None,
+) -> QaResult:
+    """Re-check only rewritten beats (plus one read-only neighbour each side) against their own source spans.
+
+    A full-script QA pass resamples nitpicks across every beat, so repeating it after each rewrite never converges.
+    """
+    focus = sorted({beat_id for beat_id in focus_beat_ids if 0 <= beat_id < len(beats)})
+    if not focus:
+        return QaResult.model_validate({"pass": True, "issues": [], "notes": "no beats to re-check"})
+    context_ids = sorted({neighbour for beat_id in focus for neighbour in (beat_id - 1, beat_id, beat_id + 1) if 0 <= neighbour < len(beats)})
+    context_beats = [beats[beat_id] for beat_id in context_ids]
+    source_view = build_source_view(
+        film_map,
+        [(beat.from_seg_id, beat.to_seg_id) for beat in context_beats],
+        context=SOURCE_CONTEXT_SEGMENTS,
+    )
+    response = await client.ask(
+        build_focus_qa_prompt(
+            source_view=source_view,
+            beats=context_beats,
+            focus_beat_ids=focus,
+            glossary=glossary,
+            content_type=content_type,
+            story_start_s=story_start_s,
+            anime_context=anime_context,
+            episode_memory=episode_memory,
+        )
+    )
+    data = extract_json(response)
+    if isinstance(data, dict) and isinstance(data.get("issues"), list):
+        data["issues"] = [
+            issue for issue in data["issues"] if isinstance(issue, dict) and isinstance(issue.get("beat_id"), int) and issue["beat_id"] in focus
+        ]
+    return QaResult.model_validate(data)
+
+
 async def regenerate_beat(
     client: ChatClient,
     *,
@@ -437,7 +589,12 @@ async def regenerate_beat(
     anime_context: AnimeContext | None = None,
     episode_memory: EpisodeMemory | None = None,
     content_type: str = "episode",
+    film_map: Sequence[FilmMapSegment] | None = None,
 ) -> NarrationBeat:
+    source = (
+        build_source_view(film_map, [(beat.from_seg_id, beat.to_seg_id)], context=SOURCE_CONTEXT_SEGMENTS) if film_map is not None else ""
+    )
+    opening_rule = OPENING_REWRITE_RULE if beat.beat_id == 0 and content_type in MOVIE_CONTENT_TYPES else ""
     response = await client.ask(
         build_regenerate_prompt(
             beat=beat,
@@ -448,6 +605,8 @@ async def regenerate_beat(
             anime_context=anime_context,
             episode_memory=episode_memory,
             content_type=content_type,
+            source=source,
+            opening_rule=opening_rule,
         )
     )
     revised = NarrationBeat.model_validate(narration_fields(extract_json(response)))

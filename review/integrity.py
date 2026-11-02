@@ -8,7 +8,7 @@ from common.integrity import file_hash, stable_hash
 from common.llm_gateway import DEFAULT_GATEWAY_MODEL, GATEWAY_BACKEND
 
 REVIEW_CACHE_VERSION = "review-v1"
-REVIEW_PROMPT_VERSION = "review-prompts-v4"
+REVIEW_PROMPT_VERSION = "review-prompts-v5"
 
 REVIEW_CONFIG_FIELDS = (
     "target_ratio",

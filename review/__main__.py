@@ -30,7 +30,7 @@ from review.movie_mode import (
     story_start_from_profile,
 )
 from common.llm_gateway import DEFAULT_GATEWAY_MODEL, GATEWAY_BACKEND, GatewayChatClient, GatewayChatError
-from review.models import NarrationBeat, OutlineResult, QaResult
+from review.models import NarrationBeat, OutlineResult, QaIssue, QaResult
 from review.openai_chat import FallbackChatClient, OpenAIChatClient, OpenAIChatError
 from review.playwright_chat import PlaywrightChatClient, PlaywrightChatError
 from review.non_story import drop_non_story_beats
@@ -348,6 +348,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             episode_memory=episode_memory,
             load_batch=load_narration_batch,
             save_batch=lambda batch, beats: cache.write_json(batch_name(batch), beats),
+            film_map=film_map,
         )
         cache.write_json("narration.json", narration)
 
@@ -396,6 +397,9 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
         warnings.extend(readability_warnings)
     qa_report: list[dict] = []
     n_qa_iterations = 0
+    # None = review the whole script; afterwards only the rewritten beats are re-checked.
+    focus_beat_ids: list[int] | None = None
+    carried_issues: list[QaIssue] = []
 
     for iteration in range(args.max_qa_iterations + 1):
         current_coverage = coverage_ratio(beats, len(film_map))
@@ -403,7 +407,10 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             logger.info("[3/4] Using cached qa.json")
             qa = QaResult.model_validate(cache.read_json("qa.json"))
         else:
-            logger.info("[3/4] Requesting QA iteration %d", iteration)
+            if focus_beat_ids is None:
+                logger.info("[3/4] Requesting QA iteration %d", iteration)
+            else:
+                logger.info("[3/4] Re-checking %d rewritten beat(s), QA iteration %d", len(focus_beat_ids), iteration)
             qa = await request_qa(
                 client,
                 film_map_view=film_map_view,
@@ -416,7 +423,13 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                 story_start_s=story_start_s,
                 anime_context=anime_context,
                 episode_memory=episode_memory,
+                focus_beat_ids=focus_beat_ids,
+                film_map=film_map,
             )
+            if carried_issues:
+                qa = QaResult.model_validate(
+                    {"pass": False, "issues": [issue.model_dump() for issue in [*qa.issues, *carried_issues]], "notes": qa.notes}
+                )
             if iteration == 0:
                 cache.write_json("qa.json", qa)
             else:
@@ -426,34 +439,52 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
             n_qa_iterations = iteration
             break
         narration_by_id = {item.beat_id: item for item in narration}
-        limited_issues = qa.issues[: qa_rewrite_cap(args.max_qa_rewrites_per_iteration, len(beats))]
-        if len(qa.issues) > len(limited_issues):
-            warnings.append(f"qa rewrite limited to {len(limited_issues)} of {len(qa.issues)} issue(s) in iteration {iteration}")
-        rewrite_issues = [issue for issue in limited_issues if issue.beat_id < len(beats)]
+        # One rewrite per beat with every issue for it; separate rewrites of the same beat overwrite each other.
+        issues_by_beat: dict[int, list[QaIssue]] = {}
+        for issue in qa.issues:
+            if issue.beat_id < len(beats):
+                issues_by_beat.setdefault(issue.beat_id, []).append(issue)
+        cap = qa_rewrite_cap(args.max_qa_rewrites_per_iteration, len(beats))
+        rewrite_beat_ids = list(issues_by_beat)[:cap]
+        carried_issues = [issue for beat_id in list(issues_by_beat)[cap:] for issue in issues_by_beat[beat_id]]
+        if carried_issues:
+            warnings.append(f"qa rewrite limited to {len(rewrite_beat_ids)} of {len(issues_by_beat)} beat(s) in iteration {iteration}")
+        rewrite_issues = [
+            QaIssue(
+                beat_id=beat_id,
+                type="+".join(dict.fromkeys(issue.type for issue in issues_by_beat[beat_id])),
+                suggestion=" | ".join(f"{issue.type}: {issue.suggestion}" for issue in issues_by_beat[beat_id]),
+            )
+            for beat_id in rewrite_beat_ids
+        ]
         results = await regenerate_beats(
             client,
             [
                 dict(
                     beat=beats[issue.beat_id],
-                    issue=f"{issue.type}: {issue.suggestion}",
+                    issue=issue.suggestion,
                     glossary=outline_result.glossary,
                     char_target=char_targets[min(issue.beat_id, len(char_targets) - 1)],
                     style_sample=style_guide,
                     anime_context=anime_context,
                     episode_memory=episode_memory,
                     content_type=args.content_type,
+                    film_map=film_map,
                 )
                 for issue in rewrite_issues
             ],
             concurrency=rewrite_concurrency(args),
         )
+        focus_beat_ids = []
         for issue, revised in zip(rewrite_issues, results):
             if isinstance(revised, Exception):
                 warning = f"qa rewrite skipped for beat {issue.beat_id} after LLM failure: {revised}"
                 logger.warning(warning)
                 warnings.append(warning)
+                carried_issues.extend(issues_by_beat[issue.beat_id])
                 continue
             narration_by_id[revised.beat_id] = revised
+            focus_beat_ids.append(revised.beat_id)
         narration = [narration_by_id[index] for index in sorted(narration_by_id)]
         narration, revision_consistency_warnings = apply_narration_consistency(narration, outline_result.glossary)
         warnings.extend(revision_consistency_warnings)
@@ -472,6 +503,7 @@ async def build_review_with_client(args: argparse.Namespace, client) -> tuple[li
                     client,
                     beat=beats[0],
                     issue=opening_rewrite_issue(opening_check),
+                    film_map=film_map,
                     glossary=outline_result.glossary,
                     char_target=char_targets[0] if char_targets else 400,
                     style_sample=style_guide,
@@ -698,6 +730,7 @@ async def ensure_style_readability(
                     anime_context=anime_context,
                     episode_memory=episode_memory,
                     content_type=content_type,
+                    film_map=film_map,
                 )
                 for issue in round_issues
             ],
@@ -770,6 +803,7 @@ async def ensure_narration_length(
                 anime_context=anime_context,
                 episode_memory=episode_memory,
                 content_type=content_type,
+                film_map=film_map,
             )
             for item in short
         ],

@@ -76,3 +76,26 @@ def test_long_script_is_batched_with_continuity_and_cache() -> None:
 def test_batch_missing_beat_fails_clearly() -> None:
     with pytest.raises(ValueError, match="missing beat_ids \\[1\\]"):
         asyncio.run(request_narration(BatchClient(drop_id=1), outline=outline(2), glossary=[], char_targets=[6000, 6000]))
+
+
+def test_source_view_tags_neighbour_segments_and_feeds_prompts() -> None:
+    from common.schema import FilmMapSegment, ReviewBeat
+    from review.llm_flow import OPENING_REWRITE_RULE, build_narration_prompt, build_regenerate_prompt, build_source_view
+    from review.models import OutlineBeat
+
+    film_map = [
+        FilmMapSegment(id=index, type="speech", tc_start=float(index), tc_end=index + 1.0, ko="k", en=f"line {index}")
+        for index in range(6)
+    ]
+    assert build_source_view(film_map, [(2, 3)], context=1) == "#1 [other beat] line 1\n#2 line 2\n#3 line 3\n#4 [other beat] line 4"
+
+    outline = [OutlineBeat(from_seg_id=0, to_seg_id=2, summary="a"), OutlineBeat(from_seg_id=3, to_seg_id=5, summary="b")]
+    prompt = build_narration_prompt(outline=outline, glossary=[], char_targets=[100, 100], film_map=film_map)
+    assert "Narrate only events present in that beat's source" in prompt
+    assert '"source": ' + json.dumps("\n".join(["#3 line 3", "#4 line 4", "#5 line 5"])) in prompt
+    assert "SOURCE" not in build_narration_prompt(outline=outline, glossary=[], char_targets=[100, 100])
+
+    beat = ReviewBeat(beat_id=0, narration="x", from_seg_id=0, to_seg_id=2, src_tc_start=0.0, src_tc_end=3.0)
+    regenerate = build_regenerate_prompt(beat=beat, issue="i", glossary=[], char_target=100, source="#0 line 0", opening_rule=OPENING_REWRITE_RULE)
+    assert "SOURCE:\n#0 line 0\n\nCURRENT_BEAT:" in regenerate
+    assert "opening beat of a movie recap" in regenerate

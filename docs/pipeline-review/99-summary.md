@@ -53,3 +53,16 @@ Chạy lại từ đầu, không cache (`runs/bench-qods-final2`), cùng máy v�
 | VRAM đỉnh | 9,5 GB | 8,3 GB |
 
 Mục tiêu ≤ 45 phút chưa đạt. Phần còn lại trên đường găng là ASR + WhisperX (14 phút, local) và chuỗi outline → narration batch tuần tự trong review (~10 phút); muốn nhanh hơn nữa phải đụng tới hai chỗ này, với đánh đổi về độ chính xác timestamp (ASR batch) hoặc mạch kể (narration song song).
+
+## Đợt bổ sung 2026-11-02: QA kịch bản bám nguồn
+
+Nguyên nhân QA không pass: outline gán span lệch so với nội dung tóm tắt, viết lại beat không thấy FILM_MAP, và mỗi vòng QA chấm lại toàn bộ kịch bản nên luôn phát sinh lỗi mới. Sau khi sửa (`review-prompts-v5`), đo trên bản sao input của `final4`:
+
+| Chỉ số | final2 / final3 / final4 | qa5a / qa5b |
+|---|---|---|
+| QA GĐ2 cuối | 0 / 1 / 4 lỗi | 0 / 0 lỗi |
+| Chấm độc lập toàn kịch bản (2 lần) | 0+4 / 3+2 / 3+2 | 0+1 / 0+0 |
+| Request 9router của GĐ2 | — / — / 35 | 17 / 13 |
+| Input token GĐ2 | — / — / 738k | 383k / 334k |
+
+Bộ chấm dao động mạnh (final2 lần 0 lỗi, lần 4 lỗi), nên đây là xu hướng chứ chưa phải tỷ lệ chính xác.
