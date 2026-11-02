@@ -218,3 +218,33 @@ def test_missing_reference_clip_is_reported_as_missing_not_unknown_preset(tmp_pa
             speed=1.0,
             output_path=tmp_path / "out.mp3",
         )
+
+
+def test_synthesize_batch_calls_infer_batch_once_and_writes_every_output(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class BatchEngine(FakeEngine):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batches: list[list[str]] = []
+
+        def infer_batch(self, texts, **kwargs):  # type: ignore[no-untyped-def]
+            self.batches.append(list(texts))
+            assert kwargs == {"voice": "Ngọc Linh", "apply_watermark": True}
+            return [b"audio"] * len(texts)
+
+    engine = BatchEngine()
+    monkeypatch.setattr("tts.vieneu_provider.run_command", lambda command: Path(command[-1]).write_bytes(b"mp3"))
+    outputs = [tmp_path / f"{index}.mp3" for index in range(3)]
+    VieneuSynthesizer(engine_factory=lambda **_kwargs: engine).synthesize_batch(
+        texts=["a", "b", "c"],
+        output_paths=outputs,
+        voice_id="Ngọc Linh",
+        style="doc_truyen",
+        backend="pytorch",
+        precision="int8",
+        model="model-id",
+        threads=0,
+        speed=1.0,
+    )
+    assert engine.batches == [["a", "b", "c"]] and engine.calls == []
+    assert all(path.read_bytes() == b"mp3" for path in outputs)
+    assert not list(tmp_path.glob("*.vieneu.*"))

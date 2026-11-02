@@ -41,8 +41,10 @@ from common.schema import (
     ReviewMeta,
     ReviewIntent,
     SentenceRef,
+    SentenceShotScores,
     SentenceTimestamp,
     Shot,
+    ShotPickMeta,
     ShotVisualIndexFile,
     ShotsMeta,
     TtsMeta,
@@ -61,6 +63,7 @@ from orchestrator.config import add_option
 from orchestrator.cost_policy import CostPolicy, disallowed_openai_stages
 from orchestrator.graph import RunPaths, STAGES
 from orchestrator.summary import StageSummary
+from shot_pick.__main__ import input_hash as shot_pick_input_hash
 from shots.features import available_face_detector_version
 from shots.overlays import OVERLAY_DETECTOR_VERSION
 from episode_planner.integrity import EPISODE_PLANNER_CACHE_VERSION, episode_planner_config_hash, episode_planner_input_hashes
@@ -92,6 +95,7 @@ STAGE_SPECS: dict[str, StageSpec] = {
     "tts": StageSpec("tts", ("voiceover", "beats_timing", "tts_meta"), "tts_meta"),
     "shots": StageSpec("shots", ("shots", "shots_meta"), "shots_meta"),
     "visual_index": StageSpec("visual_index", ("shot_visual_index",), "shot_visual_index"),
+    "shot_pick": StageSpec("shot_pick", ("sentence_shot_scores", "sentence_shot_scores_meta"), "sentence_shot_scores_meta"),
     "match": StageSpec("match", ("edl", "edl_meta", "edl_qa", "edl_sync_qa", "edl_visual_qa", "edl_review_html"), "edl_meta"),
     "render": StageSpec("render", ("recap", "render_meta"), "render_meta"),
 }
@@ -275,6 +279,10 @@ def validate_stage(paths: RunPaths, stage: str) -> None:
                 require_frames=True,
                 require_calibration=True,
             )
+        elif stage == "shot_pick":
+            ShotPickMeta.model_validate(load_json(paths.sentence_shot_scores_meta))
+            for item in load_json(paths.sentence_shot_scores):
+                SentenceShotScores.model_validate(item)
         elif stage == "match":
             pause_s = 0.0
             if paths.tts_meta.is_file():
@@ -446,6 +454,15 @@ def outputs_valid(paths: RunPaths, stage: str, *, film: Path | None = None, conf
             index = ShotVisualIndexFile.model_validate(load_json(paths.shot_visual_index))
             if not metadata_is_current(index, film_path=film, shots_path=paths.shots, config_hash=config_hash):
                 return False
+        if stage == "shot_pick" and config is not None:
+            section = config.get("shot_pick", {})
+            meta = ShotPickMeta.model_validate(load_json(paths.sentence_shot_scores_meta))
+            expected = shot_pick_input_hash(
+                [paths.review_script, paths.review_sentences, paths.sentence_timing, paths.shots],
+                {"model": section.get("model"), "max_candidates": int(section.get("max_candidates", 6))},
+            )
+            if meta.input_hash != expected:
+                return False
         return True
     except (OrchestratorError, OSError, ValueError):
         return False
@@ -560,6 +577,7 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
             "vieneu_precision",
             "vieneu_model",
             "vieneu_threads",
+            "vieneu_batch_size",
             "speed",
             "inter_beat_pause",
             "concurrency",
@@ -596,6 +614,18 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command += ["--film", str(film), "--shots", str(paths.shots), "--output", str(paths.shot_visual_index), "--asset-dir", str(paths.visual_index_dir)]
         for key in ("embedding_mode", "embedding_model", "device", "batch_size", "keyframes_per_shot", "frame_sampling", "log_level"):
             add_option(command, key, section.get(key))
+    elif stage == "shot_pick":
+        command += [
+            "--review-script", str(paths.review_script),
+            "--review-sentences", str(paths.review_sentences),
+            "--sentence-timing", str(paths.sentence_timing),
+            "--shots", str(paths.shots),
+            "--output", str(paths.sentence_shot_scores),
+        ]
+        fallback = section.get("fallback_model") or config.get("review", {}).get("llm_model")
+        for key in ("model", "base_url", "timeout_s", "concurrency", "max_candidates", "sentences_per_request", "log_level"):
+            add_option(command, key, section.get(key))
+        add_option(command, "fallback_model", fallback)
     elif stage == "match":
         command += ["--review-script", str(paths.review_script), "--beats-timing", str(paths.beats_timing), "--shots", str(paths.shots), "--output", str(paths.edl)]
         review_intent_setting = section.get("review_intent", "auto")
@@ -641,6 +671,9 @@ def build_command(stage: str, paths: RunPaths, film: Path, config: dict[str, Any
         command.append("--opening-intra-beat-align" if section.get("opening_intra_beat_align", False) else "--no-opening-intra-beat-align")
         if section.get("sentence_anchors", False):
             command += ["--sentence-anchors", "--review-sentences", str(paths.review_sentences), "--sentence-timing", str(paths.sentence_timing)]
+            if config.get("shot_pick", {}).get("enabled", False):
+                command += ["--sentence-shot-scores", str(paths.sentence_shot_scores)]
+                add_option(command, "sentence_visual_weight", section.get("sentence_visual_weight"))
             if section.get("sentence_visual", False):
                 command.append("--sentence-visual")
                 add_option(command, "sentence_visual_weight", section.get("sentence_visual_weight"))
@@ -715,6 +748,14 @@ def preflight(*, film: Path, selected: set[str], forced: set[str], paths: RunPat
             profile = Path(str(review_config.get("chatgpt_profile_dir"))).expanduser()
             if not profile.exists():
                 raise OrchestratorError(f"ChatGPT profile dir does not exist for review: {profile}")
+    if "shot_pick" in will_run and not dry_run and config.get("shot_pick", {}).get("enabled", False):
+        shot_pick_config = config["shot_pick"]
+        require_gateway_ready(
+            purpose="shot_pick",
+            model=shot_pick_config.get("model") or DEFAULT_GATEWAY_MODEL,
+            base_url=shot_pick_config.get("base_url"),
+            fallback_model=shot_pick_config.get("fallback_model") or config.get("review", {}).get("llm_model"),
+        )
     if "tts" in will_run and not dry_run and not defer_episode_downstream:
         tts_config = config["tts"]
         if not tts_config.get("voice_id"):

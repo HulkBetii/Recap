@@ -73,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vieneu-precision", choices=["int8", "fp32"], default=DEFAULT_VIENEU_PRECISION)
     parser.add_argument("--vieneu-model", default=DEFAULT_VIENEU_MODEL)
     parser.add_argument("--vieneu-threads", default=0, type=int)
+    parser.add_argument(
+        "--vieneu-batch-size",
+        default=16,
+        type=int,
+        help="VieNeu pytorch/CUDA only: uncached beats per infer_batch call (1 = one beat at a time).",
+    )
     parser.add_argument("--speed", default=DEFAULT_SPEED, type=float)
     parser.add_argument("--inter-beat-pause", default=DEFAULT_INTER_BEAT_PAUSE, type=float)
     parser.add_argument("--concurrency", default=DEFAULT_CONCURRENCY, type=int)
@@ -144,6 +150,137 @@ def load_film_duration(path: Path | None) -> tuple[float | None, list[str]]:
         return None, [f"Could not parse film duration from {path}: {exc}"]
 
 
+def beat_cache_key(
+    *,
+    text: str,
+    cache_salt: str,
+    provider_mode: ProviderMode,
+    voice_id: str,
+    model: str,
+    speed: float,
+    normalize: bool,
+    provider_config: dict[str, object],
+) -> str:
+    return build_cache_key(
+        provider=provider_mode,
+        voice_id=voice_id,
+        model=model,
+        speed=speed,
+        narration=text + "\n__tts_cache_salt__=" + cache_salt,
+        normalized=normalize,
+        provider_config=provider_config,
+    )
+
+
+def finalize_beat(
+    *,
+    beat: ReviewBeat,
+    text: str,
+    cache_key: str,
+    cache: TtsCache,
+    manifest: dict[str, TtsManifestEntry],
+    provider: str,
+    voice_id: str,
+    model: str,
+    speed: float,
+    normalize: bool,
+) -> tuple[Path, TtsManifestEntry]:
+    """Normalize the raw provider audio, record the manifest entry and persist the manifest (resume point)."""
+    raw_path = cache.raw_path(beat.beat_id)
+    final_path = cache.audio_path(beat.beat_id)
+    if normalize:
+        normalize_audio(raw_path, final_path)
+    else:
+        final_path.write_bytes(raw_path.read_bytes())
+    entry = TtsManifestEntry(
+        beat_id=beat.beat_id,
+        cache_key=cache_key,
+        narration_hash=stable_hash(text),
+        provider=provider,
+        voice_id=voice_id,
+        model=model,
+        speed=speed,
+        normalized=normalize,
+        audio_path=final_path.relative_to(cache.work_dir).as_posix(),
+    )
+    manifest[str(beat.beat_id)] = entry
+    cache.save_manifest(manifest)
+    return final_path, entry
+
+
+async def synthesize_vieneu_batched(
+    *,
+    beats: list[ReviewBeat],
+    texts: dict[int, str],
+    cache_salt: str,
+    cache: TtsCache,
+    manifest: dict[str, TtsManifestEntry],
+    provider_client: TtsProviderClient,
+    voice_id: str,
+    vieneu_style: str,
+    vieneu_backend: str,
+    vieneu_precision: str,
+    vieneu_model: str,
+    vieneu_threads: int,
+    provider_config: dict[str, object],
+    speed: float,
+    normalize: bool,
+    batch_size: int,
+) -> list[tuple[Path, TtsManifestEntry]]:
+    """VieNeu on CUDA: cache hits stay as they are, misses go through `infer_batch` in groups of batch_size.
+
+    The batched audio is equivalent to per-beat `infer` (both sample at temperature 0.8), so the cache key is
+    the same and existing cached beats remain valid.
+    """
+    results: dict[int, tuple[Path, TtsManifestEntry]] = {}
+    misses: list[tuple[ReviewBeat, str]] = []
+    for beat in beats:
+        key = beat_cache_key(
+            text=texts[beat.beat_id],
+            cache_salt=cache_salt,
+            provider_mode="vieneu",
+            voice_id=voice_id,
+            model=vieneu_model,
+            speed=speed,
+            normalize=normalize,
+            provider_config=provider_config,
+        )
+        cached = cache.get_cached(manifest, beat.beat_id, key)
+        if cached is not None:
+            results[beat.beat_id] = (cached, manifest[str(beat.beat_id)])
+        else:
+            misses.append((beat, key))
+    logger = logging.getLogger("tts")
+    for start in range(0, len(misses), batch_size):
+        group = misses[start : start + batch_size]
+        logger.info("[1/4] VieNeu batch %d-%d of %d uncached beat(s)", start + 1, start + len(group), len(misses))
+        result = await provider_client.synthesize_vieneu_batch(
+            texts=[texts[beat.beat_id] for beat, _key in group],
+            output_paths=[cache.raw_path(beat.beat_id) for beat, _key in group],
+            voice_id=voice_id,
+            style=vieneu_style,
+            backend=vieneu_backend,
+            precision=vieneu_precision,
+            model=vieneu_model,
+            threads=vieneu_threads,
+            speed=speed,
+        )
+        for beat, key in group:
+            results[beat.beat_id] = finalize_beat(
+                beat=beat,
+                text=texts[beat.beat_id],
+                cache_key=key,
+                cache=cache,
+                manifest=manifest,
+                provider=result.provider,
+                voice_id=result.voice_id,
+                model=result.model or vieneu_model,
+                speed=speed,
+                normalize=normalize,
+            )
+    return [results[beat.beat_id] for beat in beats]
+
+
 async def synthesize_one(
     *,
     beat: ReviewBeat,
@@ -168,13 +305,14 @@ async def synthesize_one(
     normalize: bool,
     semaphore: asyncio.Semaphore,
 ) -> tuple[Path, TtsManifestEntry]:
-    cache_key = build_cache_key(
-        provider=provider_mode,
+    cache_key = beat_cache_key(
+        text=text,
+        cache_salt=cache_salt,
+        provider_mode=provider_mode,
         voice_id=voice_id,
         model=model,
         speed=speed,
-        narration=text + "\n__tts_cache_salt__=" + cache_salt,
-        normalized=normalize,
+        normalize=normalize,
         provider_config=provider_config,
     )
     cached = cache.get_cached(manifest, beat.beat_id, cache_key)
@@ -182,7 +320,6 @@ async def synthesize_one(
         return cached, manifest[str(beat.beat_id)]
 
     raw_path = cache.raw_path(beat.beat_id)
-    final_path = cache.audio_path(beat.beat_id)
     async with semaphore:
         result = await provider_client.synthesize(
             text=text,
@@ -207,24 +344,18 @@ async def synthesize_one(
             result.provider,
             " -> ".join(result.attempted_providers),
         )
-    if normalize:
-        normalize_audio(raw_path, final_path)
-    else:
-        final_path.write_bytes(raw_path.read_bytes())
-    entry = TtsManifestEntry(
-        beat_id=beat.beat_id,
+    return finalize_beat(
+        beat=beat,
+        text=text,
         cache_key=cache_key,
-        narration_hash=stable_hash(text),
+        cache=cache,
+        manifest=manifest,
         provider=result.provider,
         voice_id=result.voice_id,
         model=result.model or model,
         speed=speed,
-        normalized=normalize,
-        audio_path=final_path.relative_to(cache.work_dir).as_posix(),
+        normalize=normalize,
     )
-    manifest[str(beat.beat_id)] = entry
-    cache.save_manifest(manifest)
-    return final_path, entry
 
 
 async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProviderClient) -> tuple[list, TtsMeta]:  # type: ignore[no-untyped-def]
@@ -352,7 +483,14 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
     normalize = not args.no_normalize
 
     logger.info("[1/4] Synthesizing %d beats", len(beats))
-    tasks = [
+    vieneu_batch_size = int(getattr(args, "vieneu_batch_size", 1) or 1)
+    use_vieneu_batch = (
+        args.provider_mode == "vieneu"
+        and vieneu_backend == "pytorch"
+        and vieneu_batch_size > 1
+        and hasattr(provider_client, "synthesize_vieneu_batch")
+    )
+    tasks = [] if use_vieneu_batch else [
         synthesize_one(
             beat=beat,
             text=normalized_by_beat[beat.beat_id],
@@ -378,7 +516,27 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
         )
         for beat in beats
     ]
-    results = await asyncio.gather(*tasks)
+    if use_vieneu_batch:
+        results = await synthesize_vieneu_batched(
+            beats=beats,
+            texts=normalized_by_beat,
+            cache_salt=cache_salt,
+            cache=cache,
+            manifest=manifest,
+            provider_client=provider_client,
+            voice_id=args.voice_id,
+            vieneu_style=vieneu_style,
+            vieneu_backend=vieneu_backend,
+            vieneu_precision=vieneu_precision,
+            vieneu_model=vieneu_model,
+            vieneu_threads=vieneu_threads,
+            provider_config=provider_config,
+            speed=args.speed,
+            normalize=normalize,
+            batch_size=vieneu_batch_size,
+        )
+    else:
+        results = await asyncio.gather(*tasks)
     cached_audio_paths = [path for path, _entry in results]
     cache.save_manifest(manifest)
 

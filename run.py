@@ -209,6 +209,8 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
         selected.discard("preflight")
     if not config.get("visual_index", {}).get("enabled", False):
         selected.discard("visual_index")
+    if not config.get("shot_pick", {}).get("enabled", False):
+        selected.discard("shot_pick")
     if not episode_planner_enabled(config) and args.only != "episode_planner":
         selected.discard("episode_planner")
     forced = forced_stages(selected, args.force, args.force_stage)
@@ -300,7 +302,7 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
     short_circuited = False
 
     def append_short_circuit_summaries(mode: str) -> None:
-        for stage in ("review", "tts", "shots", "visual_index", "match", "render"):
+        for stage in ("review", "tts", "shots", "visual_index", "shot_pick", "match", "render"):
             if stage in selected:
                 summaries.append(
                     StageSummary(
@@ -388,13 +390,13 @@ def run_pipeline(args: argparse.Namespace, executor: Callable[[list[str], Path],
         if "visual_index" in selected:
             summaries.append(execute("visual_index"))
 
-    for stage in ("match", "render"):
+    for stage in ("shot_pick", "match", "render"):
         if stage in selected and not short_circuited:
             summaries.append(execute(stage))
 
     final_will_run = set(will_run)
     if short_circuited:
-        final_will_run.difference_update({"review", "tts", "shots", "visual_index", "match", "render"})
+        final_will_run.difference_update({"review", "tts", "shots", "visual_index", "shot_pick", "match", "render"})
 
     openai_fallback_possible, fallback_triggered, review_status = sync_review_fallback_reporting(
         paths=paths,
@@ -430,6 +432,7 @@ def summary_meta_paths(paths) -> dict[str, Path]:  # type: ignore[no-untyped-def
         "tts": paths.tts_meta,
         "shots": paths.shots_meta,
         "visual_index": paths.shot_visual_index,
+        "shot_pick": paths.sentence_shot_scores_meta,
         "match": paths.edl_meta,
         "render": paths.render_meta,
     }

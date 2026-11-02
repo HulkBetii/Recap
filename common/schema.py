@@ -385,6 +385,72 @@ class SentenceTimestamp(BaseModel):
         return self
 
 
+class SeriesSentenceRef(BaseModel):
+    """Source of one narration sentence of a season script (sidecar `series_review_script.sentences.json`).
+
+    `ref_index` points at the beat's `source_refs` entry the sentence tells (episode, event); segment ids are
+    that episode's film_map ids, and timecodes are derived from that film_map by code.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: int = Field(ge=0)
+    idx: int = Field(ge=0)
+    text: str
+    ref_index: int | None = Field(default=None, ge=0)
+    event_id: str | None = None
+    episode_key: str | None = None
+    from_seg_id: int | None = Field(default=None, ge=0)
+    to_seg_id: int | None = Field(default=None, ge=0)
+    src_tc_start: float | None = Field(default=None, ge=0)
+    src_tc_end: float | None = Field(default=None, gt=0)
+    grounded: bool = False
+
+    @model_validator(mode="after")
+    def validate_ref(self) -> "SeriesSentenceRef":
+        fields = (self.ref_index, self.from_seg_id, self.to_seg_id, self.src_tc_start, self.src_tc_end)
+        if self.grounded and any(value is None for value in fields):
+            raise ValueError("a grounded season sentence needs ref_index, segment ids and timecodes")
+        if self.from_seg_id is not None and self.to_seg_id is not None and self.to_seg_id < self.from_seg_id:
+            raise ValueError("to_seg_id must be >= from_seg_id")
+        if self.src_tc_start is not None and self.src_tc_end is not None and self.src_tc_end <= self.src_tc_start:
+            raise ValueError("src_tc_end must be greater than src_tc_start")
+        return self
+
+
+class SentenceShotScores(BaseModel):
+    """VLM scores (0..1) of the candidate shots in one sentence's source window (sidecar `sentence_shot_scores.json`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    beat_id: int = Field(ge=0)
+    idx: int = Field(ge=0)
+    scores: dict[int, float] = Field(default_factory=dict)
+
+    @field_validator("scores")
+    @classmethod
+    def validate_scores(cls, value: dict[int, float]) -> dict[int, float]:
+        if any(not 0.0 <= score <= 1.0 for score in value.values()):
+            raise ValueError("shot scores must be within 0..1")
+        return value
+
+
+class ShotPickMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    prompt_version: str
+    n_sentences: int = Field(ge=0)
+    n_candidate_sentences: int = Field(ge=0)
+    n_scored_sentences: int = Field(ge=0)
+    n_requests: int = Field(ge=0)
+    n_cached_sentences: int = Field(default=0, ge=0)
+    max_candidates: int = Field(ge=1)
+    input_hash: str
+    created_at: datetime
+    warnings: list[str] = Field(default_factory=list)
+
+
 class TtsMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

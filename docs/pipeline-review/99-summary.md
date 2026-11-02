@@ -102,3 +102,12 @@ Cùng refs và giọng đọc: 0,642 (không chấm hình) so với 0,652 (có c
 ### Tăng tốc gán nguồn câu
 
 Bước gán nguồn câu chạy riêng bằng `ag/gemini-3.8-flash-low`: 12 s thay vì khoảng 11 phút với `-high`, tỷ lệ khớp audit tương đương (0,647 so với 0,642). Thời gian GĐ2 trở về mức trước khi thêm khớp theo câu.
+
+## Đợt bổ sung 2026-11-02 (tiếp): VieNeu theo lô, shot_pick, khớp theo câu cho mùa
+
+| Hạng mục | Kết quả |
+|---|---|
+| TTS VieNeu theo lô (62 beat, không cache) | 192 s → 117 s (lô 16) |
+| `shot_pick` (VLM chọn shot) | Gemini 0,638 → 0,668; Claude 0,610 → 0,615 → không bật |
+| Full run GĐ2 → render (`final11`) | 961 s, recap 100,5% mục tiêu, sync sạch |
+| Khớp theo câu cho anime mùa | có code + test, mặc định tắt (chưa có tập phim để chạy thật) |

@@ -34,6 +34,7 @@ from common.schema import (
     SeriesManifest,
     SeriesManifestEpisode,
     SeriesReviewBeat,
+    SeriesSentenceRef,
     SeriesReviewMeta,
     TtsMeta,
     validate_beats_timing,
@@ -121,11 +122,13 @@ class SeriesPaths:
     series_composer_qa: Path
     series_review_script: Path
     series_review_meta: Path
+    series_review_sentences: Path
     series_tts_script: Path
     series_chapters: Path
     youtube_chapters: Path
     voiceover: Path
     beats_timing: Path
+    sentence_timing: Path
     tts_meta: Path
     edl: Path
     source_map: Path
@@ -312,11 +315,13 @@ def build_paths(root_dir: Path) -> SeriesPaths:
         series_composer_qa=final_dir / "series_composer.qa.json",
         series_review_script=final_dir / "series_review_script.json",
         series_review_meta=final_dir / "series_review_script.meta.json",
+        series_review_sentences=final_dir / "series_review_script.sentences.json",
         series_tts_script=final_dir / "series_tts_script.json",
         series_chapters=final_dir / "series_chapters.json",
         youtube_chapters=final_dir / "youtube_chapters.txt",
         voiceover=final_dir / "voiceover.mp3",
         beats_timing=final_dir / "beats_timing.json",
+        sentence_timing=final_dir / "sentence_timing.json",
         tts_meta=final_dir / "tts_meta.json",
         edl=final_dir / "edl.json",
         source_map=final_dir / "edl.source_map.json",
@@ -568,6 +573,7 @@ def tts_command(*, py: str, paths: SeriesPaths, config: dict[str, Any], force: b
         "vieneu_precision",
         "vieneu_model",
         "vieneu_threads",
+        "vieneu_batch_size",
         "speed",
         "inter_beat_pause",
         "concurrency",
@@ -585,6 +591,8 @@ def tts_command(*, py: str, paths: SeriesPaths, config: dict[str, Any], force: b
     command.append("--pronunciation-qa" if section.get("pronunciation_qa", True) else "--no-pronunciation-qa")
     if not section.get("normalize", True):
         command.append("--no-normalize")
+    if sentence_anchors_enabled(config):
+        command.extend(["--sentence-timing", "silence", "--sentence-timing-output", str(paths.sentence_timing)])
     command.extend(["--work-dir", str(paths.work_dir / "tts")])
     if force:
         command.append("--force")
@@ -625,6 +633,8 @@ def series_match_command(
     )
     for key in ("min_clip", "max_clip", "min_visual_clip", "clip_profile", "log_level"):
         add_option(command, key, section.get(key))
+    if sentence_anchors_enabled(config):
+        command.extend(["--review-sentences", str(paths.series_review_sentences), "--sentence-timing", str(paths.sentence_timing)])
     return command
 
 
@@ -801,6 +811,7 @@ def tts_stage_fingerprint(paths: SeriesPaths, config: dict[str, Any]) -> str:
             "stage_version": "series-tts-v1",
             "review_script_hash": file_hash(paths.series_tts_script),
             "settings": settings,
+            "sentence_timing": "silence" if sentence_anchors_enabled(config) else None,
         }
     )
 
@@ -830,8 +841,10 @@ def match_stage_fingerprint(
     ]
     return stable_hash(
         {
-            "stage_version": "series-match-v4-edge-inset",
+            "stage_version": "series-match-v5-sentence-units",
             "review_script_hash": file_hash(paths.series_review_script),
+            "sentence_refs_hash": file_hash(paths.series_review_sentences) if sentence_anchors_enabled(config) else None,
+            "sentence_timing_hash": file_hash(paths.sentence_timing) if sentence_anchors_enabled(config) else None,
             "beats_timing_hash": file_hash(paths.beats_timing),
             "event_bank_hash": file_hash(paths.event_bank),
             "shots": shots,
@@ -977,6 +990,45 @@ def composer_outputs_valid(paths: SeriesPaths) -> bool:
     ):
         return False
     return True
+
+def sentence_anchors_enabled(config: dict[str, Any]) -> bool:
+    return bool(config.get("series_recap", {}).get("sentence_anchors", False))
+
+
+def sentence_refs_command(*, py: str, episode_run_dirs: dict[str, Path], paths: SeriesPaths, config: dict[str, Any], force: bool) -> list[str]:
+    section = config.get("series_recap", {})
+    command = [py, "-m", "series_composer.sentence_refs", "--series-review-script", str(paths.series_review_script)]
+    for episode_key, run_dir in episode_run_dirs.items():
+        command.extend(["--episode-run-dir", f"{episode_key}={run_dir}"])
+    command.extend(["--output", str(paths.series_review_sentences), "--work-dir", str(paths.work_dir / "series_sentence_refs")])
+    add_option(command, "llm_model", section.get("sentence_refs_model"))
+    add_option(command, "llm_fallback_model", section.get("llm_model"))
+    add_option(command, "llm_base_url", section.get("llm_base_url"))
+    add_option(command, "concurrency", section.get("composer_concurrency"))
+    add_option(command, "log_level", section.get("log_level"))
+    if force:
+        command.append("--force")
+    return command
+
+
+def sentence_refs_stage_fingerprint(paths: SeriesPaths, episode_run_dirs: dict[str, Path], config: dict[str, Any]) -> str:
+    return stable_hash(
+        {
+            "stage_version": "series-sentence-refs-v1",
+            "review_script_hash": file_hash(paths.series_review_script),
+            "film_maps": {key: file_hash(run_dir / "film_map.json") for key, run_dir in sorted(episode_run_dirs.items())},
+            "model": config.get("series_recap", {}).get("sentence_refs_model"),
+        }
+    )
+
+
+def sentence_refs_outputs_valid(paths: SeriesPaths) -> bool:
+    if not paths.series_review_sentences.is_file():
+        return False
+    for item in load_json(paths.series_review_sentences):
+        SeriesSentenceRef.model_validate(item)
+    return True
+
 
 def tts_outputs_valid(paths: SeriesPaths) -> bool:
     if not files_exist([paths.voiceover, paths.beats_timing, paths.tts_meta]):
@@ -1421,10 +1473,26 @@ def run_series_recap(
     )
     summaries.append(composer)
 
+    if sentence_anchors_enabled(config):
+        summaries.append(
+            run_cached_step(
+                stage="series_sentence_refs",
+                command=sentence_refs_command(py=py, episode_run_dirs=episode_run_dirs, paths=paths, config=config, force=force_final),
+                outputs=[paths.series_review_sentences],
+                valid=lambda: sentence_refs_outputs_valid(paths),
+                cache=stage_cache,
+                input_fingerprint=sentence_refs_stage_fingerprint(paths, episode_run_dirs, config),
+                log_path=paths.log_path,
+                force=force_final,
+                dry_run=args.dry_run,
+                executor=runner,
+            )
+        )
+
     tts = run_cached_step(
         stage="tts",
         command=tts_command(py=py, paths=paths, config=config, force=force_final),
-        outputs=[paths.voiceover, paths.beats_timing, paths.tts_meta],
+        outputs=[paths.voiceover, paths.beats_timing, paths.tts_meta, *([paths.sentence_timing] if sentence_anchors_enabled(config) else [])],
         valid=lambda: tts_outputs_valid(paths),
         cache=stage_cache,
         input_fingerprint=tts_stage_fingerprint(paths, config),

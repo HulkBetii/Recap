@@ -16,7 +16,9 @@ from common.schema import (
     EdlSourceMap,
     SeriesEvent,
     SeriesEventBank,
+    SentenceTimestamp,
     SeriesReviewBeat,
+    SeriesSentenceRef,
     SeriesSourceRef,
     Shot,
     validate_beats_timing,
@@ -24,6 +26,8 @@ from common.schema import (
     validate_series_review_script,
     write_json,
 )
+from common.sentence_windows import sentence_source_windows
+from common.text import split_sentences
 
 ALGORITHM_VERSION = "series-v2"
 DYNAMIC_ALGORITHM_VERSION = "series-v3-dynamic-anime"
@@ -89,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-qa", default=None, type=Path)
     parser.add_argument("--event-bank", default=None, type=Path)
     parser.add_argument("--clip-profile", default="legacy", choices=["legacy", "dynamic_anime"])
+    parser.add_argument("--review-sentences", default=None, type=Path, help="series_review_script.sentences.json for sentence-anchored footage")
+    parser.add_argument("--sentence-timing", default=None, type=Path, help="sentence_timing.json from the season TTS")
     parser.add_argument("--min-clip", default=3.0, type=float)
     parser.add_argument("--max-clip", default=5.0, type=float)
     parser.add_argument("--min-visual-clip", default=0.6, type=float)
@@ -715,6 +721,87 @@ def _ref_plan(
     return sorted(selected, key=lambda item: (item.start, item.candidate.shot.index))
 
 
+@dataclass(frozen=True)
+class SentenceUnit:
+    """One or more consecutive sentences of a beat that share a source ref and play as one quota."""
+
+    ref_index: int
+    duration: float
+    src_start: float
+    src_end: float
+    sentence_ids: tuple[int, ...]
+    grounded: bool
+
+
+def plan_sentence_units(
+    beat: SeriesReviewBeat,
+    refs: list[SeriesSentenceRef],
+    stamps: list[SentenceTimestamp],
+    window_end: float,
+    min_clips: list[float],
+) -> list[SentenceUnit] | None:
+    """Sentence-by-sentence quotas for a season beat, or None when the beat keeps ref-quota matching.
+
+    Commentary sentences inherit the ref of the nearest grounded sentence; sentences shorter than that ref's
+    minimum clip merge into a neighbour of the same ref; the last unit absorbs the pause before the next beat.
+    """
+    count = len(split_sentences(beat.narration))
+    refs = sorted(refs, key=lambda item: item.idx)
+    stamps = sorted(stamps, key=lambda item: item.idx)
+    if count == 0 or len(refs) != count or len(stamps) != count or not any(ref.grounded for ref in refs):
+        return None
+    grounded_refs = [ref.ref_index if ref.grounded else None for ref in refs]
+    assigned: list[int] = []
+    for position, value in enumerate(grounded_refs):
+        if value is None:
+            previous = next((item for item in reversed(grounded_refs[:position]) if item is not None), None)
+            following = next((item for item in grounded_refs[position + 1 :] if item is not None), None)
+            value = previous if previous is not None else following
+        assigned.append(int(value))  # type: ignore[arg-type]
+    durations = [stamp.tl_end - stamp.tl_start for stamp in stamps]
+    durations[-1] = window_end - stamps[-1].tl_start
+    units: list[dict[str, object]] = []
+    for position, (ref_index, duration, ref) in enumerate(zip(assigned, durations, refs)):
+        span = (float(ref.src_tc_start), float(ref.src_tc_end)) if ref.grounded else None  # type: ignore[arg-type]
+        previous = units[-1] if units else None
+        if previous is not None and previous["ref_index"] == ref_index and (
+            float(previous["duration"]) < min_clips[ref_index] or duration < min_clips[ref_index]
+        ):
+            spans = [item for item in (previous["span"], span) if item is not None]
+            previous["span"] = (min(item[0] for item in spans), max(item[1] for item in spans)) if spans else None
+            previous["duration"] = float(previous["duration"]) + duration
+            previous["ids"] = (*previous["ids"], position)  # type: ignore[misc]
+            continue
+        units.append({"ref_index": ref_index, "duration": duration, "span": span, "ids": (position,)})
+    output: list[SentenceUnit] = []
+    start = 0
+    while start < len(units):
+        end = start
+        while end + 1 < len(units) and units[end + 1]["ref_index"] == units[start]["ref_index"]:
+            end += 1
+        group = units[start : end + 1]
+        source = beat.source_refs[int(group[0]["ref_index"])]
+        windows = sentence_source_windows(
+            [item["span"] for item in group],  # type: ignore[misc]
+            [float(item["duration"]) for item in group],
+            source.src_tc_start,
+            source.src_tc_end,
+        )
+        for item, (src_start, src_end) in zip(group, windows):
+            output.append(
+                SentenceUnit(
+                    ref_index=int(item["ref_index"]),
+                    duration=float(item["duration"]),
+                    src_start=src_start,
+                    src_end=src_end,
+                    sentence_ids=tuple(item["ids"]),  # type: ignore[arg-type]
+                    grounded=item["span"] is not None,
+                )
+            )
+        start = end + 1
+    return output
+
+
 def build_edl(
     *,
     beats: list[SeriesReviewBeat],
@@ -726,6 +813,8 @@ def build_edl(
     qa_beats: list[dict[str, object]] | None = None,
     event_bank: SeriesEventBank | None = None,
     clip_profile: str = "legacy",
+    sentence_refs: dict[int, list[SeriesSentenceRef]] | None = None,
+    sentence_stamps: dict[int, list[SentenceTimestamp]] | None = None,
 ) -> tuple[list[EdlPlacement], list[str]]:
     if not (0 < min_visual_clip <= min_clip <= max_clip):
         raise SeriesMatchError("clip lengths must satisfy 0 < min_visual_clip <= min_clip <= max_clip")
@@ -783,7 +872,28 @@ def build_edl(
         short_fallbacks: list[dict[str, object]] = []
         adjacency_fallbacks: list[dict[str, object]] = []
         rules: list[DynamicClipRule | None] = dynamic_rules if dynamic_rules else [None] * len(refs_with_shots)
-        for (ref, episode_shots), quota, rule in zip(refs_with_shots, quotas, rules, strict=True):
+        units = (
+            plan_sentence_units(
+                beat,
+                sentence_refs.get(beat.beat_id, []),
+                (sentence_stamps or {}).get(beat.beat_id, []),
+                tl_end,
+                [rule.min_clip if rule is not None else min_clip for rule in rules],
+            )
+            if sentence_refs is not None
+            else None
+        )
+        # Sentence-anchored: each unit is its own quota from its own episode moment; otherwise one quota per ref.
+        plan = (
+            [
+                (refs_with_shots[unit.ref_index][0].model_copy(update={"src_tc_start": unit.src_start, "src_tc_end": unit.src_end}),
+                 refs_with_shots[unit.ref_index][1], unit.duration, rules[unit.ref_index])
+                for unit in units
+            ]
+            if units is not None
+            else [(ref, episode_shots, quota, rule) for (ref, episode_shots), quota, rule in zip(refs_with_shots, quotas, rules, strict=True)]
+        )
+        for ref, episode_shots, quota, rule in plan:
             effective_min_clip = rule.min_clip if rule is not None else min_clip
             effective_max_clip = rule.max_clip if rule is not None else max_clip
             selected = _ref_plan(
@@ -875,6 +985,17 @@ def build_edl(
                     "n_contiguous_source_fallbacks": sum(
                         1 for item in adjacency_fallbacks if "contiguous_source" in item["conflicts"]
                     ),
+                    "sentence_anchor_used": units is not None,
+                    "sentence_units": [
+                        {
+                            "ref_index": unit.ref_index,
+                            "sentence_ids": list(unit.sentence_ids),
+                            "duration_s": round(unit.duration, 3),
+                            "source_window": [unit.src_start, unit.src_end],
+                            "grounded": unit.grounded,
+                        }
+                        for unit in units or []
+                    ],
                 }
             )
     return validate_edl(placements), warnings
@@ -894,6 +1015,18 @@ def run_series_match(args: argparse.Namespace) -> int:
         episode_key: load_shots(run_dir / "shots.json")
         for episode_key, run_dir in episode_run_dirs.items()
     }
+    sentence_refs: dict[int, list[SeriesSentenceRef]] | None = None
+    sentence_stamps: dict[int, list[SentenceTimestamp]] = {}
+    refs_path = getattr(args, "review_sentences", None)
+    stamps_path = getattr(args, "sentence_timing", None)
+    if refs_path is not None and stamps_path is not None and refs_path.expanduser().resolve().is_file() and stamps_path.expanduser().resolve().is_file():
+        sentence_refs = {}
+        for item in json.loads(refs_path.expanduser().resolve().read_text(encoding="utf-8")):
+            ref = SeriesSentenceRef.model_validate(item)
+            sentence_refs.setdefault(ref.beat_id, []).append(ref)
+        for item in json.loads(stamps_path.expanduser().resolve().read_text(encoding="utf-8")):
+            stamp = SentenceTimestamp.model_validate(item)
+            sentence_stamps.setdefault(stamp.beat_id, []).append(stamp)
     qa_beats: list[dict[str, object]] = []
     placements, warnings = build_edl(
         beats=beats,
@@ -905,6 +1038,8 @@ def run_series_match(args: argparse.Namespace) -> int:
         qa_beats=qa_beats,
         event_bank=event_bank,
         clip_profile=clip_profile,
+        sentence_refs=sentence_refs,
+        sentence_stamps=sentence_stamps,
     )
     source_map = source_map_from_beats(beats)
     write_json(args.output.expanduser().resolve(), placements)

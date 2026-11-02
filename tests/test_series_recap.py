@@ -886,3 +886,21 @@ def test_episode_commands_split_ingest_keeps_force_out_of_planner_rerun(tmp_path
     stages = {stage: command for stage, command, _outputs in commands}
     assert stages["episode_planner"][-3:] == ["--only", "episode_planner", "--force"]
     assert stages["episode_ingest"][-3:] == ["--to", "storymap", "--force"]
+
+
+def test_sentence_anchors_wire_refs_timing_and_match(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from series_recap.__main__ import build_paths, sentence_refs_command, series_match_command, tts_command
+
+    paths = build_paths(tmp_path)
+    config = {"series_recap": {"sentence_anchors": True, "sentence_refs_model": "fast", "llm_model": "slow"}, "tts": {}}
+    run_dirs = {"e01": tmp_path / "e01"}
+    refs = sentence_refs_command(py="py", episode_run_dirs=run_dirs, paths=paths, config=config, force=False)
+    assert refs[:3] == ["py", "-m", "series_composer.sentence_refs"]
+    assert refs[refs.index("--llm-model") + 1] == "fast" and refs[refs.index("--llm-fallback-model") + 1] == "slow"
+    tts = tts_command(py="py", paths=paths, config=config, force=False)
+    assert tts[tts.index("--sentence-timing-output") + 1] == str(paths.sentence_timing)
+    match = series_match_command(py="py", episode_run_dirs=run_dirs, paths=paths, config=config)
+    assert match[match.index("--review-sentences") + 1] == str(paths.series_review_sentences)
+    off = {"series_recap": {}, "tts": {}}
+    assert "--sentence-timing" not in tts_command(py="py", paths=paths, config=off, force=False)
+    assert "--review-sentences" not in series_match_command(py="py", episode_run_dirs=run_dirs, paths=paths, config=off)

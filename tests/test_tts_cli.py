@@ -260,3 +260,41 @@ def test_tts_cli_persists_completed_beats_before_later_failure(tmp_path, monkeyp
     manifest = json.loads((args.work_dir / "manifest.json").read_text(encoding="utf-8"))
     assert list(manifest) == ["0"]
     assert (args.work_dir / "audio" / "0.mp3").exists()
+
+
+def test_vieneu_pytorch_batches_uncached_beats_and_reuses_cache(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    import asyncio
+
+    class BatchProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.batches: list[list[str]] = []
+
+        async def synthesize_vieneu_batch(self, *, texts, output_paths, voice_id, model, **_kwargs):  # type: ignore[no-untyped-def]
+            self.batches.append(list(texts))
+            for text, path in zip(texts, output_paths):
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+                Path(path).write_bytes(f"vieneu:{text}".encode("utf-8"))
+            return ProviderResult(provider="vieneu", voice_id=voice_id, audio_url="vieneu://local", model=model)
+
+    review_script, film_meta = write_review_script(tmp_path)
+    monkeypatch.setattr("tts.__main__.require_ffmpeg", lambda: None)
+    monkeypatch.setattr("tts.__main__.normalize_audio", lambda src, dst: dst.write_bytes(src.read_bytes()))
+    monkeypatch.setattr("tts.__main__.concat_voiceover", lambda paths, pause, work_dir, output: output.write_bytes(b"voiceover"))
+    monkeypatch.setattr("tts.__main__.probe_duration", lambda path: 1.0 if Path(path).name in {"0.mp3", "1.mp3"} else 2.15)
+    args = make_args(tmp_path, review_script, film_meta)
+    args.provider_mode = "vieneu"
+    args.voice_id = "Ngọc Linh"
+    args.vieneu_backend = "pytorch"
+    args.vieneu_batch_size = 8
+
+    provider = BatchProvider()
+    timings, meta = asyncio.run(run_tts_with_client(args, provider))
+    assert provider.batches == [["Mở đầu căng thẳng.", "Câu chuyện tiếp tục."]]
+    assert [timing.beat_id for timing in timings] == [0, 1]
+    manifest = json.loads((tmp_path / "work" / "tts" / "manifest.json").read_text(encoding="utf-8"))
+    assert {entry["provider"] for entry in manifest.values()} == {"vieneu"}
+
+    again = BatchProvider()
+    asyncio.run(run_tts_with_client(args, again))
+    assert again.batches == []

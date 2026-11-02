@@ -608,6 +608,8 @@ def _validated_stages(job: JobRecord) -> list[tuple[str, str, bool]]:
             selected.discard("preflight")
         if not config.get("visual_index", {}).get("enabled", False):
             selected.discard("visual_index")
+        if not config.get("shot_pick", {}).get("enabled", False):
+            selected.discard("shot_pick")
         if not episode_planner_enabled(config) and _argument_value(job.argv, "--only") != "episode_planner":
             selected.discard("episode_planner")
         return [

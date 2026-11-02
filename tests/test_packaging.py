@@ -23,6 +23,7 @@ RUNTIME_PACKAGES = {
     "storymap*",
     "tts*",
     "visual_index*",
+    "shot_pick*",
 }
 EXCLUDED_TOP_LEVEL = {
     "tests*",

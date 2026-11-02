@@ -108,3 +108,21 @@ def test_sentence_visual_scores_pick_the_matching_shot_inside_the_window() -> No
     first = [p for p in placements if p.tl_start < 14.0]
     assert first[0].shot_index == 14
     assert diagnostics[0]["visual_scored"] is True and diagnostics[1]["visual_scored"] is False
+
+
+def test_scored_sentence_can_reach_a_shot_beyond_the_drift_limit() -> None:
+    refs = [REFS[0].model_copy(update={"src_tc_start": 60.0, "src_tc_end": 95.0}), REFS[1], REFS[2]]
+    windows, _reason = plan_sentence_windows(BEAT, TIMING, refs, STAMPS)
+    assert windows is not None
+    scores = {(0, 0): {12: 0.0, 13: 0.0, 14: 0.0, 15: 0.0, 16: 0.0, 17: 0.0, 18: 1.0}}
+    _result, placements, _diagnostics = fill_beat_by_sentences(
+        beat=BEAT,
+        timing=TIMING,
+        windows=windows,
+        reuse_counts={},
+        fill_kwargs={**FILL_KWARGS, "max_source_drift_s": 12.0},
+        sentence_visual_scores=scores,
+        visual_weight=0.6,
+    )
+    first = [p for p in placements if p.tl_start < 14.0]
+    assert first[0].shot_index == 18  # 30 s after the window start, past the 12 s drift tier

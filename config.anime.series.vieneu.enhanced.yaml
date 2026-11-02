@@ -210,7 +210,8 @@ series_recap:
   llm_backend: ninerouter
   llm_model: ag/gemini-3.8-flash-high
   llm_fallback_model: ag/claude-sonnet-4-6
-  tts_cps: 17.0
+  # VieNeu SDK 3.8 reads 16.1 chars/s at speed 0.9 (benchmark script, 39,880 chars over 2,476 s).
+  tts_cps: 16.0
   target_total_min_s: 2100
   target_total_max_s: 2700
   target_total_hard_cap_s: 3000

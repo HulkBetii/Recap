@@ -718,3 +718,65 @@ def test_dynamic_anime_requires_complete_event_metadata() -> None:
             **kwargs,
             event_bank=series_event_bank(("ep1:other", "ep1", "setup", 0.5)),
         )
+
+
+def test_sentence_units_play_each_sentence_from_its_own_episode_moment() -> None:
+    from common.schema import SentenceTimestamp, SeriesSentenceRef
+
+    def ref(episode: str, start: float, end: float) -> SeriesSourceRef:
+        return SeriesSourceRef(
+            event_id=f"{episode}:section:0", episode_key=episode, src=f"{episode}/{episode}.mp4", source_path=f"C:/m/{episode}.mp4",
+            from_seg_id=0, to_seg_id=20, src_tc_start=start, src_tc_end=end,
+        )
+
+    beat = SeriesReviewBeat(
+        beat_id=0,
+        narration="Tập hai mở màn bằng trận đấu. Trước đó ở tập một, cậu bị đuổi học. Thật trớ trêu.",
+        source_refs=[ref("e01", 0.0, 100.0), ref("e02", 0.0, 100.0)],
+    )
+    shots_by_episode = {
+        episode: [Shot.model_validate(shot(src=f"{episode}.mp4", index=index, start=index * 5.0, end=index * 5.0 + 5.0)) for index in range(20)]
+        for episode in ("e01", "e02")
+    }
+    timings = [BeatTiming(beat_id=0, audio_path="audio/0.mp3", tl_start=0.0, tl_end=12.0, duration=12.0)]
+    sentences = {0: [
+        SeriesSentenceRef(beat_id=0, idx=0, text="a", ref_index=1, event_id="e02:section:0", episode_key="e02", from_seg_id=5, to_seg_id=6, src_tc_start=70.0, src_tc_end=76.0, grounded=True),
+        SeriesSentenceRef(beat_id=0, idx=1, text="b", ref_index=0, event_id="e01:section:0", episode_key="e01", from_seg_id=1, to_seg_id=2, src_tc_start=20.0, src_tc_end=26.0, grounded=True),
+        SeriesSentenceRef(beat_id=0, idx=2, text="c"),
+    ]}
+    stamps = {0: [
+        SentenceTimestamp(beat_id=0, idx=0, tl_start=0.0, tl_end=4.0, method="silence"),
+        SentenceTimestamp(beat_id=0, idx=1, tl_start=4.0, tl_end=8.0, method="silence"),
+        SentenceTimestamp(beat_id=0, idx=2, tl_start=8.0, tl_end=12.0, method="silence"),
+    ]}
+    qa: list[dict[str, object]] = []
+    placements, _warnings = build_edl(
+        beats=[beat], timings=timings, shots_by_episode=shots_by_episode, min_visual_clip=0.6, max_clip=5.0, min_clip=3.0,
+        qa_beats=qa, sentence_refs=sentences, sentence_stamps=stamps,
+    )
+    first = [p for p in placements if p.tl_start < 4.0]
+    second = [p for p in placements if 4.0 <= p.tl_start < 8.0]
+    assert first and all(p.src == "e02/e02.mp4" and 66.0 <= p.src_in and p.src_out <= 80.0 for p in first)
+    assert second and all(p.src == "e01/e01.mp4" and 16.0 <= p.src_in and p.src_out <= 30.0 for p in second)
+    assert abs(placements[-1].tl_end - 12.0) < 1e-6
+    assert qa[0]["sentence_anchor_used"] is True and [unit["ref_index"] for unit in qa[0]["sentence_units"]] == [1, 0, 0]
+
+
+def test_short_sentences_merge_and_missing_data_keeps_ref_quotas() -> None:
+    from common.schema import SentenceTimestamp, SeriesSentenceRef
+    from series_match.__main__ import plan_sentence_units
+
+    source = SeriesSourceRef(event_id="e01:section:0", episode_key="e01", src="e01/e01.mp4", source_path="C:/m/e01.mp4", from_seg_id=0, to_seg_id=9, src_tc_start=0.0, src_tc_end=60.0)
+    beat = SeriesReviewBeat(beat_id=0, narration="Một. Hai câu dài hơn hẳn.", source_refs=[source])
+    refs = [
+        SeriesSentenceRef(beat_id=0, idx=0, text="Một.", ref_index=0, from_seg_id=1, to_seg_id=1, src_tc_start=10.0, src_tc_end=12.0, grounded=True),
+        SeriesSentenceRef(beat_id=0, idx=1, text="Hai.", ref_index=0, from_seg_id=3, to_seg_id=4, src_tc_start=30.0, src_tc_end=36.0, grounded=True),
+    ]
+    stamps = [
+        SentenceTimestamp(beat_id=0, idx=0, tl_start=0.0, tl_end=1.0, method="silence"),
+        SentenceTimestamp(beat_id=0, idx=1, tl_start=1.0, tl_end=6.0, method="silence"),
+    ]
+    units = plan_sentence_units(beat, refs, stamps, 6.4, [3.0])
+    assert units is not None and len(units) == 1 and units[0].sentence_ids == (0, 1) and abs(units[0].duration - 6.4) < 1e-9
+    assert units[0].src_start <= 10.0 and units[0].src_end >= 36.0
+    assert plan_sentence_units(beat, refs[:1], stamps, 6.4, [3.0]) is None

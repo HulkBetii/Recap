@@ -234,6 +234,38 @@ class TtsProviderClient:
         )
         return ProviderResult(provider="vieneu", voice_id=voice_id, audio_url="vieneu://local", model=model)
 
+    async def synthesize_vieneu_batch(
+        self,
+        *,
+        texts: list[str],
+        output_paths: list[Path],
+        voice_id: str,
+        style: str,
+        backend: str,
+        precision: str,
+        model: str,
+        threads: int,
+        speed: float,
+    ) -> ProviderResult:
+        """Several VieNeu beats in one GPU batch; same synthesizer (engine, cloned voice) as single beats."""
+        synthesizer: Any = getattr(self, "_vieneu_synthesizer", None)
+        if synthesizer is None:
+            synthesizer = VieneuSynthesizer()
+            self._vieneu_synthesizer = synthesizer
+        await asyncio.to_thread(
+            synthesizer.synthesize_batch,
+            texts=texts,
+            output_paths=output_paths,
+            voice_id=voice_id,
+            style=style,
+            backend=backend,
+            precision=precision,
+            model=model,
+            threads=threads,
+            speed=speed,
+        )
+        return ProviderResult(provider="vieneu", voice_id=voice_id, audio_url="vieneu://local", model=model)
+
     async def _synthesize_capcut(self, text: str, voice_id: str, speed: float, output_path: Path) -> ProviderResult:
         provider: CapCutProvider | None = getattr(self, "_capcut_provider", None)
         if provider is None:

@@ -7,7 +7,7 @@ import random
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.schema import BeatTiming, EdlMeta, EdlPlacement, FilmMapSegment, ReviewBeat, ReviewIntent, SentenceRef, SentenceTimestamp, Shot, StorySection, validate_edl, validate_review_intents, validate_sentence_refs, validate_sentence_timing, validate_story_map, write_json
+from common.schema import BeatTiming, EdlMeta, EdlPlacement, FilmMapSegment, ReviewBeat, ReviewIntent, SentenceRef, SentenceShotScores, SentenceTimestamp, Shot, StorySection, validate_edl, validate_review_intents, validate_sentence_refs, validate_sentence_timing, validate_story_map, write_json
 from match.anchors import plan_content_anchors
 from match.cache import MatchCache, file_hash, stable_hash
 from match.fill import assign_timeline, chronology_tier, fill_beat, fill_timeline_gaps, split_long_placements
@@ -117,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="With --sentence-anchors and --visual-index, rank shots inside each sentence window by SigLIP score for that sentence.",
     )
     parser.add_argument("--sentence-visual-weight", default=0.6, type=float)
+    parser.add_argument("--sentence-shot-scores", default=None, type=Path, help="sentence_shot_scores.json from the shot_pick stage.")
     parser.add_argument("--sentence-timing", default=None, type=Path)
     parser.add_argument("--ordered-fill-by-audio-progress", action="store_true", default=True)
     parser.add_argument("--no-ordered-fill-by-audio-progress", dest="ordered_fill_by_audio_progress", action="store_false")
@@ -157,6 +158,7 @@ def make_cache_key(args: argparse.Namespace) -> str:
         "hook_min_brightness": args.hook_min_brightness,
         "sentence_anchors": getattr(args, "sentence_anchors", False),
         "sentence_visual": [getattr(args, "sentence_visual", False), getattr(args, "sentence_visual_weight", 0.6)],
+        "sentence_shot_scores": file_hash(args.sentence_shot_scores.expanduser().resolve()) if getattr(args, "sentence_shot_scores", None) else None,
         "review_sentences": file_hash(args.review_sentences.expanduser().resolve()) if getattr(args, "review_sentences", None) else None,
         "sentence_timing": file_hash(args.sentence_timing.expanduser().resolve()) if getattr(args, "sentence_timing", None) else None,
         "visual_index": visual_index_artifact_hash(args.visual_index.expanduser().resolve()) if args.visual_index and args.visual_index.expanduser().resolve().is_file() else None,
@@ -533,6 +535,17 @@ def run_match(args: argparse.Namespace) -> int:
             except (VisualMatchError, VisualEncoderError, ValueError, OSError) as exc:
                 warnings.append(f"sentence visual scoring disabled: {exc}")
                 logger.warning("Sentence visual scoring disabled: %s", exc)
+    shot_scores_path = getattr(args, "sentence_shot_scores", None)
+    if sentence_refs_by_beat is not None and shot_scores_path is not None:
+        resolved = shot_scores_path.expanduser().resolve()
+        if resolved.is_file():
+            # VLM picks (shot_pick stage) look at the frames themselves, so they replace SigLIP scores.
+            for item in json.loads(resolved.read_text(encoding="utf-8")):
+                scored = SentenceShotScores.model_validate(item)
+                if scored.scores:
+                    sentence_visual_scores[(scored.beat_id, scored.idx)] = dict(scored.scores)
+        else:
+            warnings.append("sentence shot scores missing: " + str(resolved))
     weights = ScoringWeights(args.w_motion, args.w_face, args.w_bright, args.w_reuse, args.w_semantic, args.w_visual if visual_scores else 0.0)
     reuse_counts: dict[int, int] = {}
     placements: list[EdlPlacement] = []

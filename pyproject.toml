@@ -97,6 +97,7 @@ include = [
     "storymap*",
     "tts*",
     "visual_index*",
+    "shot_pick*",
 ]
 exclude = [
     "tests*",

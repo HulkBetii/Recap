@@ -242,6 +242,7 @@ def main() -> int:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--batch-size", default=12, type=int)
     parser.add_argument("--concurrency", default=4, type=int)
+    parser.add_argument("--tag", default="", help="Suffix for the report files, e.g. a judge name, so judges do not overwrite each other.")
     args = parser.parse_args()
     run_dir = args.run_dir.expanduser().resolve()
     film = args.film or film_path_from_run(run_dir)
@@ -252,8 +253,9 @@ def main() -> int:
     asyncio.run(judge(items, model=args.model, batch_size=args.batch_size, concurrency=args.concurrency))
     summary = summarize(items)
     report = {"run": run_dir.name, "model": args.model, **summary, "items": [{**item, "frame": item["frame"].name} for item in items]}
-    (run_dir / "av_sync_audit.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    write_html(run_dir / "av_sync_audit.html", run_dir.name, summary, items, work)
+    stem = f"av_sync_audit.{args.tag}" if args.tag else "av_sync_audit"
+    (run_dir / f"{stem}.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    write_html(run_dir / f"{stem}.html", run_dir.name, summary, items, work)
     print(json.dumps({key: summary[key] for key in ("n_sentences", "verdict_counts", "match_rate_by_duration", "match_rate_by_count")}, ensure_ascii=False))
     return 0
 

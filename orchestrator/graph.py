@@ -12,6 +12,7 @@ STAGES = (
     "tts",
     "shots",
     "visual_index",
+    "shot_pick",
     "match",
     "render",
 )
@@ -24,18 +25,20 @@ DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "tts": ("review",),
     "shots": ("preflight",),
     "visual_index": ("shots",),
+    "shot_pick": ("review", "tts", "shots"),
     "match": ("review", "tts", "shots"),
     "render": ("match", "tts"),
 }
 DOWNSTREAM: dict[str, tuple[str, ...]] = {
-    "preflight": ("ingest", "storymap", "episode_planner", "review", "tts", "shots", "visual_index", "match", "render"),
-    "ingest": ("storymap", "episode_planner", "review", "tts", "match", "render"),
-    "storymap": ("episode_planner", "review", "tts", "match", "render"),
-    "episode_planner": ("review", "tts", "match", "render"),
-    "review": ("tts", "match", "render"),
-    "tts": ("match", "render"),
-    "shots": ("visual_index", "match", "render"),
+    "preflight": ("ingest", "storymap", "episode_planner", "review", "tts", "shots", "visual_index", "shot_pick", "match", "render"),
+    "ingest": ("storymap", "episode_planner", "review", "tts", "shot_pick", "match", "render"),
+    "storymap": ("episode_planner", "review", "tts", "shot_pick", "match", "render"),
+    "episode_planner": ("review", "tts", "shot_pick", "match", "render"),
+    "review": ("tts", "shot_pick", "match", "render"),
+    "tts": ("shot_pick", "match", "render"),
+    "shots": ("visual_index", "shot_pick", "match", "render"),
     "visual_index": ("match", "render"),
+    "shot_pick": ("match", "render"),
     "match": ("render",),
     "render": (),
 }
@@ -59,6 +62,8 @@ class RunPaths:
     voiceover: Path
     beats_timing: Path
     sentence_timing: Path
+    sentence_shot_scores: Path
+    sentence_shot_scores_meta: Path
     tts_meta: Path
     audio_dir: Path
     shots: Path
@@ -103,6 +108,8 @@ def build_paths(run_dir: Path) -> RunPaths:
         voiceover=run_dir / "voiceover.mp3",
         beats_timing=run_dir / "beats_timing.json",
         sentence_timing=run_dir / "sentence_timing.json",
+        sentence_shot_scores=run_dir / "sentence_shot_scores.json",
+        sentence_shot_scores_meta=run_dir / "sentence_shot_scores.meta.json",
         tts_meta=run_dir / "tts_meta.json",
         audio_dir=run_dir / "audio",
         shots=run_dir / "shots.json",

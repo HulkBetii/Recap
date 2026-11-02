@@ -12,7 +12,7 @@ try:
 except ImportError:  # pragma: no cover - exercised only without optional dep
     yaml = None  # type: ignore[assignment]
 
-STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "visual_index", "match", "render")
+STAGE_NAMES = ("preflight", "ingest", "storymap", "review", "tts", "shots", "visual_index", "shot_pick", "match", "render")
 TOP_LEVEL_KEYS = set(STAGE_NAMES) | {"orchestrator", "postprocess", "series_recap"}
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -206,6 +206,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "frame_sampling": "per-frame",
         "log_level": "INFO",
     },
+    "shot_pick": {
+        "enabled": False,
+        "model": "ag/gemini-3.8-flash-low",
+        "fallback_model": None,
+        "base_url": None,
+        "timeout_s": 600,
+        "concurrency": 4,
+        "max_candidates": 6,
+        "sentences_per_request": 6,
+        "log_level": "INFO",
+    },
     "match": {
         "min_clip": 3.0,
         "max_clip": 5.0,
@@ -317,6 +328,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "qa_max_revisions": 1,
         # Parallel gateway requests for arc drafts/revisions/seams; Playwright always runs one at a time.
         "composer_concurrency": 2,
+        "sentence_anchors": False,
+        "sentence_refs_model": "ag/gemini-3.8-flash-low",
         # Episodes ingested at once; 2 peaked at 10.9 GB VRAM on a 12 GB card in the R8 benchmark.
         "episode_concurrency": 1,
         "headless": False,

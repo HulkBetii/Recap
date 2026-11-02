@@ -1,5 +1,15 @@
 # PROJECT_LOG.md
 
+## 2026-11-02 - VieNeu batching, shot_pick (opt-in), season sentence anchors, anime tts_cps
+
+- Anime VieNeu presets: `series_recap.tts_cps` 17.0 -> 16.0 (SDK 3.8 reads 16.1 chars/s at speed 0.9).
+- VieNeu pytorch/CUDA now synthesizes uncached beats in `infer_batch` groups (`tts.vieneu_batch_size`, default 16); cached beats and cache keys are unchanged. Uncached benchmark TTS (62 beats): 192 s per beat, 129 s at 8, 117 s at 16.
+- Shared helpers moved to `common/`: `sentence_windows.py` (sentence source windows) and `source_view.py` (`build_source_view`); `review` and `match` import them with unchanged behaviour.
+- New optional stage `shot_pick` (VLM scores up to 6 candidate thumbnails per sentence; `sentence_shot_scores.json`), wired into the orchestrator, cost policy, recap_ui stage selection, packaging and tach. `match --sentence-shot-scores` uses the scores and widens the drift tier to the sentence window for scored sentences. A/B on the benchmark with identical script/refs/voiceover (`final6b` vs `final10`): Gemini judge 0.638 -> 0.668, Claude judge 0.610 -> 0.615 (paired 31 better / 34 worse). The gain shows only with the judge from the picker's own model family, so the production preset keeps it off. 126 s for 45 requests.
+- Season path: `series_composer.sentence_refs` (ref index + episode segment ids per sentence), season TTS sentence timing, `series_match` sentence units (`plan_sentence_units` + existing `_ref_plan`), cached step `series_sentence_refs`, match identity `series-match-v5-sentence-units`. Off by default (`series_recap.sentence_anchors`); no season episodes were available on this machine, so it is verified by unit/integration tests only.
+- `scripts/av_sync_audit.py --tag` keeps one report per judge; Claude needs `--batch-size 6 --concurrency 2` (batches of 12 were truncated).
+- Full production run from review to render on cached ingest/shots (`bench-qods-final11`): 961 s (review 528, TTS 113, match 36, render 266), QA 1 -> 2 -> 0, 284/301 sentences grounded, 63/63 beats sentence-anchored, ref hit 0.90, recap 1,935.5 s = 100.5% of target, sync QA clean. Validation: 832 Python tests, Ruff, Tach, secret scan.
+
 ## 2026-11-02 - Fast model for the sentence-refs pass
 
 - Measured the G2 sentence-refs pass alone on the benchmark script (5 batches, all in flight at once): `ag/gemini-3.8-flash-high` 709.7 s, `-low` 12.3 s, non-reasoning `ag/gemini-3.8-flash` 13.0 s. Concurrency was not the bottleneck; each `-high` request reasoned for ~10 minutes. A second `-high` run agreed with the first at mean segment IoU 0.857; `-low` agreed at 0.762.

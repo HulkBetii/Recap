@@ -1306,3 +1306,37 @@ def test_shots_rerun_when_a_better_face_detector_becomes_available(tmp_path: Pat
 
     run_pipeline(args, executor=fake_executor)
     assert "shots" in calls
+
+
+def test_shot_pick_command_feeds_match_and_goes_stale_when_inputs_change(tmp_path: Path) -> None:
+    from shot_pick.__main__ import build_parser as build_shot_pick_parser
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"shot_pick": {"enabled": True, "model": "vlm-fast"}, "match": {"sentence_anchors": True}, "review": {"llm_model": "slow"}}),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    paths = build_paths(tmp_path / "run")
+    film = tmp_path / "film.mp4"
+    command = build_command("shot_pick", paths, film, config, force=False)
+    parsed = build_shot_pick_parser().parse_args(command[command.index("shot_pick") + 1 :])
+    assert parsed.output == paths.sentence_shot_scores and parsed.model == "vlm-fast" and parsed.fallback_model == "slow"
+    match = build_command("match", paths, film, config, force=False)
+    assert match[match.index("--sentence-shot-scores") + 1] == str(paths.sentence_shot_scores)
+
+    paths.run_dir.mkdir(parents=True)
+    for path in (paths.review_script, paths.review_sentences, paths.sentence_timing, paths.shots):
+        path.write_text("[]", encoding="utf-8")
+    from shot_pick.__main__ import input_hash
+
+    meta = {
+        "model": "vlm-fast", "prompt_version": "shot-pick-v1", "n_sentences": 0, "n_candidate_sentences": 0,
+        "n_scored_sentences": 0, "n_requests": 0, "max_candidates": 6, "created_at": "2026-11-02T00:00:00Z",
+        "input_hash": input_hash([paths.review_script, paths.review_sentences, paths.sentence_timing, paths.shots], {"model": "vlm-fast", "max_candidates": 6}),
+    }
+    paths.sentence_shot_scores_meta.write_text(json.dumps(meta), encoding="utf-8")
+    paths.sentence_shot_scores.write_text("[]", encoding="utf-8")
+    assert outputs_valid(paths, "shot_pick", film=film, config=config) is True
+    paths.sentence_timing.write_text('[{"beat_id": 0}]', encoding="utf-8")
+    assert outputs_valid(paths, "shot_pick", film=film, config=config) is False

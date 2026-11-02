@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from common.schema import AnimeContext, EpisodeMemory, FilmMapSegment, ReviewBeat
+from common.source_view import SOURCE_SEGMENT_CHARS, build_source_view, segment_text  # noqa: F401 - re-exported for review modules
 from review.budget import estimate_total_chars
 from review.json_utils import extract_json
 from review.models import NarrationBeat, OutlineBeat, OutlineResult, QaResult
@@ -23,30 +24,12 @@ def min_outline_beats(char_budget: int) -> int:
     return max(1, math.ceil(char_budget / MAX_CHARS_PER_BEAT))
 
 MOVIE_CONTENT_TYPES = {"movie", "anime_movie"}
-# Per-segment cap keeps source-grounded narration/rewrite/QA prompts well under gateway limits.
-SOURCE_SEGMENT_CHARS = 220
 # Segments shown on each side of a beat so a rewrite can see what belongs to the neighbouring beats.
 SOURCE_CONTEXT_SEGMENTS = 3
 OPENING_REWRITE_RULE = (
     "- This is the opening beat of a movie recap: clearly establish who the protagonist is, where the scene takes place, "
     "the problem they face and why it matters, using only facts from SOURCE; no later twist and no hype without context."
 )
-
-
-def segment_text(segment: FilmMapSegment) -> str:
-    text = (segment.en if segment.type == "speech" else segment.scene_desc) or ""
-    return " ".join(text.split())[:SOURCE_SEGMENT_CHARS]
-
-
-def build_source_view(film_map: Sequence[FilmMapSegment], spans: Sequence[tuple[int, int]], *, context: int = 0) -> str:
-    """FILM_MAP lines for the given segment spans; with context, lines outside every span are tagged [other beat]."""
-    lines: list[str] = []
-    for segment in film_map:
-        if not any(start - context <= segment.id <= end + context for start, end in spans):
-            continue
-        tag = "" if any(start <= segment.id <= end for start, end in spans) else " [other beat]"
-        lines.append(f"#{segment.id}{tag} {segment_text(segment)}")
-    return "\n".join(lines)
 
 
 class ChatClient(Protocol):

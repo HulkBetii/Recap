@@ -148,8 +148,44 @@ class VieneuSynthesizer:
                 raise VieneuProviderError(f"VieNeu could not enroll the reference clip {reference.name}: {exc}") from exc
         return self._cloned_voices[key]
 
-    @staticmethod
+    def synthesize_batch(
+        self,
+        *,
+        texts: list[str],
+        output_paths: list[Path],
+        voice_id: str,
+        style: str,
+        backend: str,
+        precision: str,
+        model: str,
+        threads: int,
+        speed: float,
+    ) -> None:
+        """Synthesize several beats with one `infer_batch` call (chunks of all texts share GPU batches)."""
+        if len(texts) != len(output_paths):
+            raise VieneuProviderError("VieNeu batch needs one output path per text")
+        validate_vieneu_settings(backend=backend, precision=precision, style=style, threads=threads)
+        if not voice_id.strip():
+            raise VieneuProviderError("VieNeu voice_id cannot be empty")
+        if speed <= 0:
+            raise VieneuProviderError("VieNeu speed must be > 0")
+        if not texts:
+            return
+        with self._lock:
+            engine = self._get_engine(backend=backend, precision=precision, model=model, threads=threads)
+            voice = self._resolve_voice(engine, voice_id)
+            try:
+                audios = engine.infer_batch(list(texts), voice=voice, apply_watermark=True)
+            except Exception as exc:  # noqa: BLE001 - classify SDK/model failures for the provider boundary
+                raise VieneuProviderError(f"VieNeu batch synthesis failed: {exc}") from exc
+            if len(audios) != len(texts):
+                raise VieneuProviderError(f"VieNeu batch returned {len(audios)} waveforms for {len(texts)} texts")
+            for audio, output_path in zip(audios, output_paths):
+                self._write_mp3(engine=engine, audio=audio, speed=speed, output_path=output_path)
+
+    @classmethod
     def _synthesize_locked(
+        cls,
         *,
         engine: Any,
         text: str,
@@ -157,12 +193,20 @@ class VieneuSynthesizer:
         speed: float,
         output_path: Path,
     ) -> None:
+        try:
+            # `style` is ignored by SDK >= 3.7 (the reading style comes from the voice), so it is not sent.
+            audio = engine.infer(text, voice=voice, apply_watermark=True)
+        except Exception as exc:  # noqa: BLE001 - classify SDK/model failures for the provider boundary
+            raise VieneuProviderError(f"VieNeu synthesis failed: {exc}") from exc
+        cls._write_mp3(engine=engine, audio=audio, speed=speed, output_path=output_path)
+
+    @staticmethod
+    def _write_mp3(*, engine: Any, audio: Any, speed: float, output_path: Path) -> None:
+        """WAV from the SDK -> MP3 (with atempo when speed != 1), replacing output_path atomically."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
         temp_wav = output_path.with_name(f"{output_path.stem}.vieneu.wav")
         temp_mp3 = output_path.with_name(f"{output_path.stem}.vieneu.part.mp3")
         try:
-            # `style` is ignored by SDK >= 3.7 (the reading style comes from the voice), so it is not sent.
-            audio = engine.infer(text, voice=voice, apply_watermark=True)
             engine.save(audio, temp_wav)
             if not temp_wav.is_file() or temp_wav.stat().st_size == 0:
                 raise VieneuProviderError("VieNeu produced an empty WAV file")

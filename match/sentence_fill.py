@@ -13,13 +13,11 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from common.schema import BeatTiming, EdlPlacement, ReviewBeat, SentenceRef, SentenceTimestamp, Shot
+from common.sentence_windows import MIN_SOURCE_AUDIO_RATIO, sentence_source_windows
 from common.text import split_sentences
 from match.candidates import is_dark_fallback_candidate
 from match.fill import FillResult, assign_timeline, fill_beat
 
-# A sentence's source window is widened to at least this multiple of its audio so there is footage to pick.
-MIN_SOURCE_AUDIO_RATIO = 1.5
-MIN_SOURCE_WINDOW_S = 4.0
 # Footage within this distance of the sentence's own segments still counts as on target in QA.
 REF_HIT_TOLERANCE_S = 2.0
 
@@ -35,23 +33,6 @@ class SentenceWindow:
     ref_end: float | None
 
 
-def _widen(start: float, end: float, needed: float, lower: float, upper: float) -> tuple[float, float]:
-    """Grow [start, end] evenly to `needed` seconds without leaving [lower, upper]."""
-    if upper - lower <= needed:
-        return lower, upper
-    missing = needed - (end - start)
-    if missing <= 0:
-        return start, end
-    start, end = start - missing / 2, end + missing / 2
-    if start < lower:
-        end += lower - start
-        start = lower
-    if end > upper:
-        start -= end - upper
-        end = upper
-    return max(lower, start), min(upper, end)
-
-
 def plan_sentence_windows(
     beat: ReviewBeat,
     timing: BeatTiming,
@@ -64,22 +45,11 @@ def plan_sentence_windows(
         return None, f"sentence data does not match the narration ({len(refs)} refs, {len(stamps)} timings, {n_sentences} sentences)"
     if not any(ref.grounded for ref in refs):
         return None, "no sentence is linked to source segments"
-    lower, upper = beat.src_tc_start, beat.src_tc_end
+    spans = [(float(ref.src_tc_start), float(ref.src_tc_end)) if ref.grounded else None for ref in refs]  # type: ignore[arg-type]
+    durations = [stamp.tl_end - stamp.tl_start for stamp in stamps]
+    sources = sentence_source_windows(spans, durations, beat.src_tc_start, beat.src_tc_end)
     windows: list[SentenceWindow] = []
-    for position, (ref, stamp) in enumerate(zip(refs, stamps)):
-        duration = stamp.tl_end - stamp.tl_start
-        if ref.grounded:
-            start, end = float(ref.src_tc_start), float(ref.src_tc_end)  # type: ignore[arg-type]
-        else:
-            # Commentary sentence: keep the footage between the neighbouring sentences' moments.
-            previous = next((item for item in reversed(refs[:position]) if item.grounded), None)
-            following = next((item for item in refs[position + 1 :] if item.grounded), None)
-            start = float(previous.src_tc_end) if previous else lower  # type: ignore[arg-type]
-            end = float(following.src_tc_start) if following else upper  # type: ignore[arg-type]
-            if end <= start:
-                start, end = min(start, end), max(start, end) + 0.001
-        start, end = max(lower, min(start, upper)), max(lower, min(end, upper))
-        start, end = _widen(start, max(end, start + 0.001), max(MIN_SOURCE_WINDOW_S, MIN_SOURCE_AUDIO_RATIO * duration), lower, upper)
+    for ref, stamp, (start, end) in zip(refs, stamps, sources):
         windows.append(
             SentenceWindow(
                 idx=ref.idx,
@@ -90,8 +60,8 @@ def plan_sentence_windows(
                     tl_end=stamp.tl_end,
                     duration=round(stamp.tl_end - stamp.tl_start, 6),
                 ),
-                src_start=round(start, 3),
-                src_end=round(end, 3),
+                src_start=start,
+                src_end=end,
                 grounded=ref.grounded,
                 ref_start=ref.src_tc_start,
                 ref_end=ref.src_tc_end,
@@ -203,6 +173,9 @@ def fill_beat_by_sentences(
             # SigLIP scores for this sentence's own query replace the beat-level visual scores.
             restrict["visual_scores"] = {(beat.beat_id, shot_index): score for shot_index, score in visual.items()}
             restrict["weights"] = replace(fill_kwargs["weights"], visual=visual_weight)
+            # The window is already the right moment: put every shot in it in the same drift tier, otherwise
+            # chronological ranking (tier before score) never reaches a well-scored shot past max_source_drift_s.
+            restrict["max_source_drift_s"] = max(float(fill_kwargs.get("max_source_drift_s", 12.0)), window.src_end - window.src_start)
         span = (intervals[0][0], intervals[-1][1]) if intervals is not None else (window.src_start, window.src_end)
         sentence_beat = beat.model_copy(update={"src_tc_start": span[0], "src_tc_end": span[1]})
         result = fill_beat(beat=sentence_beat, timing=window.timing, reuse_counts=reuse_counts, **{**fill_kwargs, **restrict})

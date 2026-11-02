@@ -110,6 +110,11 @@ def resolve_cost_policy(config: dict[str, Any]) -> tuple[dict[str, Any], CostPol
         "preflight": {"backend": resolved.get("preflight", {}).get("classifier", "heuristic"), "cost": "local"},
         "episode_planner": {"backend": "deterministic", "cost": "local"},
         "visual_index": {"backend": resolved.get("visual_index", {}).get("embedding_mode", "off"), "cost": "local"},
+        "shot_pick": (
+            {"backend": "ninerouter", "cost": "gateway", "llm_model": resolved.get("shot_pick", {}).get("model")}
+            if resolved.get("shot_pick", {}).get("enabled", False)
+            else {"backend": "off", "cost": "local"}
+        ),
         "match": {"backend": resolved.get("match", {}).get("semantic_mode", "off"), "cost": "local"},
         "render": {"backend": "ffmpeg", "cost": "local"},
     }
