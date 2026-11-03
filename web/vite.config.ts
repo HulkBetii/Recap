@@ -30,5 +30,7 @@ export default defineConfig({
     setupFiles: "./src/test/setup.ts",
     css: true,
     exclude: ["e2e/**", "node_modules/**"],
+    // Multi-step userEvent flows take ~4-5 s when all files run in parallel; the 5 s default flakes.
+    testTimeout: 15000,
   },
 });
