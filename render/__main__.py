@@ -96,6 +96,16 @@ def validate_concat_output(
 SOURCE_FPS = "source"
 SOURCE_FPS_RANGE = (10.0, 60.0)
 DEFAULT_FPS = 30.0
+# A rate measured from timestamps (ffprobe avg_frame_rate) drifts off the nominal one when the file drops frames:
+# a 24000/1001 film probed as 9424000/393101 and rendered at an odd 21696/905.
+STANDARD_FPS = (12.0, 15.0, 24000 / 1001, 24.0, 25.0, 30000 / 1001, 30.0, 48.0, 50.0, 60000 / 1001, 60.0)
+STANDARD_FPS_TOLERANCE = 0.001
+
+
+def snap_standard_fps(fps: float) -> float:
+    """The nearest standard rate when `fps` lies within 0.1% of it, else `fps` unchanged."""
+    nearest = min(STANDARD_FPS, key=lambda rate: abs(rate - fps))
+    return nearest if abs(nearest - fps) <= nearest * STANDARD_FPS_TOLERANCE else fps
 
 
 def parse_fps(value: str) -> float | str:
@@ -109,10 +119,10 @@ def parse_fps(value: str) -> float | str:
 
 def resolve_source_fps(source_infos: dict[str, dict[str, object]]) -> tuple[float, list[str]]:
     """Pick the shared source rate; mixed or implausible rates fall back to 30 fps with a warning."""
-    rates = sorted({round(float(info.get("fps") or 0.0), 3) for info in source_infos.values()})
+    snapped = [snap_standard_fps(float(info.get("fps") or 0.0)) for info in source_infos.values()]
+    rates = sorted({round(rate, 3) for rate in snapped})
     if len(rates) == 1 and SOURCE_FPS_RANGE[0] <= rates[0] <= SOURCE_FPS_RANGE[1]:
-        exact = next(float(info.get("fps") or 0.0) for info in source_infos.values())
-        return exact, []
+        return snapped[0], []
     return DEFAULT_FPS, [f"fps=source fell back to {DEFAULT_FPS:g}: source rates {rates}"]
 
 

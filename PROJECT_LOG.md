@@ -1,5 +1,47 @@
 # PROJECT_LOG.md
 
+## 2026-11-03 - Fixes from the e2e run on `Đêm Thánh: Đội Săn Quỷ`
+
+- E2E with `config.movie.production.yaml` on a new 91.7-minute film (BiliBili source, 27% of shot time hard-subbed, RoPhim ad overlays): all stages exit 0 in 31.5 min, 1,449.6 s recap. Four defects found and fixed.
+- G5 sentence fill (`MATCH_ALGORITHM_VERSION` 7 -> 8):
+  - Unused-source pools now count only shots the fill can pick. Shots excluded for overlay text had counted as free source, so a sentence over an ad stretch kept a 0.6 s sliver and replayed it 8 times.
+  - Sentences with no clean footage in their own window left holes, which the gap filler stretched to 0.24x.
+  - Pool growth: forward near the window, backward near it, then evenly to the beat span, then the widened span.
+  - Pools first leave later sentences' own moments alone. Without that, sentences over an ad stretch took the next sentence's footage: beat 18 sentence 5 landed 38 s off its moment.
+  - Pools prefer pieces of at least half `min_clip`.
+  - Up to 3 fill passes per sentence fill holes, so a rest of at least `min_visual_clip` never reaches the gap filler, which replays the previous clip's tail.
+- Matcher comparison on identical inputs and audio (v7 = HEAD matcher from a temporary worktree):
+
+  | Metric | `Đêm Thánh` v7 | `Đêm Thánh` v8 | `Quý Ông Số Đỏ` v7 | `Quý Ông Số Đỏ` v8 |
+  |---|---|---|---|---|
+  | Adjacent replay groups | 12 (61.3 s) | 0 | 5 (21.8 s) | 0 |
+  | Repeated source | 4.9% | 0.0% | 1.4% | 0.0% |
+  | Clips slower than 0.9x | 11 | 0 | – | – |
+  | Clips under 1.5 s | 176 | 137 | 251 | 155 |
+  | Grounded screen time within 2 s of the sentence's moment | 0.870 | 0.838 | 0.906 | 0.880 |
+  | Mean distance from the moment | 1.83 s | 2.82 s | 0.49 s | 1.17 s |
+  | Backward source jumps > 1 s inside a beat | 47 | 72 | 32 | 57 |
+
+  - v7's precision partly came from replaying the moment's own footage.
+  - Ablations on `Đêm Thánh`: without the reservation, on-ref 0.805; with preferred pieces at 2/3 `min_clip`, 0.817; with v7's forward-then-backward growth and no reservation, 0.819 with 190 short clips. A first version that allowed repeats only in the last pass and had no reservation or preferred pieces scored 0.823 with 190 short clips. Its judged A/B was 0.604 -> 0.580 (Gemini); 11 better / 11 worse on Gemini and 6 better / 11 worse on Claude for sentences whose footage changed.
+- Judged A/B of the final v8 on `Đêm Thánh`:
+  - Gemini 0.604 -> 0.610 (sentences with changed footage: 21 better / 18 worse).
+  - Claude 0.637 -> 0.642 (14 better / 13 worse).
+  - On sentences whose footage is identical in both EDLs, the judges flip 9-17% of their verdicts, so only sentences with changed footage and their better/worse counts are compared.
+- VieNeu watermark:
+  - The `.venv` had the unrelated PyPI `perth` and the extra never requested `vieneu[watermark]`. The SDK logged `Watermarker init failed` and wrote unwatermarked audio, so earlier VieNeu runs are unwatermarked.
+  - The extra is now `vieneu[watermark]==3.8.3` plus `setuptools>=70,<81`, since resemble-perth 1.0.1 imports `pkg_resources`.
+  - The runtime check reports `resemble-perth`/`pkg_resources`, the adapter refuses an engine without an active watermarker, and the TTS cache identity adds `watermark_version`.
+  - Perth detector after re-synthesis: 1.0 on beats and on the voiceover, 0.0 on the human reference clip.
+- G6 fps: the source's `avg_frame_rate` (9424000/393101) was used as is and rendered at 21696/905. `resolve_source_fps` now snaps to a standard rate within 0.1%; the output is 24000/1001.
+- Opening black: shot 11 was bright on average (0.14) but opened on 1.71 s of black.
+  - G4 now records `Shot.lead_dark_s` from the frames it already samples (`feature_schema_version` 3; 198/962 shots on this film).
+  - The hook guard shifts the first placement past the lead, or replaces it with shots that do not open dark. blackdetect finds no black in the first 20 s.
+  - One 1.6 s near-black stretch remains mid-video: shot 749, a night shot with average brightness 0.095, usable under G4 `min_brightness` 0.06. In v7 it was shown 4 times in a row.
+- `scripts/av_sync_audit.py` cached frames by sentence only. Re-auditing a re-matched run reused the old EDL's frames while reading FILM_MAP lines from the new one; frame names now include the source time.
+- Main run re-rendered with the final code: 1,445.7 s at 24000/1001, `duration_match=true`, 533 placements.
+- Validation: 841 Python tests, Ruff, Tach, secret scan.
+
 ## 2026-11-03 - v1.0.3 release
 
 - Bumped the package version from `1.0.2` to `1.0.3` and prepended release notes covering the 36 commits since `v1.0.2` (anime seasons, local UI, 9router, VieNeu 3.8, sentence-anchored footage).

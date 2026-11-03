@@ -23,6 +23,20 @@ def test_features_mark_dark_frame_unusable() -> None:
     assert features.face_area == 0.25
 
 
+def test_black_lead_is_measured_up_to_the_first_non_black_sample() -> None:
+    black = np.full((10, 10, 3), 18, dtype=np.uint8)
+    lit = np.full((10, 10, 3), 120, dtype=np.uint8)
+    config = FeatureConfig(sample_frames=4, face_detection="off", min_brightness=0.06, min_shot_len=0.4)
+
+    faded = compute_features_from_frames([black, black, lit, lit], duration=8.0, config=config, face_detector=FakeFaceDetector(), offsets=[0.05, 2.6, 5.4, 7.95])
+    assert faded.lead_dark_s == 5.4 and faded.is_usable is True
+    opening_lit = compute_features_from_frames([lit, black, lit, lit], duration=8.0, config=config, face_detector=FakeFaceDetector(), offsets=[0.05, 2.6, 5.4, 7.95])
+    assert opening_lit.lead_dark_s == 0.0
+    all_black = compute_features_from_frames([black] * 4, duration=8.0, config=config, face_detector=FakeFaceDetector(), offsets=[0.05, 2.6, 5.4, 7.95])
+    assert all_black.lead_dark_s == 8.0
+    # Without sample offsets (some frames unreadable) the lead is not measured.
+    assert compute_features_from_frames([black, lit], duration=8.0, config=config, face_detector=FakeFaceDetector()).lead_dark_s == 0.0
+
 def test_motion_score_increases_for_changed_frames() -> None:
     still = [np.full((10, 10, 3), 100, dtype=np.uint8) for _ in range(3)]
     changed = [

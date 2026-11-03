@@ -32,8 +32,23 @@ def vieneu_package_version() -> str | None:
         return None
 
 
+def vieneu_watermark_version() -> str | None:
+    """Version of resemble-perth, the SDK's watermarker. The unrelated PyPI package `perth` imports fine but
+    has no watermarker, and the SDK then writes unwatermarked audio with only a log warning."""
+    try:
+        return version("resemble-perth")
+    except PackageNotFoundError:
+        return None
+
+
 def missing_vieneu_modules() -> list[str]:
-    return [name for name in ("vieneu", "onnxruntime", "soundfile") if importlib.util.find_spec(name) is None]
+    missing = [name for name in ("vieneu", "onnxruntime", "soundfile") if importlib.util.find_spec(name) is None]
+    if vieneu_watermark_version() is None:
+        missing.append("resemble-perth")
+    elif importlib.util.find_spec("pkg_resources") is None:
+        # resemble-perth 1.0.1 locates its model with pkg_resources, which setuptools >= 81 no longer ships.
+        missing.append("pkg_resources")
+    return missing
 
 
 def validate_vieneu_settings(*, backend: str, precision: str, style: str, threads: int) -> None:
@@ -122,9 +137,15 @@ class VieneuSynthesizer:
                 engine_args["device"] = "cuda"
             else:
                 engine_args.update(device="cpu", precision=precision)
-            self._engine = factory(**engine_args)
+            engine = factory(**engine_args)
         except Exception as exc:  # noqa: BLE001 - optional SDK exposes HF/ONNX/torch exception families
             raise VieneuProviderError(f"Could not initialize VieNeu {backend} runtime: {exc}") from exc
+        if getattr(engine, "watermarker", True) is None:
+            # The SDK only logs a warning when its watermarker fails to load; the audio must stay watermarked.
+            raise VieneuProviderError(
+                'VieNeu watermarker is not active; install resemble-perth with python -m pip install -e ".[tts-vieneu]"'
+            )
+        self._engine = engine
         self._engine_identity = identity
         return self._engine
 

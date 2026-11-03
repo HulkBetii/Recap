@@ -304,6 +304,45 @@ def test_hook_leading_brightness_guard_replaces_dark_first_placement() -> None:
     assert result.placements[0].src_in == 5.0
 
 
+def test_hook_leading_brightness_guard_skips_a_black_lead_inside_a_bright_shot() -> None:
+    current_beat = beat(hook=True, source_end=30.0)
+    shots = [shot(0, 0, 8).model_copy(update={"brightness": 0.3, "lead_dark_s": 1.9}), shot(1, 8, 15)]
+    baseline = [
+        EdlPlacement(tl_start=0, tl_end=5, src="film.mp4", src_in=0, src_out=5, beat_id=1, shot_index=0, speed=1),
+        EdlPlacement(tl_start=5, tl_end=10, src="film.mp4", src_in=8, src_out=13, beat_id=1, shot_index=1, speed=1),
+    ]
+
+    result = apply_hook_leading_brightness_guard(
+        beat=current_beat, baseline_placements=baseline, shots=shots, min_brightness=0.1, max_clip=5.0, min_visual_clip=0.6
+    )
+
+    assert result.used is True
+    assert (result.placements[0].src_in, result.placements[0].src_out) == (1.9, 6.9)
+    assert result.placements[0].tl_end == 5 and result.placements[1] == baseline[1]
+
+
+def test_hook_leading_brightness_guard_replaces_a_black_lead_that_cannot_be_skipped() -> None:
+    current_beat = beat(hook=True, source_end=30.0)
+    # The shot is too short to start past its black lead, and so is the next one; the third opens bright.
+    shots = [
+        shot(0, 0, 5).model_copy(update={"brightness": 0.3, "lead_dark_s": 1.9}),
+        shot(1, 5, 12).model_copy(update={"brightness": 0.3, "lead_dark_s": 2.0}),
+        shot(2, 12, 20),
+    ]
+    baseline = [
+        EdlPlacement(tl_start=0, tl_end=5, src="film.mp4", src_in=0, src_out=5, beat_id=1, shot_index=0, speed=1),
+        EdlPlacement(tl_start=5, tl_end=10, src="film.mp4", src_in=20, src_out=25, beat_id=1, shot_index=3, speed=1),
+    ]
+
+    result = apply_hook_leading_brightness_guard(
+        beat=current_beat, baseline_placements=baseline, shots=shots, min_brightness=0.1, max_clip=5.0, min_visual_clip=0.6
+    )
+
+    assert result.used is True
+    assert result.replacement_shot_ids == [2]
+    assert result.placements[0].src_in == 12.0
+
+
 def test_low_confidence_transition_merges_into_next_strong_anchor() -> None:
     current_beat = beat(source_end=180.0)
     chunks = [

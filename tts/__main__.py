@@ -38,6 +38,7 @@ from tts.vieneu_provider import (
     reference_identity,
     validate_vieneu_settings,
     vieneu_package_version,
+    vieneu_watermark_version,
     voice_reference_path,
 )
 
@@ -410,6 +411,8 @@ async def run_tts_with_client(args: argparse.Namespace, provider_client: TtsProv
             "style": vieneu_style,
             "threads": vieneu_threads,
             "apply_watermark": True,
+            # Audio rendered while the watermarker was missing must not be reused.
+            "watermark_version": vieneu_watermark_version(),
             "speed_method": "ffmpeg_atempo",
         }
         reference = voice_reference_path(args.voice_id)

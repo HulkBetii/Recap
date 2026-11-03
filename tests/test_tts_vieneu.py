@@ -248,3 +248,36 @@ def test_synthesize_batch_calls_infer_batch_once_and_writes_every_output(tmp_pat
     assert engine.batches == [["a", "b", "c"]] and engine.calls == []
     assert all(path.read_bytes() == b"mp3" for path in outputs)
     assert not list(tmp_path.glob("*.vieneu.*"))
+
+
+def test_engine_without_an_active_watermarker_is_rejected(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    engine = FakeEngine()
+    engine.watermarker = None  # type: ignore[attr-defined]
+    monkeypatch.setattr("tts.vieneu_provider.run_command", lambda _command: None)
+    synthesizer = VieneuSynthesizer(engine_factory=lambda **_kwargs: engine)
+
+    with pytest.raises(VieneuProviderError, match="watermarker is not active"):
+        synthesizer.synthesize(
+            text="hello",
+            voice_id="Ngọc Linh",
+            style="doc_truyen",
+            backend="pytorch",
+            precision="int8",
+            model="model-id",
+            threads=0,
+            speed=1.0,
+            output_path=tmp_path / "out.mp3",
+        )
+
+    assert engine.calls == []
+
+
+def test_missing_watermark_package_is_reported_as_missing_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from tts import vieneu_provider
+
+    monkeypatch.setattr(vieneu_provider.importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(vieneu_provider, "vieneu_watermark_version", lambda: None)
+    assert vieneu_provider.missing_vieneu_modules() == ["resemble-perth"]
+    monkeypatch.setattr(vieneu_provider, "vieneu_watermark_version", lambda: "1.0.1")
+    monkeypatch.setattr(vieneu_provider.importlib.util, "find_spec", lambda name: None if name == "pkg_resources" else object())
+    assert vieneu_provider.missing_vieneu_modules() == ["pkg_resources"]

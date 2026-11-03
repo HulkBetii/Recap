@@ -25,6 +25,7 @@ from shots.features import (
     create_face_detector,
     iter_batch_sampled_frames,
     sample_frames,
+    shot_sample_times,
 )
 from shots.overlays import (
     HARDSUB_WARNING_RATIO,
@@ -138,7 +139,7 @@ def legacy_detection_cache_key(input_path: Path, args: argparse.Namespace) -> st
 
 def feature_cache_key(spans: list[ShotSpan], args: argparse.Namespace, *, face_detector: str) -> str:
     return stable_hash({
-        "feature_schema_version": 2,
+        "feature_schema_version": 3,
         "spans": [span.__dict__ for span in spans],
         "sample_frames": args.sample_frames,
         "frame_sampling": args.frame_sampling,
@@ -207,6 +208,7 @@ def features_to_shots(input_path: Path, output_path: Path, thumb_dir: Path, span
                 brightness=float(features["brightness"]),
                 is_usable=bool(features["is_usable"]),
                 unusable_reasons=list(features.get("unusable_reasons", [])),
+                lead_dark_s=float(features.get("lead_dark_s", 0.0)),
             )
         )
     return shots
@@ -255,7 +257,10 @@ def compute_features_per_shot(
             start=1,
         ):
             frames = [sample.frame for sample in samples]
-            features = compute_features_from_frames(frames, duration=span.duration, config=config, face_detector=face_detector)
+            offsets = [sample.timestamp - span.tc_start for sample in samples]
+            features = compute_features_from_frames(
+                frames, duration=span.duration, config=config, face_detector=face_detector, offsets=offsets
+            )
             features_by_index[span.index] = features.__dict__
             thumb = thumbnail_sample(span, samples)
             thumb_output = thumbnail_path(input_path, thumb_dir, span.index)
@@ -267,7 +272,12 @@ def compute_features_per_shot(
 
     for span in spans:
         frames = sample_frames(input_path, span, args.sample_frames)
-        features = compute_features_from_frames(frames, duration=span.duration, config=config, face_detector=face_detector)
+        times = shot_sample_times(span, args.sample_frames)
+        # sample_frames drops unreadable frames, so offsets are only known when every sample was read.
+        offsets = [timestamp - span.tc_start for timestamp in times] if len(times) == len(frames) else None
+        features = compute_features_from_frames(
+            frames, duration=span.duration, config=config, face_detector=face_detector, offsets=offsets
+        )
         features_by_index[span.index] = features.__dict__
     return features_by_index
 

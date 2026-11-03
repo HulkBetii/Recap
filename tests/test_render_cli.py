@@ -814,6 +814,18 @@ def test_resolve_source_fps_falls_back_for_mixed_or_implausible_rates() -> None:
     assert fps == 30.0 and warnings
 
 
+def test_resolve_source_fps_snaps_a_drifted_measured_rate_to_the_nominal_rate() -> None:
+    from render.__main__ import resolve_source_fps
+    from render.cut import format_fps
+
+    fps, warnings = resolve_source_fps({"a": {"fps": 9424000 / 393101}})
+    assert fps == 24000 / 1001 and warnings == [] and format_fps(fps) == "24000/1001"
+    # Two files of one season measured a little apart still share the nominal rate.
+    assert resolve_source_fps({"a": {"fps": 24.9991}, "b": {"fps": 25.0}}) == (25.0, [])
+    # A rate far from every standard one is kept as measured.
+    assert resolve_source_fps({"a": {"fps": 20.0}}) == (20.0, [])
+
+
 def test_parse_fps_accepts_source_keyword() -> None:
     from render.__main__ import parse_fps
 

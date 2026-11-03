@@ -612,8 +612,22 @@ def apply_hook_leading_brightness_guard(
     shots_by_index = {shot.index: shot for shot in shots}
     first = ordered[0]
     first_shot = shots_by_index.get(first.shot_index)
-    if first_shot is None or first_shot.brightness + 1e-9 >= min_brightness:
+    if first_shot is None:
         return HookLeadingGuardResult(ordered, False, first.shot_index, [], [])
+    # A shot can be bright on average and still open on a black lead (G4 `lead_dark_s`): the recap would start black.
+    lead_end = first_shot.tc_start + first_shot.lead_dark_s
+    starts_dark = first.src_in + 1e-6 < lead_end
+    if first_shot.brightness + 1e-9 >= min_brightness and not starts_dark:
+        return HookLeadingGuardResult(ordered, False, first.shot_index, [], [])
+    if first_shot.brightness + 1e-9 >= min_brightness:
+        shifted = first.model_copy(update={"src_in": round(lead_end, 3), "src_out": round(lead_end + first.src_out - first.src_in, 3)})
+        clashes = any(
+            other.shot_index == first.shot_index and other.src_in < shifted.src_out and shifted.src_in < other.src_out
+            for other in ordered[1:]
+        )
+        if shifted.src_out <= first_shot.tc_end + 1e-6 and not clashes:
+            warning = f"beat {beat.beat_id} hook_leading_brightness_guard skipped the {first_shot.lead_dark_s:.2f}s dark lead of shot {first.shot_index}"
+            return HookLeadingGuardResult([shifted, *ordered[1:]], True, first.shot_index, [first.shot_index], [warning])
     window_end = ordered[1].src_in if len(ordered) > 1 and ordered[1].src_in > first.src_in else beat.src_tc_end
     candidates = [
         shot
@@ -623,6 +637,8 @@ def apply_hook_leading_brightness_guard(
         and shot.brightness + 1e-9 >= min_brightness
         and shot.tc_start < window_end
         and first.src_in < shot.tc_end
+        # The local fill starts a shot at max(tc_start, window start); that must be past its dark lead.
+        and max(shot.tc_start, first.src_in) + 1e-6 >= shot.tc_start + shot.lead_dark_s
     ]
     replacements = fill_local_window(
         beat_id=beat.beat_id,

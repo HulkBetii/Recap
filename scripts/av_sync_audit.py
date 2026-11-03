@@ -129,7 +129,8 @@ def build_items(run_dir: Path, film: Path, work: Path) -> list[dict]:
             (placement_source_time(p, max(p.tl_start, stamp.tl_start)), placement_source_time(p, min(p.tl_end, stamp.tl_end)))
             for p in shown
         ]
-        frame = work / "frames" / f"{stamp.beat_id:03d}_{stamp.idx:02d}.jpg"
+        # The source time is part of the name: a re-matched run shows other footage for the same sentence.
+        frame = work / "frames" / f"{stamp.beat_id:03d}_{stamp.idx:02d}_{round(frame_time * 1000)}.jpg"
         extract_frame(film, frame_time, frame)
         items.append(
             {

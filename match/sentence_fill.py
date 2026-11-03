@@ -20,6 +20,12 @@ from match.fill import FillResult, assign_timeline, fill_beat
 
 # Footage within this distance of the sentence's own segments still counts as on target in QA.
 REF_HIT_TOLERANCE_S = 2.0
+# Passes per sentence: later passes fill what an earlier one left without footage, so no hole reaches the timeline
+# gap filler (which replays the previous clip's tail or slows one shot to a fraction of its speed).
+SENTENCE_FILL_PASSES = 3
+# Pools prefer unused pieces of at least this share of min_clip. On `Dem Thanh` (v8 A/B, same audio) 0.5 cut
+# clips under 1.5 s from 210 to 137 for 0.848 -> 0.838 on-ref screen time; 0.67 dropped on-ref to 0.817.
+PREFERRED_PIECE_CLIP_RATIO = 0.5
 
 
 @dataclass(frozen=True)
@@ -100,30 +106,94 @@ def subtract_intervals(start: float, end: float, used: Sequence[tuple[float, flo
     return free
 
 
+def free_shot_source(
+    shots: Sequence[Shot],
+    start: float,
+    end: float,
+    used: Sequence[tuple[float, float]],
+    min_length: float,
+) -> list[tuple[float, float]]:
+    """Source of `shots` inside [start, end] that is not on screen yet, in pieces of at least `min_length`."""
+    pieces: list[tuple[float, float]] = []
+    for shot in shots:
+        piece_start, piece_end = max(start, shot.tc_start), min(end, shot.tc_end)
+        if piece_end - piece_start >= min_length:
+            pieces.extend(piece for piece in subtract_intervals(piece_start, piece_end, used) if piece[1] - piece[0] >= min_length)
+    return sorted(pieces)
+
+
 def unused_source_intervals(
     window: SentenceWindow,
     used: Sequence[tuple[float, float]],
     *,
-    lower: float,
-    upper: float,
+    tiers: Sequence[Sequence[Shot]],
+    bounds: Sequence[tuple[float, float]],
     min_length: float,
+    reserved: Sequence[tuple[float, float]] = (),
+    preferred_length: float = 0.0,
 ) -> list[tuple[float, float]] | None:
-    """Unused source inside the sentence window, grown forward then backward (within the beat span) until it
-    holds the sentence's audio. None when the beat span has no such room left; the caller then allows repeats."""
-    needed = window.timing.duration * MIN_SOURCE_AUDIO_RATIO
-    start, end = window.src_start, window.src_end
-    for _ in range(4):
-        free = [(a, b) for a, b in subtract_intervals(start, end, used) if b - a >= min_length]
-        if sum(b - a for a, b in free) >= needed:
-            return [(round(a, 3), round(b, 3)) for a, b in free]
-        if start <= lower and end >= upper:
-            break
-        missing = needed - sum(b - a for a, b in free) + 1.0
-        if end < upper:
-            end = min(upper, end + missing)
-        else:
-            start = max(lower, start - missing)
+    """Unused footage of pickable shots around the sentence window, grown until it holds 1.5x the sentence's audio.
+
+    Only the source of shots the fill may pick counts: a window over shots excluded for overlay text once kept
+    a 0.6 s sliver of usable footage and replayed it eight times. Growth goes forward near the window, then
+    backward near it, then evenly on both sides out to the bound. Attempts, in order: the beat span in pieces of
+    at least `preferred_length` (leftover slivers otherwise cut the footage into sub-1.5 s jumps), the beat span
+    in pieces of `min_length`, then the beat span widened like the beat-level fill. Each attempt first leaves
+    `reserved` (the moments later sentences of the beat tell) alone, since sentences over an excluded stretch
+    otherwise took the next sentence's own footage, then tries usable shots before dark fallback shots. An
+    attempt that cannot reach 1.5x is still taken when it holds the audio once. None when none does; the
+    caller's fill then repeats footage.
+    """
+    duration = window.timing.duration
+    needed = duration * MIN_SOURCE_AUDIO_RATIO
+    blocks = [[*used, *reserved], list(used)] if reserved else [list(used)]
+    attempts = [(bounds[0], blocked, preferred_length) for blocked in blocks] if preferred_length > min_length else []
+    attempts += [(bound, blocked, min_length) for bound in bounds for blocked in blocks]
+    for (lower, upper), blocked, piece in attempts:
+        near_lower, near_upper = max(lower, window.src_start - needed), min(upper, window.src_end + needed)
+        limits = [(window.src_start, near_upper, False), (near_lower, near_upper, False), (lower, upper, True)]
+        for tier in tiers:
+            nearby = [shot for shot in tier if shot.tc_end > lower and shot.tc_start < upper]
+            start, end = window.src_start, window.src_end
+            free: list[tuple[float, float]] = []
+            for limit_lower, limit_upper, evenly in limits:
+                while True:
+                    free = free_shot_source(nearby, start, end, blocked, piece)
+                    total = sum(b - a for a, b in free)
+                    if total >= needed:
+                        return [(round(a, 3), round(b, 3)) for a, b in free]
+                    if start <= limit_lower and end >= limit_upper:
+                        break
+                    missing = needed - total + 1.0
+                    if evenly and start > limit_lower and end < limit_upper:
+                        start, end = max(limit_lower, start - missing / 2), min(limit_upper, end + missing / 2)
+                    elif end < limit_upper:
+                        end = min(limit_upper, end + missing)
+                    else:
+                        start = max(limit_lower, start - missing)
+            if free and sum(b - a for a, b in free) >= duration:
+                return [(round(a, 3), round(b, 3)) for a, b in free]
     return None
+
+
+def source_restriction(
+    intervals: list[tuple[float, float]],
+    shots: Sequence[Shot],
+    *,
+    allow_dark_fallback: bool,
+    min_visual_clip: float,
+) -> dict[str, Any]:
+    """`fill_beat` arguments that keep the fill inside `intervals`."""
+    ids = {shot.index for shot in shots if any(shot.tc_start < end and start < shot.tc_end for start, end in intervals)}
+    return {
+        "candidate_filter_ids": ids,
+        "dark_candidate_ids": {
+            shot.index
+            for shot in shots
+            if shot.index in ids and allow_dark_fallback and is_dark_fallback_candidate(shot, min_visual_clip=min_visual_clip)
+        },
+        "source_intervals": intervals,
+    }
 
 
 def fill_beat_by_sentences(
@@ -143,46 +213,75 @@ def fill_beat_by_sentences(
     diagnostics: list[dict[str, Any]] = []
     shots: list[Shot] = fill_kwargs["shots"]
     min_visual_clip = float(fill_kwargs.get("min_visual_clip", 0.0))
+    allow_dark_fallback = bool(fill_kwargs.get("allow_dark_fallback", True))
+    min_length = max(min_visual_clip, 0.5)
+    usable = [shot for shot in shots if shot.is_usable]
+    dark = [shot for shot in shots if allow_dark_fallback and is_dark_fallback_candidate(shot, min_visual_clip=min_visual_clip)]
+    tiers = [usable, usable + dark] if dark else [usable]
+    widen = float(fill_kwargs.get("widen_margin", 0.0)) * int(fill_kwargs.get("max_widen", 0))
+    bounds = [(beat.src_tc_start, beat.src_tc_end)]
+    if widen > 0:
+        bounds.append((max(0.0, beat.src_tc_start - widen), beat.src_tc_end + widen))
+    preferred_length = max(min_length, PREFERRED_PIECE_CLIP_RATIO * float(fill_kwargs.get("min_clip", 0.0)))
     used = [(placement.src_in, placement.src_out) for placement in (used_sources or [])]
-    for window in windows:
-        # Neighbouring sentences often cite the same segments; footage already on screen is skipped so the
-        # next sentence continues from unused source instead of repeating it.
-        intervals = unused_source_intervals(
-            window,
-            used,
-            lower=beat.src_tc_start,
-            upper=beat.src_tc_end,
-            min_length=max(min_visual_clip, 0.5),
-        )
-        restrict: dict[str, Any] = {}
-        if intervals is not None:
-            ids = {shot.index for shot in shots if any(shot.tc_start < end and start < shot.tc_end for start, end in intervals)}
-            restrict = {
-                "candidate_filter_ids": ids,
-                "dark_candidate_ids": {
-                    shot.index
-                    for shot in shots
-                    if shot.index in ids
-                    and fill_kwargs.get("allow_dark_fallback", True)
-                    and is_dark_fallback_candidate(shot, min_visual_clip=min_visual_clip)
-                },
-                "source_intervals": intervals,
-            }
+    for position, window in enumerate(windows):
+        # Later sentences' own moments, minus this sentence's window (sentences often share segments).
+        reserved = [
+            piece
+            for later in windows[position + 1 :]
+            if later.grounded and later.ref_start is not None and later.ref_end is not None
+            for piece in subtract_intervals(later.ref_start, later.ref_end, [(window.src_start, window.src_end)])
+        ]
+        scoring: dict[str, Any] = {}
         visual = (sentence_visual_scores or {}).get((beat.beat_id, window.idx))
         if visual and visual_weight > 0:
             # SigLIP scores for this sentence's own query replace the beat-level visual scores.
-            restrict["visual_scores"] = {(beat.beat_id, shot_index): score for shot_index, score in visual.items()}
-            restrict["weights"] = replace(fill_kwargs["weights"], visual=visual_weight)
+            scoring["visual_scores"] = {(beat.beat_id, shot_index): score for shot_index, score in visual.items()}
+            scoring["weights"] = replace(fill_kwargs["weights"], visual=visual_weight)
             # The window is already the right moment: put every shot in it in the same drift tier, otherwise
             # chronological ranking (tier before score) never reaches a well-scored shot past max_source_drift_s.
-            restrict["max_source_drift_s"] = max(float(fill_kwargs.get("max_source_drift_s", 12.0)), window.src_end - window.src_start)
-        span = (intervals[0][0], intervals[-1][1]) if intervals is not None else (window.src_start, window.src_end)
-        sentence_beat = beat.model_copy(update={"src_tc_start": span[0], "src_tc_end": span[1]})
-        result = fill_beat(beat=sentence_beat, timing=window.timing, reuse_counts=reuse_counts, **{**fill_kwargs, **restrict})
-        sentence_placements = assign_timeline(result.fragments, window.timing)
-        results.append(result)
+            scoring["max_source_drift_s"] = max(float(fill_kwargs.get("max_source_drift_s", 12.0)), window.src_end - window.src_start)
+        sentence_placements: list[EdlPlacement] = []
+        sentence_results: list[FillResult] = []
+        target = window.timing
+        for fill_pass in range(SENTENCE_FILL_PASSES):
+            # Neighbouring sentences often cite the same segments; footage already on screen is skipped so the
+            # next sentence continues from unused source instead of repeating it.
+            intervals = unused_source_intervals(
+                replace(window, timing=target),
+                used,
+                tiers=tiers,
+                bounds=bounds,
+                min_length=min_length,
+                reserved=reserved,
+                preferred_length=preferred_length,
+            )
+            restrict: dict[str, Any] = {}
+            if intervals is not None:
+                restrict = source_restriction(intervals, shots, allow_dark_fallback=allow_dark_fallback, min_visual_clip=min_visual_clip)
+                span = (intervals[0][0], intervals[-1][1])
+            elif fill_pass == 0:
+                span = (window.src_start, window.src_end)
+            else:
+                span = (beat.src_tc_start, beat.src_tc_end)
+            sentence_beat = beat.model_copy(update={"src_tc_start": span[0], "src_tc_end": span[1]})
+            result = fill_beat(beat=sentence_beat, timing=target, reuse_counts=reuse_counts, **{**fill_kwargs, **restrict, **scoring})
+            pass_placements = assign_timeline(result.fragments, target)
+            sentence_results.append(result)
+            sentence_placements.extend(pass_placements)
+            used.extend((placement.src_in, placement.src_out) for placement in pass_placements)
+            filled_to = pass_placements[-1].tl_end if pass_placements else target.tl_start
+            rest = round(window.timing.tl_end - filled_to, 6)
+            # A rest shorter than a clip is absorbed by the neighbouring placements; one that fits a clip is not,
+            # and the gap filler would cover it by replaying the end of the clip before it.
+            if fill_pass == SENTENCE_FILL_PASSES - 1 or rest <= 0.05 or rest + 1e-6 < min_visual_clip:
+                break
+            target = BeatTiming(beat_id=beat.beat_id, audio_path=timing.audio_path, tl_start=filled_to, tl_end=window.timing.tl_end, duration=rest)
+        for earlier in sentence_results[:-1]:
+            # The next pass filled what this one left; only the last pass's shortfall is real.
+            earlier.warnings[:] = [warning for warning in earlier.warnings if not warning.startswith(f"beat {beat.beat_id} could not fill")]
+        results.extend(sentence_results)
         placements.extend(sentence_placements)
-        used.extend((placement.src_in, placement.src_out) for placement in sentence_placements)
         diagnostic: dict[str, Any] = {
             "sentence_idx": window.idx,
             "replaced": True,
@@ -198,7 +297,8 @@ def fill_beat_by_sentences(
                 if visual and sentence_placements
                 else None
             ),
-            "widen_count": result.widen_count,
+            "widen_count": max(item.widen_count for item in sentence_results),
+            "fill_passes": len(sentence_results),
         }
         if window.grounded:
             diagnostic["ref_hit_ratio"] = round(ref_hit_ratio(sentence_placements, window.ref_start, window.ref_end), 3)  # type: ignore[arg-type]

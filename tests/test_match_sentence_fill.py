@@ -126,3 +126,72 @@ def test_scored_sentence_can_reach_a_shot_beyond_the_drift_limit() -> None:
     )
     first = [p for p in placements if p.tl_start < 14.0]
     assert first[0].shot_index == 18  # 30 s after the window start, past the 12 s drift tier
+
+
+def overlay(index: int, start: float, end: float) -> Shot:
+    return shot(index, start, end).model_copy(update={"is_usable": False, "unusable_reasons": ["overlay_text"]})
+
+
+def test_sentence_over_excluded_shots_takes_nearby_clean_footage_without_replays() -> None:
+    # Shots 4-10 (20-55 s) carry burned-in ad text; the second sentence's moment lies entirely inside them.
+    shots = [overlay(index, index * 5.0, index * 5.0 + 5.0) if 4 <= index <= 10 else shot(index, index * 5.0, index * 5.0 + 5.0) for index in range(20)]
+    beat = BEAT.model_copy(update={"src_tc_start": 0.0, "src_tc_end": 80.0})
+    refs = [
+        REFS[0].model_copy(update={"src_tc_start": 0.0, "src_tc_end": 6.0}),
+        REFS[1].model_copy(update={"src_tc_start": 24.0, "src_tc_end": 40.0}),
+        REFS[2].model_copy(update={"src_tc_start": 58.0, "src_tc_end": 66.0, "grounded": True, "from_seg_id": 6, "to_seg_id": 6}),
+    ]
+    windows, _reason = plan_sentence_windows(beat, TIMING, refs, STAMPS)
+    assert windows is not None
+    _result, placements, diagnostics = fill_beat_by_sentences(
+        beat=beat, timing=TIMING, windows=windows, reuse_counts={}, fill_kwargs={**FILL_KWARGS, "shots": shots}
+    )
+    assert all(not 20.0 <= p.src_in < 55.0 for p in placements)
+    shown: list[tuple[float, float]] = []
+    for placement in placements:
+        assert all(placement.src_out <= start + 1e-6 or placement.src_in >= end - 1e-6 for start, end in shown)
+        shown.append((placement.src_in, placement.src_out))
+    # The nearest clean footage before the excluded stretch, not the third sentence's moment after it.
+    second = [p for p in placements if 14.0 <= p.tl_start < 18.0]
+    assert second and all(p.src_out <= 20.0 + 1e-6 for p in second)
+    assert placements[0].tl_start == 10.0 and abs(placements[-1].tl_end - 22.0) < 1e-6
+    assert all(abs(a.tl_end - b.tl_start) < 1e-6 for a, b in zip(placements, placements[1:]))
+    assert all(abs(p.speed - 1.0) < 1e-6 for p in placements)
+    assert all(1 <= item["fill_passes"] <= 3 for item in diagnostics)
+
+
+def test_sentence_with_no_pickable_footage_nearby_is_filled_at_beat_level() -> None:
+    # Everything within the sentence's reach is excluded; only footage at the far end of the beat is clean.
+    shots = [shot(index, index * 5.0, index * 5.0 + 5.0) if index >= 17 else overlay(index, index * 5.0, index * 5.0 + 5.0) for index in range(20)]
+    timing = BeatTiming(beat_id=0, audio_path="audio/0.mp3", tl_start=10.0, tl_end=14.0, duration=4.0)
+    beat = BEAT.model_copy(update={"narration": "Xe lật giữa đèo."})
+    refs = [REFS[0].model_copy(update={"src_tc_start": 0.0, "src_tc_end": 6.0})]
+    stamps = [SentenceTimestamp(beat_id=0, idx=0, tl_start=10.0, tl_end=14.0, method="silence")]
+    windows, _reason = plan_sentence_windows(beat, timing, refs, stamps)
+    assert windows is not None
+    _result, placements, _diagnostics = fill_beat_by_sentences(
+        beat=beat, timing=timing, windows=windows, reuse_counts={}, fill_kwargs={**FILL_KWARGS, "shots": shots, "max_widen": 0}
+    )
+    assert placements and all(p.shot_index >= 17 for p in placements)
+    assert abs(sum(p.tl_end - p.tl_start for p in placements) - 4.0) < 1e-6
+
+
+def test_sentence_over_excluded_shots_leaves_the_next_sentences_moment_alone() -> None:
+    # Everything between the first shot and 45 s is ad footage, so the clean footage nearest to the second
+    # sentence's moment (24-40 s) is the third sentence's own moment (46-56 s); the second must look past it.
+    shots = [overlay(index, index * 5.0, index * 5.0 + 5.0) if 1 <= index <= 8 else shot(index, index * 5.0, index * 5.0 + 5.0) for index in range(20)]
+    beat = BEAT.model_copy(update={"src_tc_start": 0.0, "src_tc_end": 80.0})
+    refs = [
+        REFS[0].model_copy(update={"src_tc_start": 0.0, "src_tc_end": 4.0}),
+        REFS[1].model_copy(update={"src_tc_start": 24.0, "src_tc_end": 40.0}),
+        REFS[2].model_copy(update={"src_tc_start": 46.0, "src_tc_end": 56.0, "grounded": True, "from_seg_id": 6, "to_seg_id": 6}),
+    ]
+    windows, _reason = plan_sentence_windows(beat, TIMING, refs, STAMPS)
+    assert windows is not None
+    _result, placements, _diagnostics = fill_beat_by_sentences(
+        beat=beat, timing=TIMING, windows=windows, reuse_counts={}, fill_kwargs={**FILL_KWARGS, "shots": shots}
+    )
+    second = [p for p in placements if 14.0 <= p.tl_start < 18.0]
+    third = [p for p in placements if p.tl_start >= 18.0]
+    assert second and all(p.src_out <= 46.0 + 1e-6 or p.src_in >= 56.0 - 1e-6 for p in second)
+    assert third and all(44.0 <= p.src_in and p.src_out <= 58.0 for p in third)

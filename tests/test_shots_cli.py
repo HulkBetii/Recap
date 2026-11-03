@@ -59,7 +59,7 @@ def test_shots_cli_mock_end_to_end(tmp_path, monkeypatch) -> None:  # type: igno
     monkeypatch.setattr("shots.__main__.create_face_detector", lambda mode: (object(), []))
     monkeypatch.setattr("shots.__main__.sample_frames", lambda *args, **kwargs: [object(), object()])
 
-    def fake_features(frames, duration, config, face_detector):  # type: ignore[no-untyped-def]
+    def fake_features(frames, duration, config, face_detector, offsets=None):  # type: ignore[no-untyped-def]
         return ShotFeatures(
             motion_score=0.3,
             face_count=1,
@@ -105,7 +105,7 @@ def test_shots_cli_uses_cache_on_second_run(tmp_path, monkeypatch) -> None:  # t
     monkeypatch.setattr("shots.__main__.create_face_detector", lambda mode: (object(), []))
     monkeypatch.setattr("shots.__main__.sample_frames", lambda *args, **kwargs: [object()])
 
-    def fake_features(frames, duration, config, face_detector):  # type: ignore[no-untyped-def]
+    def fake_features(frames, duration, config, face_detector, offsets=None):  # type: ignore[no-untyped-def]
         feature_calls["count"] += 1
         return ShotFeatures(motion_score=0.1, face_count=0, face_area=0.0, brightness=0.5, is_usable=True)
 
@@ -143,7 +143,7 @@ def test_shots_cli_batch_sampling_writes_thumbnails_from_samples(tmp_path, monke
         for span in spans:
             yield span, [SampledFrame(shot_index=span.index, timestamp=span.tc_start + 0.5, frame=object())]
 
-    def fake_features(frames, duration, config, face_detector):  # type: ignore[no-untyped-def]
+    def fake_features(frames, duration, config, face_detector, offsets=None):  # type: ignore[no-untyped-def]
         return ShotFeatures(motion_score=0.2, face_count=0, face_area=0.0, brightness=0.4, is_usable=True)
 
     def fake_thumb_from_frame(input_path, thumb_dir, index, frame):  # type: ignore[no-untyped-def]
@@ -185,7 +185,7 @@ def test_shots_cli_end_credit_marking_has_separate_cache(tmp_path, monkeypatch) 
         detect_calls["count"] += 1
         return spans, 1000.0
 
-    def fake_features(frames, duration, config, face_detector):  # type: ignore[no-untyped-def]
+    def fake_features(frames, duration, config, face_detector, offsets=None):  # type: ignore[no-untyped-def]
         feature_calls["count"] += 1
         return ShotFeatures(motion_score=0.1, face_count=0, face_area=0.0, brightness=0.5, is_usable=True)
 

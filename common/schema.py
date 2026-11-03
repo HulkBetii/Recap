@@ -1361,6 +1361,8 @@ class Shot(BaseModel):
     exclude_reason: str | None = None
     is_end_credit: bool = False
     credit_like_score: float = Field(default=0.0, ge=0, le=1)
+    # Seconds from the shot start before its first non-black sampled frame (a fade or black lead).
+    lead_dark_s: float = Field(default=0.0, ge=0)
 
     @field_validator("src", "thumb")
     @classmethod

@@ -92,7 +92,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_recap_ui.ps1 -Dev
 
 Orchestrator chạy 6 stage bằng một lệnh, tôn trọng cache của từng stage và ghi toàn bộ artifact vào `--run-dir`. GĐ4 `shots` chạy song song với chuỗi GĐ1→GĐ3, GĐ4.5 `visual_index` chạy song song với review, sau đó GĐ5/GĐ6 chạy khi đủ input. `summary.json` ghi trạng thái và thời gian từng stage, kể cả khi run lỗi.
 
-GĐ4 mặc định bật `shots.overlay_guard`: tự loại các shot dính chữ chèn cứng có giới hạn thời gian (ví dụ quảng cáo của site phim), và cảnh báo trong `shots.meta.json` khi nguồn có phụ đề cứng từ 20% thời lượng trở lên. GĐ6 render theo fps nguồn (`render.fps: source`) và chọn encoder bằng `render.encoder: auto`.
+GĐ4 mặc định bật `shots.overlay_guard`: tự loại các shot dính chữ chèn cứng có giới hạn thời gian (ví dụ quảng cáo của site phim), và cảnh báo trong `shots.meta.json` khi nguồn có phụ đề cứng từ 20% thời lượng trở lên. GĐ6 render theo fps nguồn (`render.fps: source`, gắn về rate chuẩn như `24000/1001` khi fps đo được lệch ≤ 0,1%) và chọn encoder bằng `render.encoder: auto`.
 
 Phim bộ (`python -m series_recap`): `series_recap.episode_concurrency: 2` (đã đặt sẵn trong các preset anime season, trừ `localvision`) cho 2 tập ingest cùng lúc; `episode_planner` vẫn chạy theo thứ tự tập. Với 9router, Composer viết nháp các arc song song (`composer_concurrency`, mặc định 2).
 
@@ -133,7 +133,7 @@ Preset production cho mỗi câu narration chiếu đúng đoạn phim câu đó
 
 1. GĐ2 (`review.sentence_refs: true`) gán segment `film_map` cho từng câu và ghi `review_script.sentences.json`. Pass này có cache riêng và chạy bằng model nhanh `review.sentence_refs_model` (`ag/gemini-3.8-flash-low`, khoảng 12 giây trên phim benchmark).
 2. GĐ3 (`tts.sentence_timing: silence`) chia audio từng beat theo câu, bám vào quãng lặng thật của giọng đọc, và ghi `sentence_timing.json`.
-3. GĐ5 (`match.sentence_anchors: true`) lấp mỗi câu bằng footage trong cửa sổ nguồn của câu, chỉ lấy phần nguồn chưa chiếu.
+3. GĐ5 (`match.sentence_anchors: true`) lấp mỗi câu bằng footage trong cửa sổ nguồn của câu, chỉ lấy phần nguồn chưa chiếu. Shot bị loại (overlay, non-story, end-credit) không tính là nguồn trống. Khi cửa sổ không đủ footage, câu lấy footage sạch gần nhất, và chỉ lặp clip khi không còn nguồn trống trong span beat đã nới.
 
 Thiếu một trong hai sidecar, hoặc số câu không khớp, thì GĐ5 quay về khớp theo beat. Trên phim benchmark, tỷ lệ câu khớp hình tăng từ 0,527 (theo beat) lên 0,638 (theo câu).
 
@@ -388,7 +388,7 @@ python -m tts `
   --work-dir work\tts
 ```
 
-VieNeu synthesis is serialized within one TTS process, writes a temporary WAV, converts it to a real MP3 with ffmpeg (including `atempo` for non-1.0 speed), and then follows the existing normalization/cache/resume path. The SDK watermark remains enabled. With SDK 3.8, `--vieneu-backend pytorch` runs on CUDA, and a `--voice-id` that points at a 3-8 s audio clip is cloned zero-shot (only clone voices you have the right to use). On pytorch/CUDA, uncached beats are synthesized in groups of `--vieneu-batch-size` (default 16, config `tts.vieneu_batch_size`) with `infer_batch`; cached beats and cache keys are unchanged. Uncached TTS for the 62-beat benchmark script dropped from 192 s to 117 s.
+VieNeu synthesis is serialized within one TTS process, writes a temporary WAV, converts it to a real MP3 with ffmpeg (including `atempo` for non-1.0 speed), and then follows the existing normalization/cache/resume path. The SDK watermark remains enabled: the extra installs `vieneu[watermark]` (resemble-perth) plus `setuptools<81` for its `pkg_resources` import, and TTS refuses to run when the watermarker is not active. Do not install the unrelated PyPI package `perth`; it hides the watermarker and the SDK then writes unwatermarked audio with only a warning. With SDK 3.8, `--vieneu-backend pytorch` runs on CUDA, and a `--voice-id` that points at a 3-8 s audio clip is cloned zero-shot (only clone voices you have the right to use). On pytorch/CUDA, uncached beats are synthesized in groups of `--vieneu-batch-size` (default 16, config `tts.vieneu_batch_size`) with `infer_batch`; cached beats and cache keys are unchanged. Uncached TTS for the 62-beat benchmark script dropped from 192 s to 117 s.
 
 `--sentence-timing silence|proportional|off` (thêm `--sentence-timing-output out\sentence_timing.json`) chia audio từng beat theo câu. Mỗi ranh giới được ước lượng theo số chữ cái rồi bắt dính vào quãng lặng thật do ffmpeg `silencedetect` tìm ra. Các câu phủ kín cửa sổ audio của beat; khoảng ngắt sau mỗi câu thuộc về chính câu đó.
 
@@ -587,7 +587,7 @@ Nguyên tắc GĐ5:
 - Repeat fallback ưu tiên phần source chưa dùng của các shot đã chọn, tránh lặp ngay shot liền trước khi còn alternative cùng chronology tier, rồi mới dùng span có overlap thấp nhất.
 - `edl.qa.json`/HTML hiển thị capacity, widen count, dark fallback, unused-source reuse và overlapping repeat; `edl.meta.json.algorithm_version` làm stale artifact tự rebuild qua orchestrator.
 - Visual preset bật `opening_intra_beat_align` cho cả opening và long-beat hardening. Opening vẫn chỉ phân tích 30 giây đầu; non-opening beat chỉ splice khi timecode strict, dùng BGE-M3, chưa có content-anchor plan và baseline drift vượt `max(18s, 1.5 * max_source_drift_s)`. Các câu cùng anchor được gộp, transition confidence thấp gắn vào anchor mạnh kế tiếp, source window giữ thứ tự và không overlap.
-- `hook_min_brightness=0.10` trong visual preset tránh mở video bằng placement quá tối; stable/default giữ `0.0`. QA HTML/JSON ghi mode, trigger drift, replaced ranges, source windows và shot thay thế hook.
+- `hook_min_brightness=0.10` trong visual/production preset tránh mở video bằng placement quá tối, kể cả shot sáng nhưng mở đầu bằng đoạn đen (GĐ4 `lead_dark_s`): clip đầu được dời qua đoạn đen hoặc thay bằng shot khác; stable/default giữ `0.0`. QA HTML/JSON ghi mode, trigger drift, replaced ranges, source windows và shot thay thế hook.
 - Visual preset bật `end_credit_guard` ở GĐ4 và `exclude_end_credits` ở GĐ5. Guard chỉ hard-exclude blank/credit-only trong 600 giây cuối; cảnh post-credit có story image và credit overlay vẫn được giữ. Credit-only không quay lại qua dark fallback, repeat hoặc pause filler.
 - Cache nằm ở `work/match/plan.json`; hash cache gồm `film_map.json`, config semantic, `content_anchors`, `opening_intra_beat_align` và config review HTML; thêm `--force` để recompute. Nếu EDL lấy từ cache, GĐ5 vẫn ghi lại `edl.qa.json` và `edl.review.html`.
 

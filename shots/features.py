@@ -11,6 +11,9 @@ from shots.detect import ShotSpan
 
 TRANSITION_SPIKE_THRESHOLD = 0.92
 DEFAULT_FRAME_SAMPLE_WIDTH = 360
+# Sampled frames below this mean luma read as black (limited-range black is 16/255). A shot whose first sample is
+# black opens with a fade or a black lead that shot detection did not split off.
+LEAD_DARK_BRIGHTNESS = 0.10
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,7 @@ class ShotFeatures:
     brightness: float
     is_usable: bool
     unusable_reasons: tuple[str, ...] = ()
+    lead_dark_s: float = 0.0
 
 @dataclass(frozen=True)
 class FrameSampleRequest:
@@ -329,7 +333,9 @@ def compute_features_from_frames(
     duration: float,
     config: FeatureConfig,
     face_detector: FaceDetector,
+    offsets: list[float] | None = None,
 ) -> ShotFeatures:
+    """`offsets` are the frames' seconds from the shot start; with them, `lead_dark_s` is measured."""
     if not frames:
         return ShotFeatures(
             motion_score=0.0,
@@ -340,7 +346,12 @@ def compute_features_from_frames(
             unusable_reasons=("no_frames",),
         )
     grays = [to_luma(frame) for frame in frames]
-    brightness = float(np.mean([gray.mean() / 255.0 for gray in grays]))
+    levels = [float(gray.mean()) / 255.0 for gray in grays]
+    brightness = float(np.mean(levels))
+    lead_dark_s = 0.0
+    if offsets is not None and len(offsets) == len(levels) and levels[0] < LEAD_DARK_BRIGHTNESS:
+        # Up to the first sample that is not black; the whole shot when none is.
+        lead_dark_s = next((offset for offset, level in zip(offsets, levels) if level >= LEAD_DARK_BRIGHTNESS), duration)
     diffs: list[float] = []
     for prev, curr in zip(grays, grays[1:]):
         if prev.shape != curr.shape:
@@ -367,6 +378,7 @@ def compute_features_from_frames(
         brightness=round(clamp01(brightness), 4),
         is_usable=not unusable_reasons,
         unusable_reasons=tuple(unusable_reasons),
+        lead_dark_s=round(max(0.0, min(lead_dark_s, duration)), 3),
     )
 
 
