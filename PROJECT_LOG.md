@@ -1,5 +1,10 @@
 # PROJECT_LOG.md
 
+## 2026-11-03 - Release gate green on the current main
+
+- Full local release gate with media smoke (`scripts/release_check.ps1 -MediaPath <benchmark film>`, run from the uv `.venv`) passed all 19 steps at `ff3a038`: secret scan, frontend install/typecheck/lint/test/build, pytest, Ruff, Tach, compileall, editable dry-run, wheel build/content/install/import, CLI help, production dry-run, real-media cache smoke (33 assertions) and enhanced render smoke.
+- Fixes needed: the compile and wheel-import lists now include `shot_pick`; the wheel venv gets a `.pth` to the parent venv's site-packages when the gate runs from a venv, because `--system-site-packages` of a uv venv exposes only the bare uv Python without dependencies.
+
 ## 2026-11-02 - VieNeu batching, shot_pick (opt-in), season sentence anchors, anime tts_cps
 
 - Anime VieNeu presets: `series_recap.tts_cps` 17.0 -> 16.0 (SDK 3.8 reads 16.1 chars/s at speed 0.9).

@@ -540,6 +540,7 @@ repo/
 - GitHub Actions dùng `windows-latest`, Python 3.11, full-history checkout, `permissions: contents: read`; không được đọc repository secrets, cài browser hoặc GPU extras.
 - Local media gate cắt 30 giây vào `work/release-gate`, xóa `OPENAI_API_KEY`, `VIVOO_API_KEY`, `GENMAX_API_KEY` khỏi subprocess và chỉ chạy GĐ0/GĐ1 bằng manual transcript, translation/vision offline.
 - Cache smoke phải chứng minh unchanged reuse, profile-only vision invalidation, glossary giữ aligned transcript, và film identity rebuild toàn bộ artifacts GĐ1.
+- Khi gate chạy từ một venv (ví dụ `.venv` tạo bằng `uv`), `wheel-venv` nhận thêm `gate-parent-venv.pth` trỏ tới site-packages của venv đó để có thư viện phụ thuộc; module `recap` vẫn được nạp từ wheel vừa cài. Trên CI (Python hệ thống) bước này không đổi.
 - `work/release-gate/report.json` là audit artifact gitignored. Không ghi key/token; secret findings luôn redact.
 - Release hiện tại là `1.0.2`, tag `v1.0.2`; các tag `v1.0.0` và `v1.0.1` phải giữ nguyên. Chỉ tạo release/tag tiếp theo khi CI xanh, local media gate xanh không `-AllowDirty`, report pass, secret scan sạch và main đồng bộ remote.
 
