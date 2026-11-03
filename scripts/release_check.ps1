@@ -143,7 +143,7 @@ try {
         }
     }
     Invoke-GateStep "compileall" {
-        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "episode_planner", "ingest", "match", "orchestrator", "postprocess", "preflight", "recap_ui", "render", "review", "series_composer", "series_match", "series_recap", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py")
+        Invoke-NativeCommand "python" @("-m", "compileall", "-q", "common", "episode_planner", "ingest", "match", "orchestrator", "postprocess", "preflight", "recap_ui", "render", "review", "series_composer", "series_match", "series_recap", "shot_pick", "shots", "storymap", "tts", "visual_index", "scripts", "tests", "run.py")
     }
     Invoke-GateStep "editable_install_dry_run" {
         Invoke-NativeCommand "python" @("-m", "pip", "install", "--dry-run", "--no-deps", "-e", ".")
@@ -171,7 +171,7 @@ try {
         New-Item -ItemType Directory -Path $smokeDir | Out-Null
         Push-Location $smokeDir
         try {
-            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, common, episode_planner, ingest, match, orchestrator, postprocess, preflight, recap_ui, render, review, series_composer, series_match, series_recap, shots, storymap, tts, visual_index; modules=(run,common,episode_planner,ingest,match,orchestrator,postprocess,preflight,recap_ui,render,review,series_composer,series_match,series_recap,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
+            Invoke-NativeCommand $venvPython @("-c", "import pathlib, run, common, episode_planner, ingest, match, orchestrator, postprocess, preflight, recap_ui, render, review, series_composer, series_match, series_recap, shot_pick, shots, storymap, tts, visual_index; modules=(run,common,episode_planner,ingest,match,orchestrator,postprocess,preflight,recap_ui,render,review,series_composer,series_match,series_recap,shot_pick,shots,storymap,tts,visual_index); paths=[pathlib.Path(m.__file__).resolve() for m in modules]; assert all('site-packages' in str(p).lower() for p in paths), paths; print(*paths, sep='\n')")
         } finally {
             Pop-Location
         }
