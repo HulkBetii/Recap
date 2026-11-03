@@ -1,5 +1,11 @@
 # PROJECT_LOG.md
 
+## 2026-11-03 - v1.0.3 release
+
+- Bumped the package version from `1.0.2` to `1.0.3` and prepended release notes covering the 36 commits since `v1.0.2` (anime seasons, local UI, 9router, VieNeu 3.8, sentence-anchored footage).
+- Stage JSON contracts are unchanged; GĐ2, GĐ5 and season-match cache identities changed, so existing runs rebuild those stages once.
+- `v1.0.3` is tagged only after the clean local media gate and the GitHub Release Gate pass for the release commit; `v1.0.0`-`v1.0.2` stay immutable.
+
 ## 2026-11-03 - Release gate green on the current main
 
 - Full local release gate with media smoke (`scripts/release_check.ps1 -MediaPath <benchmark film>`, run from the uv `.venv`) passed all 19 steps at `ff3a038`: secret scan, frontend install/typecheck/lint/test/build, pytest, Ruff, Tach, compileall, editable dry-run, wheel build/content/install/import, CLI help, production dry-run, real-media cache smoke (33 assertions) and enhanced render smoke.

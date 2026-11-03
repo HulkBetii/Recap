@@ -143,8 +143,8 @@ def test_release_gate_runs_quality_tooling() -> None:
     assert "work/release-gate/enhanced-render-smoke-report.json" in workflow
 
 
-def test_project_version_matches_v1_0_2_release() -> None:
+def test_project_version_matches_v1_0_3_release() -> None:
     with (ROOT / "pyproject.toml").open("rb") as handle:
         project = tomllib.load(handle)["project"]
 
-    assert project["version"] == "1.0.2"
+    assert project["version"] == "1.0.3"

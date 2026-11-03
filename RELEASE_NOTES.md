@@ -1,3 +1,43 @@
+# Recap v1.0.3
+
+Release date: 2026-11-03
+
+`v1.0.3` collects the work since `v1.0.2`: anime season recaps, the local control-room UI, the 9router text backend, and footage matched sentence by sentence so the narration plays over the moment it describes.
+
+## Features
+
+- Anime support: Japanese ingest, anime single/season presets, manual OP/ED/preview ranges and context files, and `python -m series_recap` for chaptered season recaps (`series_composer -> tts -> series_match -> render`).
+- Opt-in enhanced season post-production (`config.anime.series.vieneu.enhanced.yaml`): dynamic clip lengths, reframing, grading, transition ramps, guarded freezes, and local music/SFX mixed under the voiceover with no source audio.
+- Local web UI (`python -m recap_ui`, loopback only) that supervises the public CLIs with a FIFO queue, guided new-run flow, run discovery and delivery QA.
+- 9router gateway (`common/llm_gateway.py`) as the default text backend for translation, vision, review and the season composer, with adaptive concurrency, an in-gateway fallback model and a readiness probe before heavy stages. ChatGPT Playwright stays selectable; there is no automatic fallback between the two.
+- VieNeu TTS on SDK 3.8 with a CUDA backend, reference-clip voice cloning (production preset: Ngọc Huyền clone) and batched `infer_batch` synthesis. CapCut is available as an explicit provider.
+- Sentence-anchored footage (production preset): GĐ2 maps every narration sentence to source segments, GĐ3 times sentences against real pauses in the voiceover, and GĐ5 fills each sentence window from source not yet shown.
+- Opt-in experiments kept off by default because they did not beat judge noise: per-sentence SigLIP ranking, the VLM `shot_pick` stage, and sentence anchors for season recaps (no season was available to run).
+- `scripts/av_sync_audit.py` scores narration against the frame on screen with a multimodal judge.
+
+## Fixes
+
+- GĐ2 QA converges: rewrites see the source segments of their beat, later QA rounds re-check only rewritten beats, and issues of one beat are merged into one rewrite.
+- GĐ4 uses YuNet face detection and an overlay guard that drops shots with burned-in ad text; hard-subtitle sources raise a warning.
+- GĐ6 renders with NVENC when available, at the source frame rate, and removes unused temp clips after a successful mux.
+- Runtime is isolated in a uv `.venv`; runtime preflight reports packages that drift from the declared specifiers, and GĐ1 frees GPU memory after ASR.
+- The release gate works from a venv and covers the new packages.
+
+## Compatibility
+
+- Required stage JSON contracts are unchanged. Sentence sidecars (`review_script.sentences.json`, `sentence_timing.json`, `sentence_shot_scores.json`) are optional; without them GĐ5 matches per beat as before.
+- Cache identities changed for GĐ2 (`review-prompts-v5`), GĐ5 (`MATCH_ALGORITHM_VERSION=7`) and season match (`series-match-v5-sentence-units`), so existing runs rebuild those stages once.
+- `NINEROUTER_API_KEY` is read from the environment only. Existing `v1.0.0`, `v1.0.1` and `v1.0.2` tags remain immutable.
+
+## Validation
+
+- Benchmark film (`Quý Ông Số Đỏ`, 7,406 s): full run from scratch 75 -> 48.8 minutes; recap length 49% -> 96-106% of target; GĐ2 QA passes; zero ad-overlay placements.
+- Narration/picture agreement measured by the audit judge: 0.527 per beat -> 0.638 per sentence.
+- Uncached VieNeu TTS for 62 beats: 192 s -> 117 s.
+- `python -m pytest -q` -> 832 passed; the local release gate with media smoke passed all 19 steps.
+
+---
+
 # Recap v1.0.2
 
 Release date: 2026-07-13

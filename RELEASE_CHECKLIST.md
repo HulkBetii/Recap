@@ -1,6 +1,6 @@
 # Release Candidate Gate
 
-Project version is `1.0.2`. The gates below are required before creating or pushing the release tag.
+Project version is `1.0.3`. The gates below are required before creating or pushing the release tag.
 
 ## CI Gate
 
@@ -61,4 +61,5 @@ Do not add VLM/OCR/new matching features between a passing release gate and the 
 - Local media gate passed on the same commit without `-AllowDirty`, with media smoke enabled and zero secret findings.
 - Tag `v1.0.0` remains attached to release commit `42d0e99`.
 - Tag `v1.0.1` remains attached to release commit `c37ac94`.
-- The `v1.0.2` candidate contains the locked Playwright-first review policy, resumed-chat history stabilization, and transient AI33/Genmax polling recovery.
+- Tag `v1.0.2` remains attached to release commit `830c0a5`.
+- The `v1.0.3` candidate contains anime season recaps, the local UI, the 9router text backend, VieNeu 3.8 batching and sentence-anchored footage.
