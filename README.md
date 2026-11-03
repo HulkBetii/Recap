@@ -4,7 +4,7 @@
 
 Pipeline hiện có hai chế độ:
 
-- **Một video** (`python run.py`): GĐ0 `preflight` → GĐ1 `ingest` → `storymap` → `episode_planner` (khi bật `orchestrator.recap_mode`) → GĐ2 `review` → GĐ3 `tts`; song song GĐ4 `shots` → GĐ4.5 `visual_index` (tùy chọn); cuối cùng GĐ5 `match` → GĐ6 `render`.
+- **Một video** (`python run.py`): GĐ0 `preflight` → GĐ1 `ingest` → `storymap` → `episode_planner` (khi bật `orchestrator.recap_mode`) → GĐ2 `review` → GĐ3 `tts`; song song GĐ4 `shots` → GĐ4.5 `visual_index` (tùy chọn); cuối cùng `shot_pick` (tùy chọn) → GĐ5 `match` → GĐ6 `render`.
 - **Cả season** (`python -m series_recap`): từng tập chạy tới `episode_planner` cùng `shots`, sau đó `series_composer` → `tts` → `series_match` → `postprocess` (chỉ preset enhanced) → `render`.
 
 Mỗi stage là một CLI `python -m <stage>` độc lập, giao tiếp qua file JSON. Contract, quyết định đã khóa và policy chi phí nằm trong `AGENTS.md`; tiến độ nằm trong `PROJECT_LOG.md`. Local Web UI (`python -m recap_ui`) điều khiển các CLI này.
@@ -105,7 +105,7 @@ python run.py `
   --config config.example.yaml
 ```
 
-Preset production cho phim Hàn dùng CUDA + WhisperX + Visual Index:
+Preset production cho phim Hàn dùng CUDA + WhisperX, VieNeu clone giọng và khớp hình theo câu (Visual Index tắt):
 
 ```powershell
 python -m pip install -e ".[movie-visual,dev]"
@@ -126,6 +126,28 @@ python run.py --input path\to\film.mp4 --run-dir runs\movie-visual01 --config co
 ```
 
 `movie-visual` gom WhisperX, BGE-M3 và SigLIP2 cho preset visual. OpenCLIP intro detection vẫn là dependency riêng: `python -m pip install -e ".[video-profile]"`.
+
+### Khớp tiếng–hình theo câu
+
+Preset production cho mỗi câu narration chiếu đúng đoạn phim câu đó kể, thay vì rải footage đều trên cả beat:
+
+1. GĐ2 (`review.sentence_refs: true`) gán segment `film_map` cho từng câu và ghi `review_script.sentences.json`. Pass này có cache riêng và chạy bằng model nhanh `review.sentence_refs_model` (`ag/gemini-3.8-flash-low`, khoảng 12 giây trên phim benchmark).
+2. GĐ3 (`tts.sentence_timing: silence`) chia audio từng beat theo câu, bám vào quãng lặng thật của giọng đọc, và ghi `sentence_timing.json`.
+3. GĐ5 (`match.sentence_anchors: true`) lấp mỗi câu bằng footage trong cửa sổ nguồn của câu, chỉ lấy phần nguồn chưa chiếu.
+
+Thiếu một trong hai sidecar, hoặc số câu không khớp, thì GĐ5 quay về khớp theo beat. Trên phim benchmark, tỷ lệ câu khớp hình tăng từ 0,527 (theo beat) lên 0,638 (theo câu).
+
+Đo độ khớp nội dung của một run bằng giám khảo đa phương thức qua 9router. Giám khảo xem từng câu cùng khung hình giữa câu, rồi ghi `av_sync_audit.json` và `.html`:
+
+```powershell
+python -m scripts.av_sync_audit --run-dir runs\movie01
+python -m scripts.av_sync_audit --run-dir runs\movie01 --model ag/claude-sonnet-4-6 --batch-size 6 --concurrency 2 --tag claude
+```
+
+Hai tùy chọn thử nghiệm, mặc định tắt vì chưa vượt độ dao động của giám khảo (±0,02):
+
+- `match.sentence_visual` (cần Visual Index, thêm `review.sentence_visual_queries`): SigLIP xếp hạng shot trong cửa sổ câu.
+- Stage `shot_pick` (`shot_pick.enabled: true`): model đa phương thức qua 9router chấm thumbnail tối đa 6 shot ứng viên cho mỗi câu, rồi ghi `sentence_shot_scores.json` để GĐ5 đọc qua `--sentence-shot-scores`. Stage chạy ngay trước `match`. Giám khảo Gemini thấy điểm tăng (0,638 → 0,668), nhưng giám khảo Claude gần như không đổi (0,610 → 0,615).
 
 ## Release Candidate Gate
 
@@ -164,8 +186,8 @@ python -m series_recap --manifest examples\anime\series_manifest.example.yaml --
 ```
 
 - `config.anime.series.yaml`: `content_type=anime_series`, `source_language=ja`, `translate_mode=ja-en`, `shots.face_detection=off`, `match.w_face=0.0`, `match.w_visual=0.0`, `exclude_non_story=true`, `orchestrator.recap_mode=auto`.
-- `config.anime.series.practical.yaml`: preset season 12 tap thuc dung. OpenAI API chi dung cho JA->EN transcript translation (`translation_required=true`, `translation_min_success_ratio=0.95`), `vision_provider="off"` va `max_vision_frames=0`; review/composer/QA dung ChatGPT Playwright, ASR/shots/match/render local, TTS dung provider configured.
-- `config.anime.series.vieneu.yaml`: preset season dung 9router de dich JA->EN theo batch 80 segment co cache/resume, `api_budget_guard=block`, va local VieNeu v3 Turbo ONNX/int8, giong nu Bac `Ngọc Linh`, style `doc_truyen`, speed `0.9`; khong fallback sang paid translation/TTS provider. Rieng season planning dung `series_recap.tts_cps=17.0`, hieu chinh tu run Tensei S01 co 63,107 ky tu trong 3,674.842 giay (`17.17` ky tu/giay), de bam sat target 35-45 phut; `review.tts_cps=15` va cac anime preset generic khong doi.
+- `config.anime.series.practical.yaml`: preset season 12 tap thuc dung. OpenAI API chi dung cho JA->EN transcript translation (`translation_required=true`, `translation_min_success_ratio=0.95`), `vision_provider="off"` va `max_vision_frames=0`; review/composer/QA dung 9router, ASR/shots/match/render local, TTS dung provider configured.
+- `config.anime.series.vieneu.yaml`: preset season dung 9router de dich JA->EN theo batch 80 segment co cache/resume, `api_budget_guard=block`, va local VieNeu v3 Turbo pytorch/CUDA (SDK 3.8; dung `vieneu_backend: onnx` tren may khong co GPU NVIDIA), giong nu Bac `Ngọc Linh`, style `doc_truyen`, speed `0.9`; khong fallback sang paid translation/TTS provider. Rieng season planning dung `series_recap.tts_cps=16.0`, do tu SDK 3.8 (16,1 ky tu/giay o speed 0.9; ban cu 17.0 do tu SDK 3.2.3 tren Tensei S01), de bam sat target 35-45 phut; `review.tts_cps=15` va cac anime preset generic khong doi.
 - `config.anime.series.vieneu.enhanced.yaml`: opt-in preset ke thua duong VieNeu tren, bat `series_recap.clip_profile=dynamic_anime` va stage offline `postprocess`. Preset cu va run legacy khong doi hanh vi.
 - Solo Leveling uses `examples/anime/solo_leveling_vi_pronunciation.yaml` to normalize `Sung Jinwoo`/`Jinwoo` aliases to the Vietnamese TTS form `Sung Chin U`/`Chin U` before synthesis.
 - `config.anime.series.localvision.yaml`: opt-in local Qwen vision (`vision_provider=local_qwen2_5_vl`, `Qwen/Qwen2.5-VL-7B-Instruct`, `max_vision_frames=30`, resize long edge 768). Cai optional deps bang `python -m pip install -e ".[anime-vision]"`; neu local model/deps thieu thi ingest warning va tiep tuc khong co visual gap descriptions.
@@ -194,6 +216,7 @@ python -m series_recap --manifest examples\anime\series_manifest.example.yaml --
 - Series resume uses the versioned internal `work/stage_manifest.json`. Composer, TTS, YouTube chapters, match, optional postprocess, and render fingerprint direct inputs and validate output signatures before skipping. Enhanced postprocess identity includes EDL/script/timing/event bank/shots/config/override/audio asset identities; render keeps video temp clips separate from music/SFX/master caches, so replacing music does not re-encode footage.
 - Series matching uses `series-v2`: each `source_ref` gets a separate candidate pool and fair quota in event order. Normal clips target `min_clip` (default 3s), while `min_visual_clip` is the hard floor; impossible multi-event beats fail with event IDs instead of silently dropping footage. `edl.qa.json` records requested/covered/fallback/missing events and short-fallback diagnostics.
 - Enhanced matching uses `series-v3-dynamic-anime`: event-aware clip ranges are 1.5-2.4s for hook/conflict/action, 1.8-3.0s for setup/investigation/neutral, and 2.5-4.0s for reveal/climax/ending. Candidate residuals rotate round-robin; adjacent same-shot or contiguous-source reuse is allowed only after alternatives run out and is always reported in `edl.qa.json`. Long candidates are inset 0.75s from real shot boundaries when the remaining span still meets the event minimum, avoiding fade/black transition heads while preserving short valid clips.
+- Khớp theo câu cho season (`series_recap.sentence_anchors`, mặc định `false`, chưa bật ở preset nào vì chưa chạy thật trên tập phim): sau Composer, bước cache `series_sentence_refs` (`python -m series_composer.sentence_refs`) gán ref và segment của tập tương ứng cho từng câu, rồi ghi `series_review_script.sentences.json`. TTS mùa thêm `--sentence-timing silence`, còn `series_match` lấp từng câu (hoặc nhóm câu ngắn cùng ref) từ đúng khoảnh khắc trong tập. Beat thiếu dữ liệu câu giữ cách chia quota theo ref.
 
 ### Anime Season Enhanced Post-Production V1
 
@@ -223,6 +246,7 @@ Run directory chính:
 
 - `film_map.json`, `review_script.json`, `voiceover.mp3`, `beats_timing.json`, `shots.json`, `edl.json`, `edl.qa.json`, `edl.review.html`, `recap.mp4`
 - Khi bật visual preset: thêm `shot_visual_index.json`, `visual_index/`, `edl.visual.qa.json`.
+- Khi bật khớp theo câu: thêm `review_script.sentences.json`, `sentence_timing.json`; `shot_pick` ghi thêm `sentence_shot_scores.json` + `.meta.json`.
 - `*.meta.json`, `audio/`, `shots/`, `work/<stage>/`, `run.log`, `summary.json`
 
 `summary.json` gom duration từng stage, trạng thái run/skip, warnings, `timecode_qa` và ba số calibrate: `real_ratio`, `n_beats_widened`, `duration_match`. Nếu `timecode_qa.approximate_timecodes=true`, ưu tiên kiểm tra `edl.review.html`/alignment trước khi chỉnh audio delay global.
@@ -333,13 +357,15 @@ Artifacts cache GĐ2:
 - `work/review/cache_manifest.json`
 
 Manifest GĐ2 hash nội dung `film_map`, metadata, story map, video profile, style sample và generation config. Thay đổi semantic input sẽ xóa đồng nhất toàn bộ artifact review; browser profile/headless/timeout không làm đổi cache. Thêm `--force` để rebuild cache GĐ2.
+
+`--sentence-refs` (thêm `--sentence-refs-output out\review_script.sentences.json`) chạy thêm một pass sau khi narration xong, để gán segment `film_map` cho từng câu. Câu bình luận không có nguồn được ghi `grounded=false`. `--sentence-refs-model` chọn model riêng cho pass này, còn model chính làm fallback. Pass có cache riêng tại `work/review/sentence_refs.json`, nên bật nó không làm chạy lại outline hay narration. `--sentence-visual-queries` thêm mô tả hình tiếng Anh `visual_en` cho từng câu, dùng cho `match.sentence_visual`.
 ## Chạy GĐ3
 
 GĐ3 nhận `review_script.json` và tạo `audio/<beat_id>.mp3`, `voiceover.mp3`, `beats_timing.json`, `tts_meta.json`.
 
-Provider mặc định là `auto`: thử AI33.PRO Vivoo V3, sau đó Genmax khi có key + voice riêng, rồi OpenAI `gpt-4o-mini-tts` khi có `OPENAI_API_KEY`. Production preset dùng Genmax voice `VU16byTywsWv5JpI8rbc`; provider thiếu key được bỏ qua, và GĐ3 fail-fast nếu không có provider nào.
+Provider mặc định là `auto`: thử AI33.PRO Vivoo V3, sau đó Genmax khi có key + voice riêng, rồi OpenAI `gpt-4o-mini-tts` khi có `OPENAI_API_KEY`. Provider thiếu key được bỏ qua, và GĐ3 fail-fast nếu không có provider nào. Preset production không dùng `auto`: nó chọn `provider_mode=vieneu` với giọng clone từ `data/voices/ngochuyen_ref.mp3` (file gitignored, chỉ clone giọng bạn có quyền dùng).
 
-VieNeu-TTS 3.2.3 là provider local opt-in cho tiếng Việt. Nó chạy v3 Turbo qua ONNX/int8 trên CPU, không cần API key và không được tự động chèn vào `auto` để giữ nguyên hành vi các preset hiện có. Cài optional extra (extra này pin Gradio/Hugging Face để không xung đột với Transformers của project):
+VieNeu-TTS 3.8.3 là provider local opt-in cho tiếng Việt. Nó chạy v3 Turbo qua ONNX/int8 trên CPU hoặc pytorch trên CUDA, không cần API key và không được tự động chèn vào `auto` để giữ nguyên hành vi các preset hiện có. Cài optional extra (extra này pin Gradio/Hugging Face để không xung đột với Transformers của project):
 
 ```powershell
 python -m pip install -e ".[tts-vieneu]"
@@ -362,7 +388,9 @@ python -m tts `
   --work-dir work\tts
 ```
 
-VieNeu synthesis is serialized within one TTS process, writes a temporary WAV, converts it to a real MP3 with ffmpeg (including `atempo` for non-1.0 speed), and then follows the existing normalization/cache/resume path. The SDK watermark remains enabled. With SDK 3.8, `--vieneu-backend pytorch` runs on CUDA, and a `--voice-id` that points at a 3-8 s audio clip is cloned zero-shot (only clone voices you have the right to use). Batched inference across beats is not implemented.
+VieNeu synthesis is serialized within one TTS process, writes a temporary WAV, converts it to a real MP3 with ffmpeg (including `atempo` for non-1.0 speed), and then follows the existing normalization/cache/resume path. The SDK watermark remains enabled. With SDK 3.8, `--vieneu-backend pytorch` runs on CUDA, and a `--voice-id` that points at a 3-8 s audio clip is cloned zero-shot (only clone voices you have the right to use). On pytorch/CUDA, uncached beats are synthesized in groups of `--vieneu-batch-size` (default 16, config `tts.vieneu_batch_size`) with `infer_batch`; cached beats and cache keys are unchanged. Uncached TTS for the 62-beat benchmark script dropped from 192 s to 117 s.
+
+`--sentence-timing silence|proportional|off` (thêm `--sentence-timing-output out\sentence_timing.json`) chia audio từng beat theo câu. Mỗi ranh giới được ước lượng theo số chữ cái rồi bắt dính vào quãng lặng thật do ffmpeg `silencedetect` tìm ra. Các câu phủ kín cửa sổ audio của beat; khoảng ngắt sau mỗi câu thuộc về chính câu đó.
 
 Env vars:
 
@@ -552,6 +580,7 @@ Nguyên tắc GĐ5:
 - `edl.qa.json` ghi provider/model/device/cache hits, từng beat chọn shot nào, semantic rank/score, `expected_src_position`, `source_drift_s`, `chronology_score` và warning `low semantic match`/`high source drift`.
 - `edl.review.html` là QA artifact trực quan để mở bằng browser: narration, selected thumbnails, source span, semantic/motion/brightness/face/reuse/drift và warnings theo beat.
 - Face là điểm cộng mềm, không lọc cứng.
+- `--sentence-anchors --review-sentences out\review_script.sentences.json --sentence-timing out\sentence_timing.json` khớp hình theo câu. Cửa sổ nguồn của mỗi câu là segment của câu đó, nới tới ít nhất max(4 s, 1,5× thời lượng audio câu) trong span beat. Câu chỉ lấy phần nguồn chưa chiếu nên không lặp footage. `edl.meta.json` ghi `n_sentence_anchored_beats` và `sentence_ref_hit_ratio`. Thêm `--sentence-shot-scores out\sentence_shot_scores.json` để dùng điểm của `shot_pick` trong từng cửa sổ câu.
 - Placement mặc định 1:1 speed `1.0`.
 - `min_visual_clip` mac dinh `0.6s` de tranh flash-cut; pause gap ngan duoc absorb bang source capacity hoac slowdown toi da 10% tren hai clip ke nhau, va placement dai hon `max_clip` se duoc split lien tuc cung source/shot.
 - Khi thiếu footage, GĐ5 tính diversity capacity theo tối đa một clip `max_clip` cho mỗi shot. Nó thử shot usable rồi shot story chỉ bị loại vì tối trong cùng source window trước khi widen, và không vượt quá `max_widen`.
