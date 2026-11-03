@@ -166,6 +166,13 @@ try {
     $venvPython = Join-Path $venvDir "Scripts\python.exe"
     Invoke-GateStep "wheel_install_import" {
         Invoke-NativeCommand "python" @("-m", "venv", "--system-site-packages", $venvDir)
+        # When the gate itself runs from a venv (e.g. a uv .venv), its dependencies are not "system" site-packages,
+        # so expose that venv's site-packages to the wheel venv through a .pth file. The recap modules still come
+        # from the freshly installed wheel because the wheel venv's own site-packages is searched first.
+        $parentSite = (& python -c "import site, sys; print(site.getsitepackages()[-1] if sys.prefix != sys.base_prefix else '')").Trim()
+        if ($parentSite) {
+            Set-Content -Path (Join-Path $venvDir "Lib\site-packages\gate-parent-venv.pth") -Value $parentSite -Encoding ascii
+        }
         Invoke-NativeCommand $venvPython @("-m", "pip", "install", "--no-deps", "--force-reinstall", $wheel.FullName)
         $smokeDir = Join-Path $resolvedWorkDir "outside-repo"
         New-Item -ItemType Directory -Path $smokeDir | Out-Null
